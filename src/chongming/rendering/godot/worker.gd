@@ -500,7 +500,7 @@ func _sync_entities(entities: Array) -> void:
 		if index == _instances.size():
 			_instances.append(Node3D.new())
 			_signatures.append("")
-		var signature := resource_token if not resource_token.is_empty() else JSON.stringify([entity.type, entity.parameters, entity.vertices, entity.triangles, entity.visual, entity.color, entity.reflectance, entity.get("surface", null), entity.get("surface_detail", 0.0), entity.get("category", null)])
+		var signature := resource_token if not resource_token.is_empty() else JSON.stringify([entity.type, entity.parameters, entity.vertices, entity.triangles, entity.visual, entity.color, entity.reflectance, entity.get("surface", null), entity.get("surface_detail", 0.0), entity.get("category", null), entity.get("model_name", null)])
 		if signature != _signatures[index]:
 			var old_instance := _instances[index]
 			old_instance.free()
@@ -509,17 +509,21 @@ func _sync_entities(entities: Array) -> void:
 			if visual_value is Dictionary and str(visual_value.get("kind", "")) in ["tree_trunk", "tree_canopy", "shrub", "grass"]:
 				new_instance = Vegetation.create(visual_value, entity.color, float(entity.reflectance))
 			else:
-				var mesh_instance := MeshInstance3D.new()
-				mesh_instance.mesh = _mesh(entity)
-				if str(entity.get("surface", "")) == "terrain":
-					mesh_instance.material_override = _terrain_material(entity.color, float(entity.reflectance), float(entity.get("surface_detail", 0.0)))
-				elif str(entity.get("category", "")) == "osm-building":
-					mesh_instance.material_override = _building_material(entity.color, float(entity.reflectance), str(entity.get("object_id", "")))
-				elif str(entity.get("category", "")) in ["osm-grass", "osm-forest"]:
-					mesh_instance.material_override = _groundcover_material(entity.color, float(entity.reflectance), str(entity.get("category", "")) == "osm-forest")
+				var aircraft := _aircraft_model(str(entity.get("model_name", "")))
+				if aircraft != null:
+					new_instance = aircraft
 				else:
-					mesh_instance.material_override = _material(entity.color, float(entity.reflectance))
-				new_instance = mesh_instance
+					var mesh_instance := MeshInstance3D.new()
+					mesh_instance.mesh = _mesh(entity)
+					if str(entity.get("surface", "")) == "terrain":
+						mesh_instance.material_override = _terrain_material(entity.color, float(entity.reflectance), float(entity.get("surface_detail", 0.0)))
+					elif str(entity.get("category", "")) == "osm-building":
+						mesh_instance.material_override = _building_material(entity.color, float(entity.reflectance), str(entity.get("object_id", "")))
+					elif str(entity.get("category", "")) in ["osm-grass", "osm-forest"]:
+						mesh_instance.material_override = _groundcover_material(entity.color, float(entity.reflectance), str(entity.get("category", "")) == "osm-forest")
+					else:
+						mesh_instance.material_override = _material(entity.color, float(entity.reflectance))
+					new_instance = mesh_instance
 			_world.add_child(new_instance)
 			_instances[index] = new_instance
 			_signatures[index] = signature
@@ -569,6 +573,64 @@ func _mesh(entity: Dictionary) -> Mesh:
 			surface.add_vertex(_vector(entity.vertices[int(vertex)]))
 	surface.generate_normals()
 	return surface.commit()
+
+
+func _aircraft_model(model_name: String) -> Node3D:
+	var packed: PackedScene
+	var model_to_body: Basis
+	match model_name:
+		"la11", "la11triangled":
+			packed = load("res://assets/aircraft/la11triangled.glb")
+			# Imported LA-11: wings +X, up +Y, nose +Z.
+			model_to_body = Basis(-Vector3.RIGHT, Vector3.UP, Vector3.FORWARD)
+		"f86", "f86triangled":
+			packed = load("res://assets/aircraft/f86triangled.glb")
+			# Imported F-86: nose +X, up +Y, right +Z.
+			model_to_body = Basis(Vector3.FORWARD, Vector3.UP, Vector3.RIGHT)
+		"", "procedural", "sphere", "box", "mesh", "test":
+			return null
+		_:
+			push_warning("unknown aircraft model %s; using procedural fallback" % model_name)
+			return null
+	if packed == null:
+		push_warning("aircraft model unavailable: %s" % model_name)
+		return null
+	var instance := packed.instantiate() as Node3D
+	# _sync_entities applies ENU->Godot to the outer node on every snapshot.
+	# Keep import correction on a child, in the same body axes as procedural meshes.
+	instance.basis = model_to_body * instance.basis
+	var bounds := _aircraft_bounds(instance)
+	instance.position -= bounds.get_center()
+	_apply_aircraft_materials(instance)
+	var body := Node3D.new()
+	body.add_child(instance)
+	return body
+
+
+func _aircraft_bounds(node: Node3D, parent_transform := Transform3D.IDENTITY) -> AABB:
+	var pose: Transform3D = parent_transform * node.transform
+	var bounds := AABB()
+	if node is MeshInstance3D and node.mesh != null:
+		bounds = pose * node.mesh.get_aabb()
+	for child in node.get_children():
+		if child is Node3D:
+			var child_bounds := _aircraft_bounds(child, pose)
+			if child_bounds.has_volume():
+				bounds = bounds.merge(child_bounds) if bounds.has_volume() else child_bounds
+	return bounds
+
+
+func _apply_aircraft_materials(node: Node) -> void:
+	if node is MeshInstance3D:
+		var mesh_instance := node as MeshInstance3D
+		var material := StandardMaterial3D.new()
+		material.albedo_color = Color(0.82, 0.84, 0.86)
+		material.roughness = 0.78
+		material.metallic = 0.05
+		material.cull_mode = BaseMaterial3D.CULL_DISABLED
+		mesh_instance.material_override = material
+	for child in node.get_children():
+		_apply_aircraft_materials(child)
 
 
 func _material(rgb: Array, reflectance: float) -> StandardMaterial3D:

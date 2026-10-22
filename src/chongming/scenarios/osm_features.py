@@ -465,14 +465,84 @@ def forest_points(imported: s.OSMImport) -> tuple[s.OSMPointFeature, ...]:
     return tuple(result)
 
 
+def area_tree_points(imported: s.OSMImport) -> tuple[s.OSMPointFeature, ...]:
+    """Derive sparse park/meadow trees from polygon land cover.
+
+    OSM green polygons do not carry a tree census. These stable samples are
+    deliberately marked as an approximation and never replace surveyed OSM
+    ``natural=tree`` points or the denser forest stand samples.
+    """
+    from shapely.ops import unary_union
+
+    areas = [
+        Polygon(area.rings_enu_m[0], area.rings_enu_m[1:])
+        for area in imported.areas
+        if area.category == "grass"
+    ]
+    if not areas:
+        return ()
+    exclusions = [Polygon(building.footprint_enu_m).buffer(2.0) for building in imported.buildings]
+    exclusions.extend(
+        LineString(road.centerline_enu_m).buffer(road.width_m / 2 + 2.0)
+        for road in imported.roads
+    )
+    exclusions.extend(
+        Polygon(area.rings_enu_m[0], area.rings_enu_m[1:])
+        for area in imported.areas
+        if area.category == "water"
+    )
+    exclusions.extend(Point(*point.position_enu_m).buffer(point.radius_m + 2.0) for point in imported.points)
+    excluded = unary_union(exclusions) if exclusions else None
+    result: list[s.OSMPointFeature] = []
+    for area in imported.areas:
+        if area.category != "grass" or len(result) >= 192:
+            continue
+        mask: BaseGeometry = Polygon(area.rings_enu_m[0], area.rings_enu_m[1:]).buffer(-7.0)
+        if excluded is not None:
+            mask = mask.difference(excluded)
+        if mask.is_empty:
+            continue
+        left, bottom, right, top = mask.bounds
+        spacing = 32.0
+        for ix in range(math.floor(left / spacing), math.ceil(right / spacing)):
+            for iy in range(math.floor(bottom / spacing), math.ceil(top / spacing)):
+                if len(result) >= 192:
+                    break
+                digest = hashlib.sha256(
+                    f"osm-area-tree-42/{area.element_id}/{ix}/{iy}".encode()
+                ).digest()
+                if digest[0] / 255.0 > 0.58:
+                    continue
+                x = (ix + 0.2 + 0.6 * int.from_bytes(digest[1:5], "big") / 2**32) * spacing
+                y = (iy + 0.2 + 0.6 * int.from_bytes(digest[5:9], "big") / 2**32) * spacing
+                if not mask.covers(Point(x, y)):
+                    continue
+                result.append(
+                    s.OSMPointFeature(
+                        -(1 << 64) - int.from_bytes(digest[9:17], "big"),
+                        (x, y),
+                        "tree",
+                        5.5 + digest[17] / 255.0 * 3.5,
+                        1.5 + digest[18] / 255.0 * 1.1,
+                        (("landcover", "grass"), ("source", "area")),
+                    )
+                )
+            if len(result) >= 192:
+                break
+    return tuple(result)
+
+
 def tree_objects(imported: s.OSMImport) -> tuple[s.VegetationSpec, ...]:
     from shapely.ops import unary_union
 
     from chongming.scenarios.osm_elevation import elevation_at
 
     objects = []
-    for point in (*imported.points, *forest_points(imported)):
-        x, y = point.position_enu_m
+    derived_area_trees = area_tree_points(imported)
+    area_tree_ids = {point.osm_node_id for point in derived_area_trees}
+    tree_points = (*imported.points, *forest_points(imported), *derived_area_trees)
+    for tree_point in tree_points:
+        x, y = tree_point.position_enu_m
         pose = s.KinematicState(
             (x, y, elevation_at(imported, x, y)),
             (0.0, 0.0, 0.0),
@@ -483,26 +553,36 @@ def tree_objects(imported: s.OSMImport) -> tuple[s.VegetationSpec, ...]:
             (
                 s.TreePart.TRUNK,
                 0.0,
-                point.height_m * 0.4,
-                min(0.4, point.radius_m * 0.1),
+                tree_point.height_m * 0.4,
+                min(0.4, tree_point.radius_m * 0.1),
                 (0.22, 0.12, 0.05),
             ),
             (
                 s.TreePart.CANOPY,
-                point.height_m * 0.3,
-                point.height_m * 0.7,
-                point.radius_m,
+                tree_point.height_m * 0.3,
+                tree_point.height_m * 0.7,
+                tree_point.radius_m,
                 (0.1, 0.28, 0.06),
             ),
         ):
+            if tree_point.osm_node_id in area_tree_ids:
+                tree_prefix = "area-tree"
+            elif tree_point.osm_node_id < 0:
+                tree_prefix = "forest-tree"
+            else:
+                tree_prefix = "tree"
             objects.append(
                 s.VegetationSpec(
-                    s.VegetationId(f"osm/tree/{point.osm_node_id}/{part.value}"),
-                    f"OSM tree {point.osm_node_id}",
+                    s.VegetationId(f"osm/{tree_prefix}/{tree_point.osm_node_id}/{part.value}"),
+                    f"OSM tree {tree_point.osm_node_id}",
                     replace(pose, position_enu_m=(x, y, pose.position_enu_m[2] + offset)),
                     s.CylinderGeometry(radius, height),
                     s.SurfaceAppearance(color, 0.9),
-                    s.VegetationMotionModel.STATIC,
+                    (
+                        s.VegetationMotionModel.WIND_DRIVEN
+                        if part is s.TreePart.CANOPY
+                        else s.VegetationMotionModel.STATIC
+                    ),
                     True,
                     s.TreeVisualSpec(part, height, radius),
                 )
@@ -520,7 +600,7 @@ def tree_objects(imported: s.OSMImport) -> tuple[s.VegetationSpec, ...]:
     exclusions.extend(
         Polygon(area.rings_enu_m[0], area.rings_enu_m[1:]).buffer(1.5)
         for area in imported.areas
-        if area.category in {"water", "forest"}
+        if area.category == "water"
     )
     exclusions.extend(Point(*point.position_enu_m).buffer(point.radius_m + 1.5) for point in imported.points)
     excluded = unary_union(exclusions) if exclusions else None
@@ -528,7 +608,7 @@ def tree_objects(imported: s.OSMImport) -> tuple[s.VegetationSpec, ...]:
     max_total_patches = 2048
     max_area_patches = 256
     for area in imported.areas:
-        if area.category != "grass":
+        if area.category not in {"grass", "forest"}:
             continue
         mask = Polygon(area.rings_enu_m[0], area.rings_enu_m[1:])
         inset: BaseGeometry = mask.buffer(-9.0)
@@ -550,9 +630,9 @@ def tree_objects(imported: s.OSMImport) -> tuple[s.VegetationSpec, ...]:
                 ).digest()
                 x = (ix + 0.25 + 0.5 * int.from_bytes(digest[:4], "big") / 2**32) * spacing
                 y = (iy + 0.25 + 0.5 * int.from_bytes(digest[4:8], "big") / 2**32) * spacing
-                # A low-frequency deterministic thinning gives parks a natural
-                # patch pattern while retaining exact replay across runs.
-                if digest[9] / 255.0 > 0.78 or not inset.covers(Point(x, y)):
+                # Keep a small deterministic gap pattern, but do not reduce
+                # green areas to a handful of isolated blades.
+                if digest[9] / 255.0 > 0.90 or not inset.covers(Point(x, y)):
                     continue
                 width = depth = 12.0
                 height = 0.24 + digest[8] / 255.0 * 0.18
@@ -574,14 +654,66 @@ def tree_objects(imported: s.OSMImport) -> tuple[s.VegetationSpec, ...]:
                         grass_pose,
                         s.CylinderGeometry(math.hypot(width, depth) * 0.5, height),
                         s.SurfaceAppearance((0.17, 0.34, 0.08), 0.82),
-                        s.VegetationMotionModel.STATIC,
+                        s.VegetationMotionModel.WIND_DRIVEN,
                         False,
-                        s.GrassVisualSpec(width, depth, height, 0.75),
+                        s.GrassVisualSpec(width, depth, height, 8.0),
                     )
                 )
                 patch_index += 1
                 total_patches += 1
             if patch_index >= max_area_patches or total_patches >= max_total_patches:
+                break
+    # Shrub rows are an explicitly marked approximation: OSM green polygons do
+    # not identify individual shrubs, so derive a sparse deterministic layer
+    # from the same masks instead of claiming these are surveyed instances.
+    shrub_total = 0
+    shrub_area_limit = 64
+    for area in imported.areas:
+        if area.category not in {"grass", "forest"} or shrub_total >= 384:
+            continue
+        mask = Polygon(area.rings_enu_m[0], area.rings_enu_m[1:])
+        inset = mask.buffer(-6.0)
+        if excluded is not None:
+            inset = inset.difference(excluded)
+        if inset.is_empty:
+            continue
+        left, bottom, right, top = inset.bounds
+        local_count = 0
+        spacing = 26.0
+        for ix in range(math.floor(left / spacing), math.ceil(right / spacing)):
+            for iy in range(math.floor(bottom / spacing), math.ceil(top / spacing)):
+                if local_count >= shrub_area_limit or shrub_total >= 384:
+                    break
+                digest = hashlib.sha256(
+                    f"osm-shrub-42/{area.element_id}/{ix}/{iy}".encode()
+                ).digest()
+                if digest[0] / 255.0 > 0.42:
+                    continue
+                x = (ix + 0.25 + 0.5 * int.from_bytes(digest[1:5], "big") / 2**32) * spacing
+                y = (iy + 0.25 + 0.5 * int.from_bytes(digest[5:9], "big") / 2**32) * spacing
+                candidate_point = Point(x, y)
+                if not inset.covers(candidate_point):
+                    continue
+                radius = 0.65 + digest[9] / 255.0 * 0.65
+                height = 1.2 + digest[10] / 255.0 * 1.4
+                shrub_pose = _grass_pose(imported, x, y, max(2.0, radius * 2.0))
+                if shrub_pose is None:
+                    continue
+                objects.append(
+                    s.VegetationSpec(
+                        s.VegetationId(f"osm/shrub/{area.element_id}/{local_count}"),
+                        f"OSM inferred shrub {area.element_id}",
+                        shrub_pose,
+                        s.CylinderGeometry(radius, height),
+                        s.SurfaceAppearance((0.10, 0.27, 0.07), 0.85),
+                        s.VegetationMotionModel.WIND_DRIVEN,
+                        True,
+                        s.ShrubVisualSpec(height, radius),
+                    )
+                )
+                local_count += 1
+                shrub_total += 1
+            if local_count >= shrub_area_limit or shrub_total >= 384:
                 break
     return tuple(objects)
 

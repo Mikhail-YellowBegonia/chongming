@@ -22,6 +22,8 @@ from chongming.scenarios.osm import (
     attach_landscape,
     extrude,
     landscape_objects,
+    landscape_vegetation,
+    landscape_vegetation_perturbations,
     load_landscape,
     prepare_osm,
     validate_import,
@@ -31,7 +33,7 @@ from chongming.scenarios.osm_elevation import (
     prepare_hgt,
     terrain_from_elevation,
 )
-from chongming.scenarios.osm_features import forest_points
+from chongming.scenarios.osm_features import area_tree_points, forest_points
 from chongming.scenarios.serialization import (
     load_compiled_scenario,
     save_compiled_scenario,
@@ -135,6 +137,91 @@ class LandscapeTests(unittest.TestCase):
         self.assertEqual(
             forest_points(replace(imported, config=replace(POLICY, maximum_forest_trees=0))), ()
         )
+
+    def test_landscape_vegetation_has_deterministic_cover_and_wind_roles(self) -> None:
+        imported = prepare()
+        first = landscape_vegetation(imported)
+        replay = landscape_vegetation(imported)
+        self.assertEqual(first, replay)
+        trees = [item for item in first if isinstance(item.visual, s.TreeVisualSpec)]
+        shrubs = [item for item in first if isinstance(item.visual, s.ShrubVisualSpec)]
+        grass = [item for item in first if isinstance(item.visual, s.GrassVisualSpec)]
+        self.assertGreater(len(trees), 0)
+        self.assertGreater(len(shrubs), 0)
+        self.assertGreater(len(grass), 0)
+        self.assertTrue(all(item.motion_model is s.VegetationMotionModel.WIND_DRIVEN for item in shrubs + grass))
+        trunks = [
+            item
+            for item in trees
+            if isinstance(item.visual, s.TreeVisualSpec)
+            and item.visual.part is s.TreePart.TRUNK
+        ]
+        canopies = [
+            item
+            for item in trees
+            if isinstance(item.visual, s.TreeVisualSpec)
+            and item.visual.part is s.TreePart.CANOPY
+        ]
+        self.assertTrue(all(item.motion_model is s.VegetationMotionModel.STATIC for item in trunks))
+        self.assertTrue(all(item.motion_model is s.VegetationMotionModel.WIND_DRIVEN for item in canopies))
+        perturbations = landscape_vegetation_perturbations(first)
+        self.assertEqual(
+            {str(item.object_id) for item in perturbations},
+            {str(item.vegetation_id) for item in canopies + shrubs + grass},
+        )
+
+    def test_each_green_landcover_generates_three_vegetation_layers(self) -> None:
+        # Exercise classification as well as scattering; a park must not silently
+        # turn into only a colored ground polygon or a forest-only tree layer.
+        for tag, value, category in (
+            ("landuse", "grass", "grass"),
+            ("landuse", "meadow", "grass"),
+            ("leisure", "park", "grass"),
+            ("landuse", "forest", "forest"),
+            ("natural", "wood", "forest"),
+        ):
+            with self.subTest(tag=tag, value=value):
+                xml = ET.fromstring(SOURCE)
+                area = xml.find("way[@id='106']")
+                assert area is not None
+                for old in area.findall("tag"):
+                    area.remove(old)
+                ET.SubElement(area, "tag", k=tag, v=value)
+                imported = prepare_osm(
+                    ET.tostring(xml), replace(POLICY, maximum_forest_trees=512),
+                    source_url="synthetic:CC0", data_date="2026-10-20",
+                ).imported
+                selected = next(a for a in imported.areas if a.element_id.startswith("way/106/"))
+                self.assertEqual(selected.category, category)
+                # Isolate the selected polygon so the other forest cannot satisfy
+                # the three-layer requirement on its behalf.
+                isolated = replace(imported, areas=(selected,))
+                vegetation = landscape_vegetation(isolated)
+                self.assertEqual(
+                    {type(item.visual) for item in vegetation},
+                    {s.TreeVisualSpec, s.ShrubVisualSpec, s.GrassVisualSpec},
+                )
+                polygon = Polygon(selected.rings_enu_m[0], selected.rings_enu_m[1:])
+                inferred = [v for v in vegetation if not str(v.vegetation_id).startswith("osm/tree/")]
+                self.assertTrue(all(polygon.covers(Point(*v.base_pose.position_enu_m[:2])) for v in inferred))
+
+    def test_point_forest_and_area_tree_ids_are_disjoint_and_render_semantic_trees(self) -> None:
+        imported = prepare()
+        areas = area_tree_points(imported)
+        self.assertTrue(areas)
+        self.assertEqual(areas, area_tree_points(imported))
+        point_ids = {p.osm_node_id for p in imported.points}
+        forest_ids = {p.osm_node_id for p in forest_points(imported)}
+        area_ids = {p.osm_node_id for p in areas}
+        self.assertFalse(point_ids & forest_ids or point_ids & area_ids or forest_ids & area_ids)
+        vegetation = landscape_vegetation(imported)
+        ids = [str(v.vegetation_id) for v in vegetation]
+        self.assertEqual(len(ids), len(set(ids)))
+        for prefix in ("osm/tree/", "osm/forest-tree/", "osm/area-tree/"):
+            trees = [v for v in vegetation if str(v.vegetation_id).startswith(prefix)]
+            self.assertTrue(trees)
+            self.assertTrue(all(isinstance(v.visual, s.TreeVisualSpec) for v in trees))
+            self.assertEqual({v.visual.part for v in trees}, {s.TreePart.TRUNK, s.TreePart.CANOPY})
 
     def test_dem_mesh_and_feature_heights_match(self) -> None:
         imported = prepare(GRID)

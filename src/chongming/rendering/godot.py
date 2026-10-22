@@ -63,13 +63,14 @@ def _entity(
     surface_kind: str | None = None,
     surface_detail: float = 0.0,
     category: str | None = None,
+    model_name: str | None = None,
     resources: _EntityResources | None = None,
 ) -> dict[str, Any]:
     if resources is not None:
         return resources.encode(
             entity_type, position, state, geometry, appearance,
             object_id=object_id, visual=visual, surface_kind=surface_kind,
-            surface_detail=surface_detail, category=category,
+            surface_detail=surface_detail, category=category, model_name=model_name,
         )
     payload: dict[str, Any] = {
         "type": entity_type,
@@ -85,6 +86,7 @@ def _entity(
         "surface": surface_kind,
         "surface_detail": surface_detail,
         "category": category,
+        "model_name": model_name,
     }
     if visual is not None:
         # Godot generates this visual model from semantic dimensions.
@@ -120,19 +122,19 @@ class _EntityResources:
         self, entity_type: int, position: tuple[float, float, float], state: KinematicState,
         geometry: GeometrySpec, appearance: Any, *, object_id: str | None,
         visual: dict[str, Any] | None, surface_kind: str | None,
-        surface_detail: float, category: str | None,
+        surface_detail: float, category: str | None, model_name: str | None,
     ) -> dict[str, Any]:
         if object_id is None:
             raise ValueError("streamed render entities require stable IDs")
         old = self._items.get(object_id)
-        semantics = (entity_type, appearance, visual, surface_kind, surface_detail, category)
+        semantics = (entity_type, appearance, visual, surface_kind, surface_detail, category, model_name)
         if old is None or old[0] is not geometry or old[1] != semantics:
             self._serial += 1
             token = str(self._serial)
             definition = _entity(
                 entity_type, position, state, geometry, appearance, object_id=object_id,
                 visual=visual, surface_kind=surface_kind, surface_detail=surface_detail,
-                category=category,
+                category=category, model_name=model_name,
             )
             definition["resource"] = token
             self.definitions.append(definition)
@@ -210,6 +212,7 @@ def _entities(
                 flying_item.geometry,
                 flying_item.appearance,
                 object_id=f"aircraft/{flying_item.truth_object_id}",
+                model_name=flying_item.model_name,
                 resources=resources,
             )
         )

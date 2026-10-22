@@ -13,6 +13,6 @@
   "level_height_m": 3.0,
   "maximum_height_m": 250.0,
   "base_elevation_m": 0.0,
-  "forest_spacing_m": 60.0,
-  "maximum_forest_trees": 128
+  "forest_spacing_m": 24.0,
+  "maximum_forest_trees": 512
 }

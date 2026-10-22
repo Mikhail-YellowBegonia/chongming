@@ -598,6 +598,39 @@ def landscape_vegetation(imported: s.OSMImport) -> tuple[s.VegetationSpec, ...]:
     return tree_objects(imported)
 
 
+def landscape_vegetation_perturbations(
+    vegetation: tuple[s.VegetationSpec, ...],
+) -> tuple[s.VegetationPerturbation, ...]:
+    """Assign bounded deterministic sway to inferred OSM vegetation.
+
+    OSM does not provide per-plant wind parameters.  These values are semantic
+    envelopes for the existing scene wind model, not claims about surveyed trees.
+    """
+    perturbations = []
+    for item in vegetation:
+        if item.motion_model is not s.VegetationMotionModel.WIND_DRIVEN:
+            continue
+        visual = item.visual
+        if isinstance(visual, s.TreeVisualSpec):
+            amplitude = max(0.12, min(0.65, visual.height_m * 0.035))
+            frequency = 0.16 if visual.part is s.TreePart.CANOPY else 0.0
+        elif isinstance(visual, s.ShrubVisualSpec):
+            amplitude, frequency = min(0.24, visual.height_m * 0.10), 0.32
+        elif isinstance(visual, s.GrassVisualSpec):
+            amplitude, frequency = min(0.10, visual.blade_height_m * 0.20), 0.75
+        else:  # pragma: no cover - closed visual union
+            continue
+        if frequency > 0:
+            perturbations.append(
+                s.VegetationPerturbation(
+                    s.WorldObjectId(str(item.vegetation_id)),
+                    (amplitude, amplitude * 0.35, 0.0),
+                    frequency,
+                )
+            )
+    return tuple(perturbations)
+
+
 def attach_landscape(spec: s.ScenarioSpec, landscape: s.OSMLandscape) -> s.ScenarioSpec:
     """Attach imported geometry and align all geographic metadata to its anchor."""
     anchor = landscape.imported.config.anchor
@@ -624,8 +657,23 @@ def attach_landscape(spec: s.ScenarioSpec, landscape: s.OSMLandscape) -> s.Scena
                 ),
             )
         )
+    landscape_vegetation_items = landscape_vegetation(landscape.imported)
+    existing_perturbations = tuple(
+        p
+        for p in spec.perturbations.vegetation
+        if not str(p.object_id).startswith("osm/")
+    )
+    wind_perturbations = (
+        landscape_vegetation_perturbations(landscape_vegetation_items)
+        if spec.perturbations.wind is not None
+        else ()
+    )
     return replace(
         spec,
+        perturbations=replace(
+            spec.perturbations,
+            vegetation=existing_perturbations + wind_perturbations,
+        ),
         station_configs=tuple(configs),
         scene_definition=replace(
             scene,
@@ -636,7 +684,7 @@ def attach_landscape(spec: s.ScenarioSpec, landscape: s.OSMLandscape) -> s.Scena
             vegetation=tuple(
                 v for v in scene.vegetation if not str(v.vegetation_id).startswith("osm/")
             )
-            + landscape_vegetation(landscape.imported),
+            + landscape_vegetation_items,
             terrain=terrain_from_elevation(scene.terrain, landscape.imported.elevation),
         ),
     )

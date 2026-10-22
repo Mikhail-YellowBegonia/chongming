@@ -7,7 +7,7 @@
     {"id": "station-01", "position_enu_m": [0, -20, 3], "main_yaw_deg": 0, "main_elevation_deg": 8}
   ],
   "targets": [
-    {"id": "aircraft", "geometry": {"type": "aircraft"},
+    {"id": "aircraft", "model_name": "f86triangled", "geometry": {"type": "aircraft"},
      "motion": {"type": "constant_velocity", "position_enu_m": [-8, 150, 23], "velocity_enu_mps": [2, 0, 0]}}
   ],
   "world_objects": [

@@ -91,6 +91,37 @@ def render_gpu(
 
 
 class SceneConfigurationTests(unittest.TestCase):
+    def test_aircraft_model_reaches_renderer_and_invalidates_cached_resource(self) -> None:
+        from chongming.rendering.godot import _entities, _EntityResources
+
+        document = demo_authoring()
+        document["targets"] = [document["targets"][2]]
+        document["targets"][0]["model_name"] = "f86triangled"
+        spec = compile_authoring(document)
+        scene = snapshot(spec)
+        aircraft = next(e for e in _entities(scene) if e["object_id"].startswith("aircraft/"))
+        self.assertEqual(aircraft["model_name"], "f86triangled")
+        resources = _EntityResources()
+        resources.begin()
+        first = _entities(scene, resources)[-1]
+        resources.finish()
+        resources.begin()
+        self.assertEqual(_entities(scene, resources)[-1]["resource"], first["resource"])
+        self.assertFalse(resources.definitions)
+        resources.finish()
+        # Keep the same immutable proxy geometry; only the visual model changes.
+        changed = replace(scene, flying_objects=(replace(scene.flying_objects[0], model_name="la11"),))
+        resources.begin()
+        self.assertNotEqual(_entities(changed, resources)[-1]["resource"], first["resource"])
+        self.assertEqual(resources.definitions[0]["model_name"], "la11")
+        self.assertEqual(changed.flying_objects[0].geometry, scene.flying_objects[0].geometry)
+
+    def test_aircraft_authoring_rejects_unknown_model(self) -> None:
+        document = demo_authoring()
+        document["targets"][0]["model_name"] = "unknown.glb"
+        with self.assertRaisesRegex(ValueError, "unsupported target model_name"):
+            compile_authoring(document)
+
     def test_environment_and_camera_jitter_are_configurable_and_replayable(self) -> None:
         document = demo_authoring()
         document["environment"] = {

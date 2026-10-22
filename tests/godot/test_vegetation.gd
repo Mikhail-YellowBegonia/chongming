@@ -18,6 +18,7 @@ func _run() -> void:
 	# Dummy RenderingServer discards MultiMesh buffers; validate the real resource backend.
 	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_MINIMIZED)
 	_test_generator()
+	_test_aircraft_models()
 	_test_worker_cache()
 	await _test_freeview_world()
 	if failures.is_empty():
@@ -72,6 +73,7 @@ func _test_generator() -> void:
 	var far := first.get_node("FarProxy") as MeshInstance3D
 	_check(far.visibility_range_begin == 120.0 and far.visibility_range_end == 640.0,
 		"far tree proxy should cover the configured LOD interval")
+	_check(far.mesh is ArrayMesh, "far tree proxy should use a clustered custom mesh")
 	for index in [0, 73, first_leaves.multimesh.instance_count - 1]:
 		var first_transform := first_leaves.multimesh.get_instance_transform(index)
 		_check(first_transform == replay_leaves.multimesh.get_instance_transform(index), "same seed must reproduce leaf transforms")
@@ -136,6 +138,30 @@ func _test_worker_cache() -> void:
 	worker._sync_entities([])
 	_check(worker._resources.is_empty(), "unused resource definitions must be pruned")
 	worker._world.free()
+	worker.free()
+
+
+func _test_aircraft_models() -> void:
+	var worker := Worker.new()
+	for model_name in ["la11", "f86"]:
+		var aircraft := worker._aircraft_model(model_name)
+		_check(aircraft != null, "%s GLB should instantiate" % model_name)
+		var visual := aircraft.get_child(0) as Node3D
+		var mesh_count := 0
+		var stack: Array[Node] = [aircraft]
+		while not stack.is_empty():
+			var node: Node = stack.pop_back()
+			if node is MeshInstance3D:
+				mesh_count += 1
+				var mesh_instance := node as MeshInstance3D
+				_check(mesh_instance.mesh != null and mesh_instance.mesh.get_aabb().has_volume(), "%s mesh should have bounds" % model_name)
+				_check(mesh_instance.material_override != null, "%s white model should receive a material" % model_name)
+			for child in node.get_children():
+				stack.append(child)
+		_check(mesh_count > 0, "%s GLB should contain visible meshes" % model_name)
+		_check(visual.basis.y.dot(Vector3.UP) > 0.999, "%s model correction must keep wings level" % model_name)
+		_check(visual.basis.x.dot(Vector3.FORWARD) > 0.999 or visual.basis.z.dot(Vector3.FORWARD) > 0.999, "%s model correction must point the nose along Godot forward" % model_name)
+		aircraft.free()
 	worker.free()
 
 

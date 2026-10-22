@@ -206,11 +206,14 @@ def _appearance(value: dict[str, Any] | None) -> s.SurfaceAppearance:
 
 
 def _target(spec: s.FlyingObjectSpec, document: dict[str, Any]) -> s.FlyingObjectSpec:
-    _fields(document, {"id", "display_name", "geometry", "appearance", "motion"}, "target")
+    _fields(document, {"id", "display_name", "model_name", "geometry", "appearance", "motion"}, "target")
     target_id = _identifier(_required(document, "id"), "target.id")
     geometry_value = document.get("geometry")
     geometry = spec.geometry if geometry_value is None else _geometry(geometry_value)
     appearance = _appearance(document.get("appearance"))
+    model_name = str(document.get("model_name", spec.model_name))
+    if model_name not in {"procedural", "sphere", "box", "mesh", "la11", "la11triangled", "f86", "f86triangled"}:
+        raise ValueError(f"unsupported target model_name: {model_name!r}")
     motion = _required(document, "motion")
     if not isinstance(motion, dict):
         raise TypeError("motion must be an object")
@@ -285,6 +288,7 @@ def _target(spec: s.FlyingObjectSpec, document: dict[str, Any]) -> s.FlyingObjec
         spec,
         truth_object_id=s.TruthObjectId(target_id),
         display_name=str(document.get("display_name", target_id)),
+        model_name=model_name,
         trajectory=trajectory,
         behavior=behavior,
         geometry=geometry,

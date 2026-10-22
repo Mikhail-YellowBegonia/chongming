@@ -263,8 +263,10 @@ class OSMImportConfig:
     level_height_m: float
     maximum_height_m: float
     base_elevation_m: float
-    forest_spacing_m: float = 60.0
-    maximum_forest_trees: int = 256
+    # OSM forest polygons do not enumerate individual trees.  These defaults
+    # provide a visible, deterministic stand while keeping the proxy bounded.
+    forest_spacing_m: float = 24.0
+    maximum_forest_trees: int = 512
 
 
 @dataclass(frozen=True)

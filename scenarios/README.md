@@ -23,7 +23,7 @@ uv run chongming-center --scenario scenarios/center_clean.json --output results/
 | `scenario_id / random_seed / duration_s / fps` | 标识、固定种子 42（可省略，其余值拒绝）、有限时长、1–60 Hz 实验采样；默认 24 秒、30 Hz |
 | `stations[]` | 1–4 站，各有唯一 `id`、`position_enu_m`；可选 `main_yaw_deg`（0 向北、正向东）、`main_elevation_deg`、`auxiliary_yaw_deg`；辅助始终水平 |
 | `stations[].fps / start_s` | 每站独立主辅采样率与首个曝光起点，默认继承全局 fps、从 0 开始 |
-| `targets[]` | 任意数量，空数组表示无目标；每个目标有唯一 ID、geometry 与 motion |
+| `targets[]` | 任意数量，空数组表示无目标；每个目标有唯一 ID、geometry 与 motion；可选 `model_name` 为 `la11triangled` / `f86triangled`（或别名 `la11` / `f86`）以加载仓库内白模飞机 |
 | `geometry` | sphere + radius_m，box + half_extents_m，或 aircraft；目标和地物共用 |
 | `motion` | constant_velocity + position_enu_m/velocity_enu_mps；或 orbit + center_enu_m/radius_m/period_s，可选 phase_rad/vertical_amplitude_m，支持多周期 |
 | `world_objects[]` | 覆盖内置地物，`[]` 清空建筑，始终保留每站 A4 标志物；每项含 id、position_enu_m、geometry，可选 display_name、appearance、occludes_sight_lines |
@@ -39,7 +39,7 @@ uv run chongming-center --scenario scenarios/center_clean.json --output results/
 
 未写 `world_objects` 时保留内置建筑、球形地物和每站标志物；相机朝向未指定时采用演示朝向。主相机对角线 FOV 60°，辅助相机水平 FOV 2.6°、俯仰角 0，朝向 10 m 外自己的横向 A4 棋盘；标志物 ID 为 `<station-id>-a4`，角点与站配置绑定。仅在主视场内且中心视线未被地形、地物或其他飞行器挡住时发包。校准为理想有效状态，覆盖全部配置时长。
 
-默认树木由 Godot 程序化生成枝干、细枝与批量独立叶片，无需外部素材；树干静止，树冠按平均风和确定性湍流摆动。同一离散姿态驱动视觉网格与逻辑圆柱遮挡代理，逻辑不逐叶求交。当前树种仍是通用近似，LOD 为无渐变的距离硬切换；草只绘制近景批实例。湿润叶面和枝叶级形变尚未实现，本轮没有修改风场模型。
+默认树木由 Godot 程序化生成枝干、细枝与批量独立叶片，无需外部素材；OSM 点树也走同一程序化树生成器，不使用简单圆柱加椭球。树干静止，树冠按平均风和确定性湍流摆动。同一离散姿态驱动视觉网格与逻辑圆柱遮挡代理，逻辑不逐叶求交。当前树种仍是通用近似，LOD 为无渐变的距离硬切换；草只绘制近景批实例。湿润叶面和枝叶级形变尚未实现，本轮没有修改风场模型。
 
 可对 Agent 说：“复制 center_clean.json，改成三站、两个交叉运动目标、运行 60 秒，清空地物，搜索盒缩小到使第二个目标在盒外；只编辑 JSON，然后执行 --check。”未知字段和非法值会报错，JSON 不加载 Python 代码。
 

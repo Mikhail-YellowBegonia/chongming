@@ -4,8 +4,8 @@ extends RefCounted
 
 static var _leaf_prototype: ArrayMesh
 static var _grass_prototype: ArrayMesh
-const BOUGHS := 18
-const TWIGS := 6
+const BOUGHS := 16
+const TWIGS := 7
 const LEAVES_PER_TWIG := 24
 
 
@@ -38,9 +38,10 @@ static func _create_tree(visual: Dictionary, rgb: Array, reflectance: float) -> 
 	_set_detailed_ranges(root, float(visual.get("lod_near", 140.0)))
 	var far: MeshInstance3D
 	if visual.kind == "tree_trunk":
-		far = _far_trunk(height, radius)
+		far = MeshInstance3D.new()
+		far.mesh = bark.mesh
 	else:
-		far = _far_crown(height, radius)
+		far = _far_crown(height, radius, int(visual.get("seed", 0)))
 	far.name = "FarProxy"
 	far.material_override = _foliage_material(rgb, reflectance) if visual.kind == "tree_canopy" else _wood_material()
 	_set_far_ranges(far, float(visual.get("lod_near", 140.0)), float(visual.get("lod_far", 750.0)))
@@ -94,7 +95,7 @@ static func _create_shrub(visual: Dictionary, rgb: Array, reflectance: float) ->
 	foliage.material_override = _foliage_material(rgb, reflectance)
 	root.add_child(foliage)
 	_set_detailed_ranges(root, float(visual.get("lod_near", 140.0)))
-	var far := _far_crown(height, radius)
+	var far := _far_crown(height, radius, int(visual.get("seed", 0)))
 	far.name = "FarProxy"
 	far.material_override = _foliage_material(rgb, reflectance)
 	_set_far_ranges(far, float(visual.get("lod_near", 140.0)), float(visual.get("lod_far", 750.0)))
@@ -164,10 +165,16 @@ static func _canopy(root: Node3D, wood: SurfaceTool, height: float, radius: floa
 	for index in range(BOUGHS):
 		var level := (float(index) + 0.5) / float(BOUGHS)
 		var angle := phase + float(index) * 2.399963 + rng.randf_range(-0.22, 0.22)
-		var spread := radius * sqrt(maxf(0.1, 1.0 - pow((level - 0.42) / 0.76, 2.0)))
-		var start := Vector3(0.0, 0.0, height * (0.05 + level * 0.64))
-		var bend := Vector3(cos(angle), sin(angle), 0.0) * spread * 0.45 + start + Vector3(0.0, 0.0, height * 0.08)
-		var end := Vector3(cos(angle) * spread, sin(angle) * spread, height * (0.19 + level * 0.69))
+		# Vary branch length and attachment height so the crown reads as layered,
+		# rather than a set of equally spaced radial spokes.
+		var spread := radius * rng.randf_range(0.82, 1.16) * sqrt(maxf(0.1, 1.0 - pow((level - 0.42) / 0.76, 2.0)))
+		var attachment := height * clampf(0.05 + level * 0.64 + rng.randf_range(-0.035, 0.035), 0.04, 0.72)
+		var start := Vector3(rng.randf_range(-0.035, 0.035) * radius,
+			rng.randf_range(-0.035, 0.035) * radius, attachment)
+		var bend := Vector3(cos(angle), sin(angle), 0.0) * spread * rng.randf_range(0.34, 0.52) + start
+		bend.z += height * rng.randf_range(0.035, 0.11)
+		var end := Vector3(cos(angle) * spread, sin(angle) * spread,
+			height * clampf(0.19 + level * 0.69 + rng.randf_range(-0.045, 0.055), 0.16, 0.96))
 		var thickness := radius * (0.027 - level * 0.016)
 		_tube(wood, start, bend, thickness, thickness * 0.55, 8)
 		_tube(wood, bend, end, thickness * 0.55, thickness * 0.12, 7)
@@ -175,7 +182,8 @@ static func _canopy(root: Node3D, wood: SurfaceTool, height: float, radius: floa
 			var along := 0.25 + float(twig) / float(TWIGS) * 0.73
 			var twig_start := bend.lerp(end, along)
 			var twig_angle := angle + (-1.0 if twig % 2 == 0 else 1.0) * rng.randf_range(0.5, 1.3)
-			var twig_end := twig_start + Vector3(cos(twig_angle) * radius * 0.28, sin(twig_angle) * radius * 0.28, height * rng.randf_range(0.03, 0.13))
+			var twig_end := twig_start + Vector3(cos(twig_angle) * radius * rng.randf_range(0.22, 0.32),
+				sin(twig_angle) * radius * rng.randf_range(0.22, 0.32), height * rng.randf_range(-0.035, 0.15))
 			_tube(wood, twig_start, twig_end, thickness * 0.22, thickness * 0.035, 5)
 			for leaf in range(LEAVES_PER_TWIG):
 				# Leaf sprays around each twig, with gaps between sprays. No solid crown.
@@ -234,30 +242,36 @@ static func grass_mesh() -> ArrayMesh:
 	return _grass_prototype
 
 
-static func _far_trunk(height: float, radius: float) -> MeshInstance3D:
+static func _far_crown(height: float, radius: float, seed_value: int) -> MeshInstance3D:
 	var instance := MeshInstance3D.new()
-	var mesh := CylinderMesh.new()
-	mesh.height = height
-	mesh.top_radius = radius * 0.5
-	mesh.bottom_radius = radius
-	mesh.radial_segments = 6
-	mesh.rings = 1
-	instance.mesh = mesh
-	instance.rotation.x = PI * 0.5
-	instance.position.z = height * 0.5
-	return instance
-
-
-static func _far_crown(height: float, radius: float) -> MeshInstance3D:
-	var instance := MeshInstance3D.new()
-	var mesh := SphereMesh.new()
-	mesh.radius = 1.0
-	mesh.height = 2.0
-	mesh.radial_segments = 8
-	mesh.rings = 4
-	instance.mesh = mesh
-	instance.scale = Vector3(radius, radius, height * 0.5)
-	instance.position.z = height * 0.5
+	# Batch broad leaf sprays into a single mesh. Preserve gaps and the layered
+	# silhouette at distance instead of replacing our tree with a solid sphere.
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 42 ^ seed_value
+	var surface := SurfaceTool.new()
+	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var vertices: PackedVector3Array = leaf_mesh().surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+	var phase := rng.randf_range(0.0, TAU)
+	for index in range(BOUGHS):
+		var level := (float(index) + 0.5) / float(BOUGHS)
+		var angle := phase + float(index) * 2.399963
+		var spread := radius * sqrt(maxf(0.1, 1.0 - pow((level - 0.42) / 0.76, 2.0)))
+		for leaf_index in range(16):
+			var distance := spread * rng.randf_range(0.2, 1.05)
+			var position := Vector3(cos(angle) * distance, sin(angle) * distance,
+				height * (0.2 + level * 0.67))
+			position += Vector3(rng.randfn(0.0, radius * 0.16), rng.randfn(0.0, radius * 0.16),
+				rng.randfn(0.0, height * 0.07))
+			var size := radius * rng.randf_range(0.28, 0.48)
+			var rotation := Basis.from_euler(Vector3(rng.randf_range(-1.2, 1.2),
+				rng.randf_range(-1.2, 1.2), rng.randf_range(0.0, TAU)))
+			var transform_value := Transform3D(rotation.scaled(Vector3(size, size, size)), position)
+			var shade := rng.randf_range(0.64, 1.05)
+			surface.set_color(Color(shade * 0.92, shade, shade * 0.82))
+			for vertex in vertices:
+				surface.add_vertex(transform_value * vertex)
+	surface.generate_normals()
+	instance.mesh = surface.commit()
 	return instance
 
 
