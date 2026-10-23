@@ -7,18 +7,29 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Generator
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
 
+from chongming.composition.graph import ArchitectureAssembly, declare_assembly
 from chongming.contracts import model as m
 from chongming.contracts import scene as s
 from chongming.contracts.development import CenterInputStep, CenterRegistration
+from chongming.contracts.fusion import (
+    FusionBatchResult,
+    RegistryWriteResult,
+    RegistryWriteStatus,
+    StationEventTimeProgress,
+    WatermarkSnapshot,
+    WindowUpdate,
+)
+from chongming.contracts.runtime import ModuleHealth, RunSpec
 from chongming.development import CenterSession, FusionEngineAdapter, InputInspector
 from chongming.modules import scene as modules
+from chongming.ports.lifecycle import ModuleBinding
 from chongming.scenarios.authoring import compile_authoring, demo_authoring, save_authoring
 from chongming.scenarios.demo import demo_source
 from chongming.scenarios.run import _json, run_scene
@@ -36,7 +47,9 @@ class Recorder(InputInspector):
         super().start(registration)
         self.registration = registration
 
-    def process(self, step: CenterInputStep):
+    def process(
+        self, step: CenterInputStep
+    ) -> tuple[tuple[m.FusionMeasurement, ...], tuple[m.TrackEvent, ...]]:
         self.inputs.append(step)
         return super().process(step)
 
@@ -81,6 +94,7 @@ class CenterDevelopmentTests(unittest.TestCase):
                         )
                     self.assertEqual(str(truth.truth_object_id), "moving-sphere")
                     # Jump the finite end for this test without generating 900 groups.
+                    assert isinstance(session._steps, Generator)
                     session._steps.close()
                     session._steps = iter(())
                     session.step()
@@ -120,6 +134,7 @@ class CenterDevelopmentTests(unittest.TestCase):
         self.assertTrue(second.video.rendered)
         self.assertFalse(third.video.rendered)
         self.assertEqual(third.video.render_skip_reason, "video_disabled")
+        assert third.truth.timing is not None
         self.assertEqual(third.truth.timing.gpu_submissions, 0)
         left = [(s.image_session_id, s.virtual_session_id) for s in off.station_sessions]
         right = [(s.image_session_id, s.virtual_session_id) for s in toggled.station_sessions]
@@ -169,7 +184,9 @@ class CenterDevelopmentTests(unittest.TestCase):
 
     def test_algorithm_failure_cleans_every_started_module(self) -> None:
         class Fails(Recorder):
-            def process(self, step):
+            def process(
+                self, step: CenterInputStep
+            ) -> tuple[tuple[m.FusionMeasurement, ...], tuple[m.TrackEvent, ...]]:
                 raise RuntimeError("algorithm failed")
 
         with tempfile.TemporaryDirectory() as directory:
@@ -207,6 +224,7 @@ class CenterDevelopmentTests(unittest.TestCase):
         from chongming.scenarios.behaviors import sample_behavior
 
         target = spec.scene_definition.flying_objects[0]
+        assert target.behavior is not None
         a = sample_behavior(target.behavior, target.trajectory.knots[0].state, 0)
         b = sample_behavior(target.behavior, target.trajectory.knots[0].state, 48_000_000_000)
         np.testing.assert_allclose(a.position_enu_m, b.position_enu_m, atol=1e-12)
@@ -233,7 +251,9 @@ class CenterDevelopmentTests(unittest.TestCase):
                 rows = list(source.generate(spec))
                 self.assertEqual(len(rows), 3)
                 if not source.video_enabled:
-                    self.assertTrue(all(row.truth.timing.gpu_submissions == 0 for row in rows))
+                    for row in rows:
+                        assert row.truth.timing is not None
+                        self.assertEqual(row.truth.timing.gpu_submissions, 0)
                 else:
                     self.assertTrue(all(row.video.rendered for row in rows))
                     for row in rows:
@@ -268,7 +288,9 @@ class CenterDevelopmentTests(unittest.TestCase):
 
             close_default_renderer()
 
-    def test_long_clean_run_keeps_rays_after_24_seconds_and_finite_export_has_no_pixels(self):
+    def test_long_clean_run_keeps_rays_after_24_seconds_and_finite_export_has_no_pixels(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             doc = json.loads((ROOT / "scenarios/center_clean.json").read_text())
@@ -294,7 +316,7 @@ class CenterDevelopmentTests(unittest.TestCase):
             self.assertEqual(summary["counts"]["ray_events"], 52)
             self.assertEqual(summary["counts"]["gpu_submissions"], 0)
 
-    def test_independent_sampling_reports_only_sampled_main_streams(self):
+    def test_independent_sampling_reports_only_sampled_main_streams(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             doc = demo_authoring(stations=2, duration_s=0.17)
@@ -329,9 +351,12 @@ class CenterDevelopmentTests(unittest.TestCase):
                 while not session.ended:
                     session.step()
                 self.assertTrue(any(not step.progress for step in recorder.inputs[:-1]))
-                by_station = {str(station["id"]): [] for station in doc["stations"]}
+                by_station: dict[str, list[int]] = {
+                    str(station["id"]): [] for station in doc["stations"]
+                }
                 for step in recorder.inputs[:-1]:
                     for progress in step.progress:
+                        assert progress.completed_capture_time is not None
                         by_station[str(progress.station_id)].append(
                             (
                                 progress.completed_capture_time.exposure_start_ns
@@ -344,7 +369,7 @@ class CenterDevelopmentTests(unittest.TestCase):
             finally:
                 session.close()
 
-    def test_cli_can_reset_after_finite_end_and_closes_both_sessions(self):
+    def test_cli_can_reset_after_finite_end_and_closes_both_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             doc = demo_authoring(stations=1, duration_s=0.01)
@@ -376,33 +401,53 @@ class CenterDevelopmentTests(unittest.TestCase):
                 self.assertTrue(all(h["state"] == "stopped" for h in summary["shutdown"]))
                 self.assertFalse(summary["shutdown_errors"])
 
-    def test_engine_adapter_registers_before_events_then_progress_and_tick(self):
-        from chongming.contracts.fusion import RegistryWriteResult, RegistryWriteStatus
+    def test_engine_adapter_registers_before_events_then_progress_and_tick(self) -> None:
+        calls: list[tuple[str, object]] = []
 
-        calls = []
+        def empty_batch(time: m.ProcessingTime) -> FusionBatchResult:
+            return FusionBatchResult(
+                center_session_id=m.SessionId("test-center"),
+                produced_at=time,
+                admissions=(),
+                window_update=WindowUpdate(
+                    receipts=(),
+                    sealed_windows=(),
+                    watermark=WatermarkSnapshot(
+                        capture_clock_domain_id="test-clock",
+                        event_time_ns=None,
+                        evaluated_at=time,
+                        station_progress=(),
+                    ),
+                ),
+                candidates=(),
+                associations=(),
+                geometry=(),
+                measurements=(),
+                tracks=(),
+            )
 
         class Engine:
-            def register_station(self, station):
+            def register_station(self, station: m.StationConfig) -> RegistryWriteResult:
                 calls.append(("station", station))
                 return RegistryWriteResult(status=RegistryWriteStatus.REGISTERED, reason_codes=())
 
-            def register_calibration(self, solution):
+            def register_calibration(self, solution: m.CalibrationSolution) -> RegistryWriteResult:
                 calls.append(("solution", solution))
                 return RegistryWriteResult(status=RegistryWriteStatus.REGISTERED, reason_codes=())
 
-            def process(self, event):
+            def process(self, event: m.ReceivedEvent) -> FusionBatchResult:
                 calls.append(("event", event))
-                return SimpleNamespace(measurements=(), tracks=())
+                return empty_batch(event.arrival_time)
 
-            def report_progress(self, progress):
+            def report_progress(self, progress: StationEventTimeProgress) -> FusionBatchResult:
                 calls.append(("progress", progress))
-                return SimpleNamespace(measurements=(), tracks=())
+                return empty_batch(m.ProcessingTime(clock_domain_id="test-clock", time_ns=0))
 
-            def tick(self, time):
+            def tick(self, time: m.ProcessingTime) -> FusionBatchResult:
                 calls.append(("tick", time))
-                return SimpleNamespace(measurements=(), tracks=())
+                return empty_batch(time)
 
-            def close(self):
+            def close(self) -> None:
                 calls.append(("close", None))
 
         with tempfile.TemporaryDirectory() as directory:
@@ -425,19 +470,18 @@ class CenterDevelopmentTests(unittest.TestCase):
                 session.close()
             self.assertEqual(calls[-1][0], "close")
 
-    def test_initialization_failure_stops_partially_started_module(self):
-        from chongming.composition.graph import declare_assembly
+    def test_initialization_failure_stops_partially_started_module(self) -> None:
         from chongming.modules.base import ModuleShell
 
         original = ModuleShell.start_module
-        bindings = []
+        bindings: list[ModuleBinding] = []
 
-        def assembly(*args):
-            result = declare_assembly(*args)
+        def assembly(spec: s.ScenarioSpec, run: RunSpec) -> ArchitectureAssembly:
+            result = declare_assembly(spec, run)
             bindings.extend(result.bindings)
             return result
 
-        def fail(module, key, now):
+        def fail(module: ModuleShell, key: str, now: m.ProcessingTime) -> ModuleHealth:
             result = original(module, key, now)
             if module is bindings[2].module:
                 raise RuntimeError("partial start failed")

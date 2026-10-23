@@ -352,6 +352,11 @@ class CalibrationSolution:
     rotation is R_enu_from_main, not the inverse auxiliary image rotation.
     The rotation-only first version keeps the configured optical-centre position;
     a position correction requires an upgraded shared pose covariance contract.
+
+    Virtual held solutions under deterministic camera jitter may declare a
+    conservative marginal second-moment envelope in correction_covariance,
+    identified by quality reason codes. This is not an exact Gaussian or joint
+    temporal distribution; shared uncertainty cannot be averaged away per ray.
     """
 
     solution_ref: CalibrationSolutionRef

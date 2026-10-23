@@ -958,6 +958,7 @@ class VirtualObservationRequest:
     online_station_configs: tuple[StationConfig, ...]
     frames: tuple[CameraFrameTruth, ...]
     station_sessions: tuple[StationSessionBinding, ...]
+    camera_jitter: tuple[CameraJitterPerturbation, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -659,9 +659,7 @@ def attach_landscape(spec: s.ScenarioSpec, landscape: s.OSMLandscape) -> s.Scena
         )
     landscape_vegetation_items = landscape_vegetation(landscape.imported)
     existing_perturbations = tuple(
-        p
-        for p in spec.perturbations.vegetation
-        if not str(p.object_id).startswith("osm/")
+        p for p in spec.perturbations.vegetation if not str(p.object_id).startswith("osm/")
     )
     wind_perturbations = (
         landscape_vegetation_perturbations(landscape_vegetation_items)

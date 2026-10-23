@@ -1,8 +1,8 @@
 """Inspect graph construction and contract boundaries, without running algorithms.
 
-The stage-2 AST guard is temporary: replace it with behavioral validation when
-implementing stage 3. It deliberately checks the agreed absence of business logic,
-not mathematical outcomes or duplicated implementation details.
+The temporary AST guard covers only the explicit remaining stub methods. Remove
+each entry when its implementation gains behavioral regression coverage; existing
+implementations and new business methods are outside this guard.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import ast
 import inspect
 import unittest
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import fields, is_dataclass
 from pathlib import Path
 from types import ModuleType
@@ -63,6 +64,48 @@ def _port_classes(module: ModuleType) -> tuple[type[object], ...]:
         for _, cls in inspect.getmembers(module, inspect.isclass)
         if cls.__module__ == module.__name__ and getattr(cls, "_is_protocol", False)
     )
+
+
+def _assert_pending_stubs(
+    case: unittest.TestCase, tree: ast.Module, expected_stubs: Mapping[str, set[str]]
+) -> None:
+    """Enforce only named pending methods; implementations need behavioral tests."""
+
+    discovered_stubs: dict[str, set[str]] = {}
+    for declaration in tree.body:
+        if not isinstance(declaration, ast.ClassDef):
+            continue
+        expected_methods = expected_stubs.get(declaration.name)
+        if expected_methods is None:
+            continue
+        discovered_stubs[declaration.name] = set()
+        for method in declaration.body:
+            if not isinstance(method, ast.FunctionDef) or method.name not in expected_methods:
+                continue
+            discovered_stubs[declaration.name].add(method.name)
+            route = f"{declaration.name}.{method.name}"
+            body = list(method.body)
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                body.pop(0)
+            case.assertEqual(len(body), 1, f"{route}: pending stub must only raise")
+            case.assertIsInstance(body[0], ast.Raise, f"{route}: pending stub must only raise")
+            assert isinstance(body[0], ast.Raise)
+            exception = body[0].exc
+            case.assertIsInstance(exception, ast.Call, route)
+            assert isinstance(exception, ast.Call)
+            case.assertIsInstance(exception.func, ast.Name, route)
+            assert isinstance(exception.func, ast.Name)
+            case.assertEqual(exception.func.id, "NotImplementedError", route)
+            case.assertFalse(exception.keywords, route)
+            case.assertLessEqual(len(exception.args), 1, route)
+            for argument in exception.args:
+                case.assertIsInstance(argument, (ast.Name, ast.Constant), route)
+    case.assertEqual(discovered_stubs, expected_stubs, "Pending stub entries must resolve")
 
 
 class ArchitectureStructureTests(unittest.TestCase):
@@ -208,58 +251,119 @@ class ArchitectureStructureTests(unittest.TestCase):
                         check_type(annotation, f"{port.__name__}.{name}.{parameter}", set())
         self.assertGreater(checked_methods, 0)
 
-    def test_stage_two_shell_business_methods_only_raise(self) -> None:
+    def test_remaining_shell_methods_are_explicit_stubs(self) -> None:
         module_directory = Path(inspect.getfile(base)).parent
-        implemented_scene = {
-            "ModuleShell",
-            "ExperimentClockModule",
-            "TrajectoryModule",
-            "CameraProjectionModule",
-            "VisibilityModule",
-            "SceneLogicModule",
-            "CameraImagingModule",
-            "VirtualObservationModule",
-            "ScenarioModule",
-            "EventSequencerModule",
+        expected_stubs = {
+            "device.py": {
+                "MotionDetectionModule": {"detect"},
+                "Tracking2DModule": {"update"},
+                "MainDetectionModule": {"process"},
+                "ReferenceRecognitionModule": {"recognize"},
+                "CalibrationEstimationModule": {"estimate"},
+                "CalibrationHistoryModule": {
+                    "record_solution",
+                    "record_state",
+                    "lookup_solution",
+                    "snapshot_at",
+                },
+                "CalibrationStateModule": {"consider", "tick"},
+                "AuxiliaryCalibrationModule": {"process", "tick"},
+                "RayGenerationModule": {"build"},
+                "DeviceModule": {"process_main", "process_auxiliary", "tick"},
+            },
+            "fusion.py": {
+                "StationRegistryModule": {"register", "lookup", "registered_stations"},
+                "CalibrationRegistryModule": {
+                    "register_solution",
+                    "lookup_solution",
+                    "record_state",
+                    "state_history",
+                },
+                "AdmissionJournalModule": {"first_event", "record", "quarantined"},
+                "EventAdmissionModule": {"admit", "reconsider_quarantined"},
+                "EventClockMappingModule": {"map_processing_time"},
+                "EventWindowModule": {"offer", "report_progress", "advance"},
+                "VoxelCandidateModule": {"propose"},
+                "DirectGeometryCandidateModule": {"propose"},
+                "CandidateGenerationModule": {"generate"},
+                "CrossStationAssociationModule": {"associate"},
+                "CalibrationWeightingModule": {"weight"},
+                "GeometryRefinementModule": {"refine"},
+                "CenterTrackingModule": {"predict", "update", "advance"},
+                "CenterFusionModule": {
+                    "register_station",
+                    "register_calibration",
+                    "process",
+                    "report_progress",
+                    "tick",
+                },
+            },
+            "runtime.py": {
+                "EventTransportModule": {"submit", "submit_progress", "collect", "drain"},
+                "EvidenceWriterModule": {
+                    "begin",
+                    "record_online",
+                    "record_transport",
+                    "record_drain",
+                    "record_truth",
+                    "finish",
+                },
+                "SystemRunnerModule": {"start", "step", "run", "stop"},
+            },
+            "scene.py": {
+                "EvaluationModule": {"observe", "finalize"},
+                "MonitoringModule": {"render"},
+            },
         }
-        checked_methods = 0
-        for source in module_directory.glob("*.py"):
+        for filename, classes in expected_stubs.items():
+            source = module_directory / filename
             tree = ast.parse(source.read_text(), filename=str(source))
-            for declaration in tree.body:
-                if not isinstance(declaration, ast.ClassDef):
-                    continue
-                if declaration.name in implemented_scene:
-                    continue
-                for method in declaration.body:
-                    if not isinstance(method, ast.FunctionDef) or method.name in {
-                        "__init__",
-                        "__new__",
-                    }:
-                        continue
-                    checked_methods += 1
-                    with self.subTest(source=source.name, cls=declaration.name, method=method.name):
-                        body = list(method.body)
-                        if (
-                            body
-                            and isinstance(body[0], ast.Expr)
-                            and isinstance(body[0].value, ast.Constant)
-                            and isinstance(body[0].value.value, str)
-                        ):
-                            body.pop(0)
-                        self.assertEqual(len(body), 1, "Stage 2 methods cannot produce fake data")
-                        self.assertIsInstance(body[0], ast.Raise)
-                        assert isinstance(body[0], ast.Raise)
-                        exception = body[0].exc
-                        self.assertIsInstance(exception, ast.Call)
-                        assert isinstance(exception, ast.Call)
-                        self.assertIsInstance(exception.func, ast.Name)
-                        assert isinstance(exception.func, ast.Name)
-                        self.assertEqual(exception.func.id, "NotImplementedError")
-                        self.assertFalse(exception.keywords)
-                        self.assertLessEqual(len(exception.args), 1)
-                        for argument in exception.args:
-                            self.assertIsInstance(argument, (ast.Name, ast.Constant))
-        self.assertGreater(checked_methods, 0)
+            with self.subTest(source=filename):
+                _assert_pending_stubs(self, tree, classes)
+
+    def test_stub_guard_allows_device_and_fusion_business_migration(self) -> None:
+        sources = {
+            "device.py": (
+                """
+class MotionDetectionModule:
+    def detect(self, frame):
+        return tuple(pixel for pixel in frame if pixel > 127)
+
+class Tracking2DModule:
+    def update(self, candidates):
+        raise NotImplementedError("pending")
+""",
+                {"Tracking2DModule": {"update"}},
+            ),
+            "fusion.py": (
+                """
+class StationRegistryModule:
+    def lookup(self, station_id, digest):
+        return self.configs.get((station_id, digest))
+
+    def register(self, config):
+        raise NotImplementedError("pending")
+""",
+                {"StationRegistryModule": {"register"}},
+            ),
+        }
+        for filename, (source, pending) in sources.items():
+            with self.subTest(source=filename):
+                # Invoke the same guard used for repository modules. Existing
+                # class methods and new classes may both leave the pending list.
+                _assert_pending_stubs(self, ast.parse(source, filename=filename), pending)
+
+    def test_stub_guard_rejects_silent_return_in_a_pending_method(self) -> None:
+        for classname, methodname in (
+            ("MotionDetectionModule", "detect"),
+            ("StationRegistryModule", "register"),
+        ):
+            with self.subTest(cls=classname, method=methodname):
+                tree = ast.parse(
+                    f"class {classname}:\n    def {methodname}(self):\n        return\n"
+                )
+                with self.assertRaisesRegex(AssertionError, "pending stub must only raise"):
+                    _assert_pending_stubs(self, tree, {classname: {methodname}})
 
 
 if __name__ == "__main__":

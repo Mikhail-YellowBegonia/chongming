@@ -7,7 +7,18 @@ from chongming.contracts.scene import FlightBehaviorSpec, KinematicState
 
 REGISTRY = {
     ("constant-velocity", "1"): frozenset({"vx", "vy", "vz"}),
-    ("orbit", "1"): frozenset({"center_e", "center_n", "center_u", "radius_e", "radius_n", "period_s", "phase_rad", "vertical_amplitude_m"}),
+    ("orbit", "1"): frozenset(
+        {
+            "center_e",
+            "center_n",
+            "center_u",
+            "radius_e",
+            "radius_n",
+            "period_s",
+            "phase_rad",
+            "vertical_amplitude_m",
+        }
+    ),
 }
 
 
@@ -19,7 +30,9 @@ def validate_behavior(spec: FlightBehaviorSpec) -> None:
         )
     values = dict(spec.parameters)
     if len(values) != len(spec.parameters) or set(values) != allowed:
-        raise ValueError(f"behavior {spec.behavior_id}/{spec.implementation_version} has invalid parameters")
+        raise ValueError(
+            f"behavior {spec.behavior_id}/{spec.implementation_version} has invalid parameters"
+        )
     if any(
         isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
         for value in values.values()
@@ -59,9 +72,11 @@ def sample_behavior(
             -rn * omega * math.sin(phase),
             2 * amplitude * omega * math.cos(2 * phase),
         )
-        position = (float(values["center_e"]) + re * math.sin(phase),
-                    float(values["center_n"]) + rn * math.cos(phase),
-                    float(values["center_u"]) + amplitude * math.sin(2 * phase))
+        position = (
+            float(values["center_e"]) + re * math.sin(phase),
+            float(values["center_n"]) + rn * math.cos(phase),
+            float(values["center_u"]) + amplitude * math.sin(2 * phase),
+        )
     else:
         raise ValueError("registered behavior implementation is missing")
     return replace(

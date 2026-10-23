@@ -6,8 +6,10 @@ import itertools
 import json
 import tempfile
 import unittest
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from PIL import Image
@@ -15,6 +17,7 @@ from PIL import Image
 from chongming.contracts import scene as s
 from chongming.contracts.model import CameraRole
 from chongming.modules.scene import _scheduled_exposures
+from chongming.rendering.godot import render_rgb8
 from chongming.scenarios.authoring import save_authoring
 from chongming.scenarios.demo import demo_source, demo_spec, optical_rotation
 from chongming.scenarios.run import run_scene
@@ -51,11 +54,11 @@ def short_spec() -> s.ScenarioSpec:
     )
 
 
-def records(path: Path) -> list[dict]:
+def records(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text().splitlines()]
 
 
-def normalize(value, sessions: list[str]):
+def normalize(value: Any, sessions: list[str]) -> Any:
     if isinstance(value, dict):
         return {k: normalize(v, sessions) for k, v in value.items()}
     if isinstance(value, list):
@@ -86,8 +89,9 @@ class SceneRunAcceptanceTests(unittest.TestCase):
                 self.assertEqual(summary["counts"]["logical_frames"], 24)
                 manifest = json.loads((output / "manifest.json").read_text())
                 terrain = manifest["scenario"]["scenario"]["scene_definition"]["terrain"]
-                self.assertEqual(terrain["heightfield_asset_digest"] is not None,
-                                 name.endswith("_asset"))
+                self.assertEqual(
+                    terrain["heightfield_asset_digest"] is not None, name.endswith("_asset")
+                )
                 sessions = [
                     binding[key]
                     for binding in manifest["station_sessions"]
@@ -98,9 +102,15 @@ class SceneRunAcceptanceTests(unittest.TestCase):
                     terrain = sample["logical_scene"]["terrain"]
                     terrain["heightfield_asset_uri"] = None
                     terrain["heightfield_asset_digest"] = None
-                outputs.append(normalize({
-                    "online": records(output / "online.jsonl"), "truth": truth,
-                }, sessions))
+                outputs.append(
+                    normalize(
+                        {
+                            "online": records(output / "online.jsonl"),
+                            "truth": truth,
+                        },
+                        sessions,
+                    )
+                )
             self.assertEqual(outputs[0], outputs[1])
             # A modified asset fails before output creation or source startup.
             document["terrain"]["asset"]["sha256"] = "0" * 64
@@ -224,7 +234,7 @@ class SceneRunAcceptanceTests(unittest.TestCase):
         source = demo_source(spec, render_every=2)
         from chongming.modules import scene as module
 
-        with patch.object(module, "render_rgb8", wraps=module.render_rgb8) as render:
+        with patch.object(module, "render_rgb8", wraps=render_rgb8) as render:
             steps = list(source.generate(spec))
             frames = [f for step in steps for f in step.video.frames]
             self.assertEqual(render.call_count, len(frames))
@@ -316,7 +326,7 @@ class SceneRunAcceptanceTests(unittest.TestCase):
 
     def test_malformed_json_and_unimplemented_effects_fail_before_output(self) -> None:
         base = scenario_to_dict(short_spec())
-        for edit in (
+        edits: tuple[Callable[[dict[str, Any]], None], ...] = (
             lambda d: d["scenario"].update(random_seed=None),
             lambda d: d["scenario"]["scene_definition"]["flying_objects"][0]["geometry"].update(
                 **{"$type": "FlyingObjectSpec"}
@@ -327,7 +337,8 @@ class SceneRunAcceptanceTests(unittest.TestCase):
             lambda d: d["scenario"]["scene_definition"]["flying_objects"][0]["trajectory"]["knots"][
                 0
             ]["state"].update(position_enu_m=[1, 2]),
-        ):
+        )
+        for edit in edits:
             document = json.loads(json.dumps(base))
             edit(document)
             with self.assertRaises(ValueError):

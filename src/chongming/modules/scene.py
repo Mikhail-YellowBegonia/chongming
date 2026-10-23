@@ -54,6 +54,7 @@ from chongming.contracts.runtime import ModuleHealth
 from chongming.contracts.scene import (
     SCENE_RANDOM_SEED,
     CameraFrameTruth,
+    CameraJitterPerturbation,
     CameraStateTruth,
     EvaluationRecord,
     EvaluationReport,
@@ -130,6 +131,7 @@ from chongming.rendering.godot import (
 )
 from chongming.rendering.occlusion_index import OcclusionIndex
 from chongming.scenarios.behaviors import sample_behavior
+from chongming.scenarios.uncertainty import covariance_factor, gaussian_sample
 
 _EPS = 1e-9
 _TODO = "TODO(stage-3): business logic is intentionally absent from the architecture skeleton"
@@ -198,15 +200,14 @@ def _deterministic_wind(seed: int, object_id: str, time_ns: int, mean: Vec3M, st
         values = []
         for component in range(3):
             first = (int.from_bytes(digest[component * 8 : component * 8 + 4], "big") + 0.5) / 2**32
-            second = (int.from_bytes(digest[component * 8 + 4 : component * 8 + 8], "big") + 0.5) / 2**32
+            second = (
+                int.from_bytes(digest[component * 8 + 4 : component * 8 + 8], "big") + 0.5
+            ) / 2**32
             values.append(math.sqrt(-2.0 * math.log(first)) * math.cos(2.0 * math.pi * second))
         return tuple(values)  # type: ignore[return-value]
 
     a, b = sample(index), sample(index + 1)
-    return tuple(
-        mean[i] + std[i] * (a[i] * (1.0 - blend) + b[i] * blend)
-        for i in range(3)
-    )  # type: ignore[return-value]
+    return tuple(mean[i] + std[i] * (a[i] * (1.0 - blend) + b[i] * blend) for i in range(3))  # type: ignore[return-value]
 
 
 def _scale(a: Vec3M, value: float) -> Vec3M:
@@ -248,9 +249,9 @@ def _rotation_from_small_angle(offset: Vec3M) -> Matrix3x3:
     x, y, z = _scale(offset, 1.0 / angle)
     c, s, v = math.cos(angle), math.sin(angle), 1.0 - math.cos(angle)
     return (
-        (c + x*x*v, x*y*v - z*s, x*z*v + y*s),
-        (y*x*v + z*s, c + y*y*v, y*z*v - x*s),
-        (z*x*v - y*s, z*y*v + x*s, c + z*z*v),
+        (c + x * x * v, x * y * v - z * s, x * z * v + y * s),
+        (y * x * v + z * s, c + y * y * v, y * z * v - x * s),
+        (z * x * v - y * s, z * y * v + x * s, c + z * z * v),
     )
 
 
@@ -638,7 +639,11 @@ class VisibilityModule(ModuleShell):
         candidate_ids = {id(e) for e in world_index.candidates(origin, target)}
         entities = (
             terrain,
-            *(e for e in world_objects if id(e) in candidate_ids or getattr(e, "category", None) == "aircraft"),
+            *(
+                e
+                for e in world_objects
+                if id(e) in candidate_ids or getattr(e, "category", None) == "aircraft"
+            ),
             *vegetation_index.candidates(origin, target),
         )
         for entity in entities:
@@ -693,7 +698,9 @@ class VisibilityModule(ModuleShell):
                     ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
                     (0.0, 0.0, 0.0),
                 )
-                if mesh_segment_may_intersect(origin, target, terrain_pose, entity.heightfield_geometry):
+                if mesh_segment_may_intersect(
+                    origin, target, terrain_pose, entity.heightfield_geometry
+                ):
                     depths, _ = surface_hits(
                         origin,
                         np.asarray([segment], dtype=np.float64),
@@ -713,9 +720,8 @@ class VisibilityModule(ModuleShell):
             return min(candidates, key=lambda item: item[0]) if candidates else None
         if pose is None or geometry is None:
             return None
-        if (
-            isinstance(geometry, TriangleMeshGeometry)
-            and not mesh_segment_may_intersect(origin, target, pose, geometry)
+        if isinstance(geometry, TriangleMeshGeometry) and not mesh_segment_may_intersect(
+            origin, target, pose, geometry
         ):
             return None
         if contains_point(origin, pose, geometry):
@@ -829,8 +835,10 @@ class SceneLogicModule(ModuleShell):
                 cross_rate = _cross(rotation_vector, rate)
                 a = (1.0 - math.cos(theta)) / theta**2 if theta > 1e-5 else 0.5
                 b = (theta - math.sin(theta)) / theta**3 if theta > 1e-5 else 1.0 / 6.0
-                body_rate = _add(_sub(rate, _scale(cross_rate, a)),
-                                 _scale(_cross(rotation_vector, cross_rate), b))
+                body_rate = _add(
+                    _sub(rate, _scale(cross_rate, a)),
+                    _scale(_cross(rotation_vector, cross_rate), b),
+                )
                 state = replace(
                     state,
                     rotation_enu_from_body=_mat_mul(state.rotation_enu_from_body, jitter_rotation),
@@ -874,9 +882,7 @@ class SceneLogicModule(ModuleShell):
                     appearance=object_spec.appearance,
                 )
             )
-        vegetation_perturbations = {
-            str(item.object_id): item for item in perturbations.vegetation
-        }
+        vegetation_perturbations = {str(item.object_id): item for item in perturbations.vegetation}
         sampled_vegetation = []
         wind = perturbations.wind
         for item in scene.vegetation:
@@ -913,8 +919,8 @@ class SceneLogicModule(ModuleShell):
             # Mean wind sets the bend direction; two deterministic harmonics
             # create a restrained gust-like motion without wall-clock/RNG use.
             scale = min(1.5, wind_speed / 4.0)
-            displacement = amplitude * scale * (
-                math.sin(angle) + 0.18 * math.sin(2.37 * angle + phase * 0.61)
+            displacement = (
+                amplitude * scale * (math.sin(angle) + 0.18 * math.sin(2.37 * angle + phase * 0.61))
             )
             lean = amplitude * min(wind_speed / 12.0, 0.3)
             bend_angle = max(-0.22, min(0.22, (displacement + lean) / 8.0))
@@ -925,15 +931,21 @@ class SceneLogicModule(ModuleShell):
             one_minus_cosine = 1.0 - cosine
             ax, ay, az = axis
             rotation: Matrix3x3 = (
-                (cosine + ax * ax * one_minus_cosine,
-                 ax * ay * one_minus_cosine - az * sine,
-                 ax * az * one_minus_cosine + ay * sine),
-                (ay * ax * one_minus_cosine + az * sine,
-                 cosine + ay * ay * one_minus_cosine,
-                 ay * az * one_minus_cosine - ax * sine),
-                (az * ax * one_minus_cosine - ay * sine,
-                 az * ay * one_minus_cosine + ax * sine,
-                 cosine + az * az * one_minus_cosine),
+                (
+                    cosine + ax * ax * one_minus_cosine,
+                    ax * ay * one_minus_cosine - az * sine,
+                    ax * az * one_minus_cosine + ay * sine,
+                ),
+                (
+                    ay * ax * one_minus_cosine + az * sine,
+                    cosine + ay * ay * one_minus_cosine,
+                    ay * az * one_minus_cosine - ax * sine,
+                ),
+                (
+                    az * ax * one_minus_cosine - ay * sine,
+                    az * ay * one_minus_cosine + ax * sine,
+                    cosine + az * az * one_minus_cosine,
+                ),
             )
             old_pose = item.base_pose
             sampled_vegetation.append(
@@ -1261,13 +1273,47 @@ class VirtualObservationModule(ModuleShell):
     @staticmethod
     def _validate(request: VirtualObservationRequest) -> None:
         spec = request.generation_spec
+        covariance_factor(
+            spec.independent_angular_covariance_rad2, 2, "independent_angular_covariance_rad2"
+        )
+        covariance_factor(
+            spec.independent_origin_covariance_m2, 3, "independent_origin_covariance_m2"
+        )
         if not 0.0 <= spec.detection_probability <= 1.0:
             raise ValueError("detection_probability must be between 0 and 1")
         if spec.false_alarms_per_camera_hour < 0.0:
             raise ValueError("false_alarms_per_camera_hour cannot be negative")
         for interval in spec.calibration_intervals:
+            covariance_factor(
+                interval.correction_covariance_rad2, 3, "calibration correction_covariance_rad2"
+            )
             if interval.end_time_ns <= interval.start_time_ns:
                 raise ValueError("virtual calibration interval must have positive duration")
+
+    @staticmethod
+    def _jitter_bound_squared(
+        frame: CameraFrameTruth, jitter: tuple[CameraJitterPerturbation, ...]
+    ) -> float:
+        """Bound rotation between any two samples, without reading later poses."""
+        item = next(
+            (
+                j
+                for j in jitter
+                if j.station_id == frame.station_id and j.camera_role is CameraRole.MAIN
+            ),
+            None,
+        )
+        if item is None:
+            return 0.0
+        intrinsics = frame.actual_camera.actual_intrinsics
+        amplitudes = (
+            item.angular_amplitude_rad[0]
+            + math.atan(item.pixel_amplitude_px[1] / intrinsics.focal_y_px),
+            item.angular_amplitude_rad[1]
+            + math.atan(item.pixel_amplitude_px[0] / intrinsics.focal_x_px),
+            item.angular_amplitude_rad[2],
+        )
+        return 4 * sum(a * a for a in amplitudes)
 
     def _transition_calibration(
         self,
@@ -1276,6 +1322,7 @@ class VirtualObservationModule(ModuleShell):
         session: StationSessionBinding,
         sequencer: EventSequencer,
         interval: VirtualCalibrationInterval | None,
+        jitter_bound_squared: float = 0.0,
     ) -> tuple[CalibrationState, CalibrationSolution | None, CalibrationStateEvent | None]:
         station_id = frame.station_id
         if self._interval_keys.get(station_id) == interval and station_id in self._states:
@@ -1288,8 +1335,27 @@ class VirtualObservationModule(ModuleShell):
         now = ProcessingTime(clock_domain_id=frame.capture_time.clock_domain_id, time_ns=time_ns)
         new_solution: CalibrationSolution | None = None
         solution = self._solutions.get(station_id)
+        reasons = interval.reason_codes if interval is not None else ("virtual_no_calibration",)
+        if jitter_bound_squared:
+            reasons = tuple(r for r in reasons if r != "virtual_clean_baseline") + (
+                "virtual_untracked_camera_jitter",
+                "virtual_calibration_snapshot_held",
+                "virtual_conservative_angular_envelope",
+            )
 
         if interval is not None and interval.health is CalibrationHealth.VALID:
+            # The snapshot is intentionally held. A conservative shared envelope
+            # covers the bounded jitter and configured bias, not independent noise.
+            covariance = interval.correction_covariance_rad2
+            if jitter_bound_squared:
+                bound = (
+                    math.sqrt(jitter_bound_squared)
+                    + math.sqrt(sum(v * v for v in interval.correction_error_camera_rad))
+                ) ** 2
+                covariance = tuple(  # type: ignore[assignment]
+                    tuple(covariance[i][j] + (bound if i == j else 0.0) for j in range(3))
+                    for i in range(3)
+                )
             solution_ref = CalibrationSolutionRef(
                 station_id=station_id,
                 station_session_id=session.virtual_session_id,
@@ -1311,7 +1377,7 @@ class VirtualObservationModule(ModuleShell):
                     frame.actual_camera.optical_state.rotation_enu_from_body,
                     interval.correction_error_camera_rad,
                 ),
-                correction_covariance_enu_rad2=interval.correction_covariance_rad2,
+                correction_covariance_enu_rad2=covariance,
                 quality=CalibrationQuality(
                     source="virtual_observation",
                     matched_reference_count=0,
@@ -1319,7 +1385,7 @@ class VirtualObservationModule(ModuleShell):
                     angular_residual_rad=math.sqrt(
                         sum(value * value for value in interval.correction_error_camera_rad)
                     ),
-                    reason_codes=interval.reason_codes,
+                    reason_codes=reasons,
                 ),
             )
             self._solutions[station_id] = solution
@@ -1327,7 +1393,6 @@ class VirtualObservationModule(ModuleShell):
 
         has_usable_solution = solution is not None and interval is not None
         requested_health = interval.health if interval is not None else CalibrationHealth.INVALID
-        reasons: tuple[str, ...]
         if (
             requested_health in {CalibrationHealth.FROZEN, CalibrationHealth.STALE}
             and solution is None
@@ -1336,7 +1401,8 @@ class VirtualObservationModule(ModuleShell):
             reasons = ("virtual_no_trusted_calibration",)
         else:
             health = requested_health
-            reasons = interval.reason_codes if interval is not None else ("virtual_no_calibration",)
+            if jitter_bound_squared and health is CalibrationHealth.VALID:
+                health = CalibrationHealth.FROZEN
         usable_interval = (
             TimeInterval(
                 clock_domain_id=frame.capture_time.clock_domain_id,
@@ -1388,6 +1454,34 @@ class VirtualObservationModule(ModuleShell):
     ) -> RayEvent:
         direction = _unit(_mat_vec(solution.rotation_enu_from_main, _unit(local_direction)))
         tangent_u, tangent_v = _tangent_basis(direction)
+        key = (
+            f"{request.scenario_id}/{frame.station_id}/{frame.camera_role.value}/"
+            f"{frame.capture_time.exposure_start_ns}/{frame.capture_time.exposure_end_ns}/"
+            f"{local_track_id}"
+        )
+        angular = gaussian_sample(
+            request.generation_spec.independent_angular_covariance_rad2,
+            seed=request.random_seed,
+            stream=f"ray-angle/{key}",
+            label="independent_angular_covariance_rad2",
+        )
+        origin_error = gaussian_sample(
+            request.generation_spec.independent_origin_covariance_m2,
+            seed=request.random_seed,
+            stream=f"ray-origin/{key}",
+            label="independent_origin_covariance_m2",
+        )
+        # Exponential map of the sampled tangent vector. Parallel transport the
+        # basis with the same rotation, preserving the declared covariance axes.
+        if any(angular):
+            tangent = _add(_scale(tangent_u, angular[0]), _scale(tangent_v, angular[1]))
+            rotation = _rotation_from_small_angle(_cross(direction, tangent))
+            direction = _unit(_mat_vec(rotation, direction))
+            tangent_u = _unit(_mat_vec(rotation, tangent_u))
+            tangent_v = _unit(_cross(direction, tangent_u))
+        origin = solution.main_camera_position_enu_m
+        if any(origin_error):
+            origin = _add(origin, (origin_error[0], origin_error[1], origin_error[2]))
         usage = self._usage(state)
         if usage is None or state.usable_interval is None or state.last_trusted_time is None:
             raise ValueError("ray generation requires a usable virtual calibration state")
@@ -1409,7 +1503,7 @@ class VirtualObservationModule(ModuleShell):
                 usable_interval=state.usable_interval,
                 reason_codes=state.reason_codes,
             ),
-            ray_origin_enu_m=solution.main_camera_position_enu_m,
+            ray_origin_enu_m=origin,
             ray_direction_enu_unit=direction,
             uncertainty=RayUncertainty(
                 model="tangent_gaussian_v1",
@@ -1549,7 +1643,12 @@ class VirtualObservationModule(ModuleShell):
             ):
                 continue
             state, new_solution, state_event = self._transition_calibration(
-                frame, config, session, sequencer, interval
+                frame,
+                config,
+                session,
+                sequencer,
+                interval,
+                self._jitter_bound_squared(frame, request.camera_jitter),
             )
             states.append(state)
             if new_solution is not None:
@@ -1761,6 +1860,7 @@ class ScenarioModule(ModuleShell):
                     online_station_configs=spec.station_configs,
                     frames=imaging_truth.frame_truth,
                     station_sessions=self.station_sessions,
+                    camera_jitter=spec.perturbations.camera_jitter,
                 )
             )
             virtual_finished = perf_counter()

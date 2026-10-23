@@ -32,6 +32,7 @@ from chongming.contracts.scene import (
     WorldObjectId,
 )
 from chongming.scenarios.assets import read_verified_asset, resolve_external_asset
+from chongming.scenarios.uncertainty import covariance_factor
 
 FORMAT_VERSION = "scenario-json-v1"
 
@@ -258,8 +259,10 @@ def validate_scenario_spec(spec: ScenarioSpec) -> None:
         sum(value * value for value in illumination.sun_direction_enu_unit) <= 0
         or illumination.illuminance_lux < 0
         or any(not 0 <= value <= 1 for value in illumination.sky_linear_rgb)
-        or (illumination.atmospheric_visibility_m is not None
-            and illumination.atmospheric_visibility_m <= 0)
+        or (
+            illumination.atmospheric_visibility_m is not None
+            and illumination.atmospheric_visibility_m <= 0
+        )
         or not 0 <= illumination.sun_angular_diameter_deg <= 5
         or not 0 <= illumination.glare_strength <= 2
     ):
@@ -274,19 +277,22 @@ def validate_scenario_spec(spec: ScenarioSpec) -> None:
     ):
         raise ValueError("invalid render effects")
     if len(spec.perturbations.clouds) > 2 or any(
-        cloud.layer_altitude_m <= 0
-        or not 0 <= cloud.optical_density <= 1
+        cloud.layer_altitude_m <= 0 or not 0 <= cloud.optical_density <= 1
         for cloud in spec.perturbations.clouds
     ):
         raise ValueError("invalid cloud layers")
     camera_keys = {(camera.station_id, camera.camera_role) for camera in scene.cameras}
-    unique([(item.station_id, item.camera_role) for item in spec.perturbations.camera_jitter],
-           "camera jitter")
+    unique(
+        [(item.station_id, item.camera_role) for item in spec.perturbations.camera_jitter],
+        "camera jitter",
+    )
     for jitter in spec.perturbations.camera_jitter:
         if (
             (jitter.station_id, jitter.camera_role) not in camera_keys
             or jitter.frequency_hz <= 0
-            or any(value < 0 for value in (*jitter.angular_amplitude_rad, *jitter.pixel_amplitude_px))
+            or any(
+                value < 0 for value in (*jitter.angular_amplitude_rad, *jitter.pixel_amplitude_px)
+            )
             or not jitter.random_stream.strip()
         ):
             raise ValueError("invalid camera jitter")
@@ -318,13 +324,18 @@ def validate_scenario_spec(spec: ScenarioSpec) -> None:
         ):
             raise ValueError("OSM and scene/station geodetic anchors must agree")
     unique(
-        [scene.terrain.terrain_id, *(o.object_id for o in scene.world_objects),
-         *(WorldObjectId(str(v.vegetation_id)) for v in scene.vegetation)],
+        [
+            scene.terrain.terrain_id,
+            *(o.object_id for o in scene.world_objects),
+            *(WorldObjectId(str(v.vegetation_id)) for v in scene.vegetation),
+        ],
         "scene geometry ID",
     )
     for vegetation_item in scene.vegetation:
         if vegetation_item.motion_model.value not in {"static", "periodic", "wind_driven"}:
-            raise ValueError(f"unsupported vegetation motion model: {vegetation_item.motion_model!r}")
+            raise ValueError(
+                f"unsupported vegetation motion model: {vegetation_item.motion_model!r}"
+            )
         visual = vegetation_item.visual
         if isinstance(visual, ShrubVisualSpec) and min(visual.height_m, visual.radius_m) <= 0:
             raise ValueError("invalid shrub visual")
@@ -447,10 +458,14 @@ def validate_scenario_spec(spec: ScenarioSpec) -> None:
             raise ValueError("station config world frame must match scenario")
         reference = config.reference_anchor
         if getattr(reference, "image", None) is not None:
-            raise ValueError(
-                "inline reference image is unsupported; use a surveyed reference"
-            )
+            raise ValueError("inline reference image is unsupported; use a surveyed reference")
     observations = spec.virtual_observations
+    covariance_factor(
+        observations.independent_angular_covariance_rad2, 2, "independent_angular_covariance_rad2"
+    )
+    covariance_factor(
+        observations.independent_origin_covariance_m2, 3, "independent_origin_covariance_m2"
+    )
     if (
         not 0 <= observations.detection_probability <= 1
         or observations.false_alarms_per_camera_hour < 0
@@ -458,6 +473,9 @@ def validate_scenario_spec(spec: ScenarioSpec) -> None:
         raise ValueError("invalid observation probability or false alarm rate")
     intervals: dict[Any, list[tuple[int, int]]] = {}
     for interval in observations.calibration_intervals:
+        covariance_factor(
+            interval.correction_covariance_rad2, 3, "calibration correction_covariance_rad2"
+        )
         if interval.station_id not in station_ids or interval.end_time_ns <= interval.start_time_ns:
             raise ValueError("invalid calibration interval")
         intervals.setdefault(interval.station_id, []).append(
@@ -489,7 +507,9 @@ def validate_scenario_spec(spec: ScenarioSpec) -> None:
             raise ValueError("sphere radius must be positive")
         if isinstance(geometry, BoxGeometry) and any(v <= 0 for v in geometry.half_extents_body_m):
             raise ValueError("box extents must be positive")
-        if isinstance(geometry, CylinderGeometry) and (geometry.radius_m <= 0 or geometry.height_m <= 0):
+        if isinstance(geometry, CylinderGeometry) and (
+            geometry.radius_m <= 0 or geometry.height_m <= 0
+        ):
             raise ValueError("cylinder dimensions must be positive")
         if isinstance(geometry, TriangleMeshGeometry) and (
             not geometry.vertices_body_m
@@ -558,11 +578,7 @@ def validate_supported_features(spec: ScenarioSpec) -> None:
         for c in spec.scene_definition.cameras
     ):
         raise ValueError("Godot cameras require zero skew and square pixels")
-    if (
-        p.fog
-        or p.rain
-        or p.communication
-    ):
+    if p.fog or p.rain or p.communication:
         raise ValueError("configured fog/rain/transport effects are not implemented")
     if (
         a.auto_exposure_enabled

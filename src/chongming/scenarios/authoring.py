@@ -206,13 +206,24 @@ def _appearance(value: dict[str, Any] | None) -> s.SurfaceAppearance:
 
 
 def _target(spec: s.FlyingObjectSpec, document: dict[str, Any]) -> s.FlyingObjectSpec:
-    _fields(document, {"id", "display_name", "model_name", "geometry", "appearance", "motion"}, "target")
+    _fields(
+        document, {"id", "display_name", "model_name", "geometry", "appearance", "motion"}, "target"
+    )
     target_id = _identifier(_required(document, "id"), "target.id")
     geometry_value = document.get("geometry")
     geometry = spec.geometry if geometry_value is None else _geometry(geometry_value)
     appearance = _appearance(document.get("appearance"))
     model_name = str(document.get("model_name", spec.model_name))
-    if model_name not in {"procedural", "sphere", "box", "mesh", "la11", "la11triangled", "f86", "f86triangled"}:
+    if model_name not in {
+        "procedural",
+        "sphere",
+        "box",
+        "mesh",
+        "la11",
+        "la11triangled",
+        "f86",
+        "f86triangled",
+    }:
         raise ValueError(f"unsupported target model_name: {model_name!r}")
     motion = _required(document, "motion")
     if not isinstance(motion, dict):
@@ -418,7 +429,9 @@ def compile_authoring(
             "environment.illuminance_lux",
         )
         if (visibility is not None and visibility <= 0) or not 0 <= sun_diameter <= 5:
-            raise ValueError("environment visibility must be positive and sun diameter within 0..5 degrees")
+            raise ValueError(
+                "environment visibility must be positive and sun diameter within 0..5 degrees"
+            )
         if illuminance < 0 or not 0 <= glare <= 2 or any(not 0 <= value <= 1 for value in sky):
             raise ValueError("environment illuminance, glare or sky color is invalid")
         illumination = s.IlluminationSpec(
@@ -683,11 +696,17 @@ def compile_authoring(
         if not isinstance(item, dict):
             raise TypeError("vegetation entries must be objects")
         kind = item.get("type", "tree")
-        common = {"id", "type", "display_name", "position_enu_m", "appearance",
-                  "occludes_sight_lines"}
+        common = {
+            "id",
+            "type",
+            "display_name",
+            "position_enu_m",
+            "appearance",
+            "occludes_sight_lines",
+        }
         allowed = {
-            "tree": common | {"height_m", "crown_radius_m", "sway_amplitude_m",
-                              "sway_frequency_hz"},
+            "tree": common
+            | {"height_m", "crown_radius_m", "sway_amplitude_m", "sway_frequency_hz"},
             "shrub": common | {"height_m", "radius_m"},
             "grass": common | {"size_m", "blade_height_m", "density_per_m2"},
         }
@@ -707,12 +726,8 @@ def compile_authoring(
         if kind == "tree":
             height = _number(_required(item, "height_m"), "vegetation.height_m")
             radius = _number(_required(item, "crown_radius_m"), "vegetation.crown_radius_m")
-            amplitude = _number(
-                item.get("sway_amplitude_m", 0.25), "vegetation.sway_amplitude_m"
-            )
-            frequency = _number(
-                item.get("sway_frequency_hz", 0.22), "vegetation.sway_frequency_hz"
-            )
+            amplitude = _number(item.get("sway_amplitude_m", 0.25), "vegetation.sway_amplitude_m")
+            frequency = _number(item.get("sway_frequency_hz", 0.22), "vegetation.sway_frequency_hz")
             if height <= 0 or radius <= 0 or amplitude < 0 or frequency <= 0:
                 raise ValueError(
                     "tree dimensions/frequency must be positive and sway amplitude nonnegative"
@@ -722,21 +737,36 @@ def compile_authoring(
             trunk_id = s.VegetationId(f"{plant_id}/trunk")
             canopy_id = s.VegetationId(f"{plant_id}/canopy")
             canopy_pose = state((position[0], position[1], position[2] + height * 0.42))
-            vegetation.extend((
-                s.VegetationSpec(
-                    trunk_id, f"{display_name} 树干", pose, trunk_proxy,
-                    s.SurfaceAppearance((0.20, 0.105, 0.045), 0.9),
-                    s.VegetationMotionModel.STATIC, occludes,
-                    s.TreeVisualSpec(s.TreePart.TRUNK, trunk_proxy.height_m, trunk_proxy.radius_m),
-                ),
-                s.VegetationSpec(
-                    canopy_id, f"{display_name} 树冠", canopy_pose, canopy_proxy,
-                    _appearance(item.get("appearance")) if "appearance" in item else
-                    s.SurfaceAppearance((0.12, 0.31, 0.09), 0.9),
-                    s.VegetationMotionModel.WIND_DRIVEN, occludes,
-                    s.TreeVisualSpec(s.TreePart.CANOPY, canopy_proxy.height_m, canopy_proxy.radius_m),
-                ),
-            ))
+            vegetation.extend(
+                (
+                    s.VegetationSpec(
+                        trunk_id,
+                        f"{display_name} 树干",
+                        pose,
+                        trunk_proxy,
+                        s.SurfaceAppearance((0.20, 0.105, 0.045), 0.9),
+                        s.VegetationMotionModel.STATIC,
+                        occludes,
+                        s.TreeVisualSpec(
+                            s.TreePart.TRUNK, trunk_proxy.height_m, trunk_proxy.radius_m
+                        ),
+                    ),
+                    s.VegetationSpec(
+                        canopy_id,
+                        f"{display_name} 树冠",
+                        canopy_pose,
+                        canopy_proxy,
+                        _appearance(item.get("appearance"))
+                        if "appearance" in item
+                        else s.SurfaceAppearance((0.12, 0.31, 0.09), 0.9),
+                        s.VegetationMotionModel.WIND_DRIVEN,
+                        occludes,
+                        s.TreeVisualSpec(
+                            s.TreePart.CANOPY, canopy_proxy.height_m, canopy_proxy.radius_m
+                        ),
+                    ),
+                )
+            )
             vegetation_perturbations.append(
                 s.VegetationPerturbation(
                     s.WorldObjectId(str(canopy_id)), (amplitude, 0.0, 0.0), frequency
@@ -748,43 +778,56 @@ def compile_authoring(
             if height <= 0 or radius <= 0:
                 raise ValueError("shrub dimensions must be positive")
             geometry = s.CylinderGeometry(radius, height)
-            vegetation.append(s.VegetationSpec(
-                s.VegetationId(f"{plant_id}/shrub"), display_name, pose, geometry,
-                _appearance(item.get("appearance")) if "appearance" in item else
-                s.SurfaceAppearance((0.10, 0.27, 0.07), 0.85),
-                s.VegetationMotionModel.STATIC, occludes,
-                s.ShrubVisualSpec(height, radius),
-            ))
+            vegetation.append(
+                s.VegetationSpec(
+                    s.VegetationId(f"{plant_id}/shrub"),
+                    display_name,
+                    pose,
+                    geometry,
+                    _appearance(item.get("appearance"))
+                    if "appearance" in item
+                    else s.SurfaceAppearance((0.10, 0.27, 0.07), 0.85),
+                    s.VegetationMotionModel.STATIC,
+                    occludes,
+                    s.ShrubVisualSpec(height, radius),
+                )
+            )
         else:
             size = _required(item, "size_m")
             if not isinstance(size, list) or len(size) != 2:
                 raise ValueError("vegetation.size_m must contain width and depth")
             width, depth = (_number(value, "vegetation.size_m") for value in size)
-            blade_height = _number(
-                item.get("blade_height_m", 0.45), "vegetation.blade_height_m"
-            )
-            density = _number(
-                item.get("density_per_m2", 16.0), "vegetation.density_per_m2"
-            )
+            blade_height = _number(item.get("blade_height_m", 0.45), "vegetation.blade_height_m")
+            density = _number(item.get("density_per_m2", 16.0), "vegetation.density_per_m2")
             if min(width, depth, blade_height, density) <= 0 or density > 200:
-                raise ValueError("grass dimensions/density must be positive and density at most 200")
+                raise ValueError(
+                    "grass dimensions/density must be positive and density at most 200"
+                )
             radius = math.hypot(width, depth) * 0.5
-            vegetation.append(s.VegetationSpec(
-                s.VegetationId(f"{plant_id}/grass"), display_name, pose,
-                s.CylinderGeometry(radius, blade_height),
-                _appearance(item.get("appearance")) if "appearance" in item else
-                s.SurfaceAppearance((0.16, 0.34, 0.08), 0.75),
-                s.VegetationMotionModel.STATIC, occludes,
-                s.GrassVisualSpec(width, depth, blade_height, density),
-            ))
+            vegetation.append(
+                s.VegetationSpec(
+                    s.VegetationId(f"{plant_id}/grass"),
+                    display_name,
+                    pose,
+                    s.CylinderGeometry(radius, blade_height),
+                    _appearance(item.get("appearance"))
+                    if "appearance" in item
+                    else s.SurfaceAppearance((0.16, 0.34, 0.08), 0.75),
+                    s.VegetationMotionModel.STATIC,
+                    occludes,
+                    s.GrassVisualSpec(width, depth, blade_height, density),
+                )
+            )
     wind_doc = document.get("wind")
     wind = spec.perturbations.wind if "wind" not in document else None
     if wind_doc is not None:
         _fields(wind_doc, {"mean_velocity_enu_mps", "turbulent_velocity_std_enu_mps"}, "wind")
         wind = s.WindPerturbation(
             _vec3(wind_doc.get("mean_velocity_enu_mps", [0, 0, 0]), "wind.mean_velocity_enu_mps"),
-            _vec3(wind_doc.get("turbulent_velocity_std_enu_mps", [0, 0, 0]),
-                  "wind.turbulent_velocity_std_enu_mps"),
+            _vec3(
+                wind_doc.get("turbulent_velocity_std_enu_mps", [0, 0, 0]),
+                "wind.turbulent_velocity_std_enu_mps",
+            ),
         )
         if min(wind.turbulent_velocity_std_enu_mps) < 0:
             raise ValueError("wind turbulence standard deviations must be nonnegative")
@@ -827,9 +870,7 @@ def compile_authoring(
         pixel_value = jitter.get("pixel_amplitude_px", [0, 0])
         if not isinstance(pixel_value, list) or len(pixel_value) != 2:
             raise ValueError("camera_jitter.pixel_amplitude_px must contain two numbers")
-        pixels = tuple(
-            _number(value, "camera_jitter.pixel_amplitude_px") for value in pixel_value
-        )
+        pixels = tuple(_number(value, "camera_jitter.pixel_amplitude_px") for value in pixel_value)
         frequency = _number(jitter.get("frequency_hz", 7.0), "camera_jitter.frequency_hz")
         role_values = jitter.get("roles", ["main", "auxiliary"])
         if not isinstance(role_values, list) or not role_values:

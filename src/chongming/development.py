@@ -10,11 +10,12 @@ import math
 import signal
 import threading
 import time
-from collections.abc import Iterator
+from abc import ABC, abstractmethod
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from chongming.composition.development import development_run
 from chongming.composition.graph import declare_assembly
@@ -109,15 +110,34 @@ class InputInspector:
         self.solutions.clear()
 
 
-class CenterSession:
-    """Synchronous step ownership: callers cannot advance through monitoring."""
+class _TimedStep(Protocol):
+    @property
+    def step_no(self) -> int: ...
+
+    @property
+    def time(self) -> ProcessingTime: ...
+
+    @property
+    def stream_ended(self) -> bool: ...
+
+
+class DevelopmentSession[InputT: _TimedStep](ABC):
+    """Shared lifecycle, synchronous scheduling, evidence and failure cleanup.
+
+    Subclasses select an online boundary; only the evidence writer receives the
+    complete public ScenarioStep. No scenario scheduler is duplicated here.
+    """
+
+    scope: str
+    stream_name: str
+    algorithm_name: str
+    algorithm_timing_key: str
 
     def __init__(
         self,
         path: Path,
         output: Path,
         *,
-        algorithm: CenterAlgorithm | None = None,
         video_enabled: bool = False,
     ) -> None:
         self.path = path
@@ -127,22 +147,19 @@ class CenterSession:
         self.assembly = declare_assembly(self.spec, self.run_spec)
         self.source = self.assembly.scene.scenario
         self.source.video_enabled = video_enabled
-        self.algorithm: CenterAlgorithm = algorithm if algorithm is not None else InputInspector()
         with ExitStack() as resources:
             self.writer = SceneEvidenceWriter(output, self.spec)
             resources.callback(self.writer.close)
             self._online = resources.enter_context(
-                (output / "center-input.jsonl").open("x", encoding="utf-8")
+                (output / f"{self.stream_name}-input.jsonl").open("x", encoding="utf-8")
             )
             self._results = resources.enter_context(
-                (output / "center-output.jsonl").open("x", encoding="utf-8")
+                (output / f"{self.stream_name}-output.jsonl").open("x", encoding="utf-8")
             )
             self._resources = resources.pop_all()
         self._steps: Iterator[ScenarioStep] = iter(self.source.generate(self.spec))
-        self._last_capture: dict[str, CaptureTime] = {}
         self.health: list[ModuleHealth] = []
         self.step_count = 0
-        self.ray_count = 0
         self.ended = False
         self.closed = False
         self.last: dict[str, Any] | None = None
@@ -159,24 +176,18 @@ class CenterSession:
                 # Include a module whose initializer fails after allocating resources.
                 self._started_bindings.append(binding)
                 self.health.append(binding.module.start_module(binding.node.module_key, now))
-            registration = CenterRegistration(
-                stations=self.spec.station_configs,
-                search=self.spec.voxel_search,
-                clock_domain_id=now.clock_domain_id,
-                center_session_id=str(self.run_spec.center_session_id),
-            )
             self._algorithm_started = True
-            self.algorithm.start(registration)
-            self.writer.document("center-registration.json", registration)
+            registration = self._start_algorithm()
+            self.writer.document(f"{self.stream_name}-registration.json", registration)
             self.writer.document("authoring.json", json.loads(path.read_text()))
             self.writer.document(
                 "manifest.json",
                 {
                     **_provenance(),
-                    "scope": "center-development",
+                    "scope": self.scope,
                     "run_id": self.run_spec.run_id,
                     "run_spec": self.run_spec,
-                    "algorithm": type(self.algorithm).__name__,
+                    "algorithm": self.algorithm_name,
                     "startup": self.health,
                     "all_modules_initialized": True,
                     "algorithms_complete": False,
@@ -194,6 +205,194 @@ class CenterSession:
                 logger.exception("Cleanup after initialization failure failed")
             raise
 
+    @abstractmethod
+    def _start_algorithm(self) -> object: ...
+
+    @abstractmethod
+    def _close_algorithm(self) -> None: ...
+
+    @abstractmethod
+    def _input(self, step: ScenarioStep | None) -> InputT: ...
+
+    @abstractmethod
+    def _process(self, online: InputT) -> dict[str, Any]: ...
+
+    def _online_evidence(self, online: InputT) -> object:
+        return online
+
+    def _count_sample(self, step: ScenarioStep) -> None:
+        pass
+
+    def _counts(self) -> dict[str, int]:
+        return {}
+
+    def _step_fields(self, online: InputT, result: dict[str, Any]) -> dict[str, Any]:
+        return result
+
+    def step(self) -> dict[str, Any]:
+        if not self._step_lock.acquire(blocking=False):
+            raise RuntimeError("a step is already in progress")
+        try:
+            return self._step()
+        finally:
+            self._step_lock.release()
+
+    def _step(self) -> dict[str, Any]:
+        if self.closed:
+            raise RuntimeError("session is closed")
+        if self.ended:
+            return self.snapshot()
+        try:
+            step = next(self._steps, None)
+            online = self._input(step)
+            self._online.write(_json(self._online_evidence(online)) + "\n")
+            self._online.flush()
+            if step is not None:
+                self.writer.record(step)
+            began = time.perf_counter()
+            result = self._process(online)
+            algorithm_ms = (time.perf_counter() - began) * 1000
+            self._results.write(
+                _json(
+                    {
+                        "step_no": online.step_no,
+                        "time": online.time,
+                        **result,
+                        self.algorithm_timing_key: algorithm_ms,
+                        "stream_ended": online.stream_ended,
+                    }
+                )
+                + "\n"
+            )
+            self._results.flush()
+            if step is not None:
+                self.step_count += 1
+                self._count_sample(step)
+            else:
+                self.ended = True
+                self.status = "complete"
+            self.last = {
+                "step_no": online.step_no,
+                "time_ns": online.time.time_ns,
+                "stream_ended": self.ended,
+                "video_enabled": self.source.video_enabled,
+                **self._step_fields(online, result),
+                self.algorithm_timing_key: algorithm_ms,
+                "stages": asdict(step.truth.timing) if step and step.truth.timing else None,
+            }
+            return self.snapshot()
+        except BaseException as error:
+            self.status = "failed"
+            self.error = f"{type(error).__name__}: {error}"
+            try:
+                self.close()
+            except Exception:
+                logger.exception("Cleanup after step failure failed")
+            raise
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "state": self.status,
+            "logical_steps": self.step_count,
+            **self._counts(),
+            "last": self.last,
+            "error": self.error,
+        }
+
+    def set_video(self, enabled: bool) -> None:
+        if not self._step_lock.acquire(blocking=False):
+            raise RuntimeError("change video only between completed steps")
+        try:
+            if self.closed:
+                raise RuntimeError("session is closed")
+            self.source.video_enabled = enabled
+        finally:
+            self._step_lock.release()
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        errors = []
+        if self._algorithm_started:
+            try:
+                self._close_algorithm()
+            except Exception as error:
+                logger.exception("Algorithm cleanup failed")
+                errors.append(str(error))
+        now = ProcessingTime(
+            clock_domain_id=self.spec.timeline.clock_domain.clock_domain_id,
+            time_ns=self.last["time_ns"] if self.last else 0,
+        )
+        shutdown = []
+        for binding in reversed(self._started_bindings):
+            try:
+                shutdown.append(binding.module.stop_module(binding.node.module_key, now))
+            except Exception as error:
+                logger.exception("Module cleanup failed")
+                errors.append(str(error))
+        close_source = getattr(self._steps, "close", None)
+        if close_source is not None:
+            try:
+                close_source()
+            except Exception as error:
+                logger.exception("Source cleanup failed")
+                errors.append(str(error))
+        try:
+            self.writer.document(
+                "summary.json",
+                {
+                    **self.snapshot(),
+                    "state": self.status if self.status in {"failed", "complete"} else "stopped",
+                    "shutdown": shutdown,
+                    "shutdown_errors": errors,
+                },
+            )
+        finally:
+            try:
+                self._resources.close()
+            finally:
+                from chongming.rendering.godot import close_default_renderer
+
+                close_default_renderer()
+        if errors:
+            raise RuntimeError(f"shutdown failed: {errors}")
+
+
+class CenterSession(DevelopmentSession[CenterInputStep]):
+    """Center adapter preserving the existing plugin and evidence contract."""
+
+    scope = "center-development"
+    stream_name = "center"
+    algorithm_timing_key = "center_ms"
+
+    def __init__(
+        self,
+        path: Path,
+        output: Path,
+        *,
+        algorithm: CenterAlgorithm | None = None,
+        video_enabled: bool = False,
+    ) -> None:
+        self.algorithm = algorithm if algorithm is not None else InputInspector()
+        self.algorithm_name = type(self.algorithm).__name__
+        self._last_capture: dict[str, CaptureTime] = {}
+        self.ray_count = 0
+        super().__init__(path, output, video_enabled=video_enabled)
+
+    def _start_algorithm(self) -> CenterRegistration:
+        registration = CenterRegistration(
+            stations=self.spec.station_configs,
+            search=self.spec.voxel_search,
+            clock_domain_id=self.spec.timeline.clock_domain.clock_domain_id,
+            center_session_id=str(self.run_spec.center_session_id),
+        )
+        self.algorithm.start(registration)
+        return registration
+
+    def _close_algorithm(self) -> None:
+        self.algorithm.close()
+
     def _input(self, step: ScenarioStep | None) -> CenterInputStep:
         ended = step is None
         clock = self.spec.timeline.clock_domain.clock_domain_id
@@ -201,6 +400,8 @@ class CenterSession:
         now = ProcessingTime(clock_domain_id=clock, time_ns=t)
         events: tuple[StationEvent, ...]
         if step is not None:
+            # Empty main exposures still advance event progress when no rays were
+            # emitted. This metadata is retained only by the host, never plugins.
             for frame in step.truth.camera_frames:
                 if frame.camera_role is CameraRole.MAIN:
                     self._last_capture[str(frame.station_id)] = frame.capture_time
@@ -248,152 +449,51 @@ class CenterSession:
             stream_ended=ended,
         )
 
-    def step(self) -> dict[str, Any]:
-        if not self._step_lock.acquire(blocking=False):
-            raise RuntimeError("a step is already in progress")
-        try:
-            return self._step()
-        finally:
-            self._step_lock.release()
+    def _process(self, online: CenterInputStep) -> dict[str, Any]:
+        measurements, tracks = self.algorithm.process(online)
+        return {"measurements": measurements, "tracks": tracks}
 
-    def _step(self) -> dict[str, Any]:
-        if self.closed:
-            raise RuntimeError("session is closed")
-        if self.ended:
-            return self.snapshot()
-        try:
-            step = next(self._steps, None)
-            online = self._input(step)
-            self._online.write(_json(online) + "\n")
-            self._online.flush()
-            if step is not None:
-                self.writer.record(step)
-            began = time.perf_counter()
-            measurements, tracks = self.algorithm.process(online)
-            center_ms = (time.perf_counter() - began) * 1000
-            self._results.write(
-                _json(
-                    {
-                        "step_no": online.step_no,
-                        "time": online.time,
-                        "measurements": measurements,
-                        "tracks": tracks,
-                        "center_ms": center_ms,
-                        "stream_ended": online.stream_ended,
-                    }
-                )
-                + "\n"
-            )
-            self._results.flush()
-            if step is not None:
-                self.step_count += 1
-                self.ray_count += len(step.packets.rays)
-            else:
-                self.ended = True
-                self.status = "complete"
-            self.last = {
-                "step_no": online.step_no,
-                "time_ns": online.time.time_ns,
-                "ray_count": len(step.packets.rays) if step else 0,
-                "progress_count": len(online.progress),
-                "stream_ended": self.ended,
-                "video_enabled": self.source.video_enabled,
-                "measurements": asdict_list(measurements),
-                "tracks": asdict_list(tracks),
-                "center_ms": center_ms,
-                "stages": asdict(step.truth.timing) if step and step.truth.timing else None,
-            }
-            return self.snapshot()
-        except BaseException as error:
-            self.status = "failed"
-            self.error = f"{type(error).__name__}: {error}"
-            try:
-                self.close()
-            except Exception:
-                logger.exception("Cleanup after step failure failed")
-            raise
+    def _count_sample(self, step: ScenarioStep) -> None:
+        self.ray_count += len(step.packets.rays)
 
-    def snapshot(self) -> dict[str, Any]:
+    def _counts(self) -> dict[str, int]:
+        return {"ray_events": self.ray_count}
+
+    def _step_fields(self, online: CenterInputStep, result: dict[str, Any]) -> dict[str, Any]:
         return {
-            "state": self.status,
-            "logical_steps": self.step_count,
-            "ray_events": self.ray_count,
-            "last": self.last,
-            "error": self.error,
+            "ray_count": sum(isinstance(e.event, RayEvent) for e in online.events),
+            "progress_count": len(online.progress),
+            "measurements": asdict_list(result["measurements"]),
+            "tracks": asdict_list(result["tracks"]),
         }
-
-    def set_video(self, enabled: bool) -> None:
-        if not self._step_lock.acquire(blocking=False):
-            raise RuntimeError("change video only between completed steps")
-        try:
-            if self.closed:
-                raise RuntimeError("session is closed")
-            self.source.video_enabled = enabled
-        finally:
-            self._step_lock.release()
-
-    def close(self) -> None:
-        if self.closed:
-            return
-        self.closed = True
-        errors = []
-        if self._algorithm_started:
-            try:
-                self.algorithm.close()
-            except Exception as error:
-                logger.exception("Algorithm cleanup failed")
-                errors.append(str(error))
-        now = ProcessingTime(
-            clock_domain_id=self.spec.timeline.clock_domain.clock_domain_id,
-            time_ns=self.last["time_ns"] if self.last else 0,
-        )
-        shutdown = []
-        for binding in reversed(self._started_bindings):
-            try:
-                shutdown.append(binding.module.stop_module(binding.node.module_key, now))
-            except Exception as error:
-                logger.exception("Module cleanup failed")
-                errors.append(str(error))
-        close_source = getattr(self._steps, "close", None)
-        if close_source is not None:
-            try:
-                close_source()
-            except Exception as error:
-                logger.exception("Source cleanup failed")
-                errors.append(str(error))
-        try:
-            self.writer.document(
-                "summary.json",
-                {
-                    **self.snapshot(),
-                    "state": self.status if self.status in {"failed", "complete"} else "stopped",
-                    "shutdown": shutdown,
-                    "shutdown_errors": errors,
-                },
-            )
-        finally:
-            try:
-                self._resources.close()
-            finally:
-                from chongming.rendering.godot import close_default_renderer
-
-                close_default_renderer()
-        if errors:
-            raise RuntimeError(f"shutdown failed: {errors}")
 
 
 def asdict_list(items: tuple[Any, ...]) -> list[dict[str, Any]]:
     return [asdict(item) for item in items]
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="干净射线开发工具；默认无视频、暂停，无服务端口")
+def development_cli(
+    *,
+    description: str,
+    prompt: str,
+    default_factory: Callable[[], Any],
+    session_factory: Callable[..., DevelopmentSession[Any]],
+    video_default: bool = False,
+) -> None:
+    """Both workbenches share pause/step/run/reset and pacing semantics."""
+    parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--scenario", type=Path, required=True)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--check", action="store_true", help="只校验 JSON，不创建运行或输出")
     parser.add_argument("--run", action="store_true", help="连续运行至有限终点")
     parser.add_argument("--tick-hz", type=float, default=10)
     parser.add_argument("--algorithm", help="受信任的 Python module:factory；JSON 不加载代码")
+    parser.add_argument(
+        "--video",
+        action=argparse.BooleanOptionalAction,
+        default=video_default,
+        help="启停主辅图像生产；所有模块仍随系统初始化",
+    )
     args = parser.parse_args()
     spec = load_scenario(args.scenario)
     validate_supported_features(spec)
@@ -407,18 +507,20 @@ def main() -> None:
         parser.error("--output is required unless --check")
     if not math.isfinite(args.tick_hz) or not 0 < args.tick_hz <= 240:
         parser.error("--tick-hz must be in (0, 240]")
-    factory: Any = InputInspector
+    factory: Any = default_factory
     if args.algorithm:
         module, sep, name = args.algorithm.partition(":")
         if not sep:
             parser.error("--algorithm must be module:factory")
         factory = getattr(importlib.import_module(module), name)
-    session = CenterSession(args.scenario, args.output, algorithm=factory())
+    session = session_factory(
+        args.scenario, args.output, algorithm=factory(), video_enabled=args.video
+    )
     try:
         if not args.run:
             print("已暂停。命令：step / run [步数] / video on|off / status / reset / quit")
         while True:
-            command = "run" if args.run else input("center> ").strip()
+            command = "run" if args.run else input(f"{prompt}> ").strip()
             parts = command.split()
             if not parts:
                 continue
@@ -433,7 +535,9 @@ def main() -> None:
             elif parts[0] == "reset":
                 session.close()
                 path = args.output.with_name(f"{args.output.name}-reset-{time.time_ns()}")
-                session = CenterSession(args.scenario, path, algorithm=factory())
+                session = session_factory(
+                    args.scenario, path, algorithm=factory(), video_enabled=args.video
+                )
             elif parts[0] == "run":
                 if len(parts) > 2 or (
                     len(parts) == 2 and (not parts[1].isdigit() or int(parts[1]) <= 0)
@@ -469,6 +573,15 @@ def main() -> None:
         pass
     finally:
         session.close()
+
+
+def main() -> None:
+    development_cli(
+        description="干净射线开发工具；默认无视频、暂停，无服务端口",
+        prompt="center",
+        default_factory=InputInspector,
+        session_factory=CenterSession,
+    )
 
 
 if __name__ == "__main__":

@@ -11,8 +11,10 @@ from chongming.contracts.model import (
     FrameId,
     PixelFormat,
     SessionId,
+    StationId,
 )
 from chongming.contracts.scene import (
+    CameraId,
     CameraMetadata,
     CameraStateTruth,
     ClockDomainSpec,
@@ -36,6 +38,7 @@ from chongming.contracts.scene import (
     TrajectoryInterpolation,
     TrajectoryKnot,
     TrajectorySpec,
+    TruthObjectId,
     VisibilityQuery,
     WorldObjectId,
     WorldObjectKind,
@@ -55,7 +58,10 @@ from tests.fixtures import architecture_specs
 IDENTITY = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
 
 
-def state(position: tuple[float, float, float], velocity=(0.0, 0.0, 0.0)) -> KinematicState:
+def state(
+    position: tuple[float, float, float],
+    velocity: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> KinematicState:
     return KinematicState(
         position_enu_m=position,
         velocity_enu_mps=velocity,
@@ -66,10 +72,10 @@ def state(position: tuple[float, float, float], velocity=(0.0, 0.0, 0.0)) -> Kin
 
 def camera() -> CameraStateTruth:
     return CameraStateTruth(
-        station_id="station-1",
+        station_id=StationId("station-1"),
         camera_role=CameraRole.MAIN,
         metadata=CameraMetadata(
-            camera_id="camera-1",
+            camera_id=CameraId("camera-1"),
             display_name="main",
             profile_id="experimental-test",
             sensor_format=None,
@@ -102,7 +108,9 @@ def terrain() -> TerrainSpec:
 class ScenePrimitiveTests(unittest.TestCase):
     def test_event_sequencer_is_monotonic_across_event_types(self) -> None:
         sequencer = EventSequencerModule(
-            station_id="station-1", station_session_id="session-1", schema_version="event-v1"
+            station_id=StationId("station-1"),
+            station_session_id=SessionId("session-1"),
+            schema_version="event-v1",
         )
         envelopes = tuple(
             sequencer.next_envelope(event_type, ConfigDigest("config-1"))
@@ -198,7 +206,7 @@ class ScenePrimitiveTests(unittest.TestCase):
             sample_time=SimulationTime("clock", 0, 0),
             camera=camera(),
             target=FlyingObjectTruth(
-                truth_object_id="truth-1",
+                truth_object_id=TruthObjectId("truth-1"),
                 display_name="target",
                 model_name="sphere",
                 sample_time=SimulationTime("clock", 0, 0),

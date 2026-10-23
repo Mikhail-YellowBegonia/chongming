@@ -68,9 +68,17 @@ def _entity(
 ) -> dict[str, Any]:
     if resources is not None:
         return resources.encode(
-            entity_type, position, state, geometry, appearance,
-            object_id=object_id, visual=visual, surface_kind=surface_kind,
-            surface_detail=surface_detail, category=category, model_name=model_name,
+            entity_type,
+            position,
+            state,
+            geometry,
+            appearance,
+            object_id=object_id,
+            visual=visual,
+            surface_kind=surface_kind,
+            surface_detail=surface_detail,
+            category=category,
+            model_name=model_name,
         )
     payload: dict[str, Any] = {
         "type": entity_type,
@@ -119,22 +127,47 @@ class _EntityResources:
         self.active = set()
 
     def encode(
-        self, entity_type: int, position: tuple[float, float, float], state: KinematicState,
-        geometry: GeometrySpec, appearance: Any, *, object_id: str | None,
-        visual: dict[str, Any] | None, surface_kind: str | None,
-        surface_detail: float, category: str | None, model_name: str | None,
+        self,
+        entity_type: int,
+        position: tuple[float, float, float],
+        state: KinematicState,
+        geometry: GeometrySpec,
+        appearance: Any,
+        *,
+        object_id: str | None,
+        visual: dict[str, Any] | None,
+        surface_kind: str | None,
+        surface_detail: float,
+        category: str | None,
+        model_name: str | None,
     ) -> dict[str, Any]:
         if object_id is None:
             raise ValueError("streamed render entities require stable IDs")
         old = self._items.get(object_id)
-        semantics = (entity_type, appearance, visual, surface_kind, surface_detail, category, model_name)
+        semantics = (
+            entity_type,
+            appearance,
+            visual,
+            surface_kind,
+            surface_detail,
+            category,
+            model_name,
+        )
         if old is None or old[0] is not geometry or old[1] != semantics:
             self._serial += 1
             token = str(self._serial)
             definition = _entity(
-                entity_type, position, state, geometry, appearance, object_id=object_id,
-                visual=visual, surface_kind=surface_kind, surface_detail=surface_detail,
-                category=category, model_name=model_name,
+                entity_type,
+                position,
+                state,
+                geometry,
+                appearance,
+                object_id=object_id,
+                visual=visual,
+                surface_kind=surface_kind,
+                surface_detail=surface_detail,
+                category=category,
+                model_name=model_name,
             )
             definition["resource"] = token
             self.definitions.append(definition)
@@ -149,7 +182,8 @@ class _EntityResources:
 
 
 def _entities(
-    scene: LogicalSceneSnapshot, resources: _EntityResources | None = None,
+    scene: LogicalSceneSnapshot,
+    resources: _EntityResources | None = None,
 ) -> list[dict[str, Any]]:
     entities: list[dict[str, Any]] = []
     terrain = scene.terrain

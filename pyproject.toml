@@ -14,6 +14,7 @@ dependencies = [
 chongming-preview = "chongming.preview:main"
 chongming-scene = "chongming.scenarios.run:main"
 chongming-center = "chongming.development:main"
+chongming-device = "chongming.device_development:main"
 chongming-osm = "chongming.scenarios.osm:main"
 
 [dependency-groups]

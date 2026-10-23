@@ -149,21 +149,23 @@ class LandscapeTests(unittest.TestCase):
         self.assertGreater(len(trees), 0)
         self.assertGreater(len(shrubs), 0)
         self.assertGreater(len(grass), 0)
-        self.assertTrue(all(item.motion_model is s.VegetationMotionModel.WIND_DRIVEN for item in shrubs + grass))
+        self.assertTrue(
+            all(item.motion_model is s.VegetationMotionModel.WIND_DRIVEN for item in shrubs + grass)
+        )
         trunks = [
             item
             for item in trees
-            if isinstance(item.visual, s.TreeVisualSpec)
-            and item.visual.part is s.TreePart.TRUNK
+            if isinstance(item.visual, s.TreeVisualSpec) and item.visual.part is s.TreePart.TRUNK
         ]
         canopies = [
             item
             for item in trees
-            if isinstance(item.visual, s.TreeVisualSpec)
-            and item.visual.part is s.TreePart.CANOPY
+            if isinstance(item.visual, s.TreeVisualSpec) and item.visual.part is s.TreePart.CANOPY
         ]
         self.assertTrue(all(item.motion_model is s.VegetationMotionModel.STATIC for item in trunks))
-        self.assertTrue(all(item.motion_model is s.VegetationMotionModel.WIND_DRIVEN for item in canopies))
+        self.assertTrue(
+            all(item.motion_model is s.VegetationMotionModel.WIND_DRIVEN for item in canopies)
+        )
         perturbations = landscape_vegetation_perturbations(first)
         self.assertEqual(
             {str(item.object_id) for item in perturbations},
@@ -188,8 +190,10 @@ class LandscapeTests(unittest.TestCase):
                     area.remove(old)
                 ET.SubElement(area, "tag", k=tag, v=value)
                 imported = prepare_osm(
-                    ET.tostring(xml), replace(POLICY, maximum_forest_trees=512),
-                    source_url="synthetic:CC0", data_date="2026-10-20",
+                    ET.tostring(xml),
+                    replace(POLICY, maximum_forest_trees=512),
+                    source_url="synthetic:CC0",
+                    data_date="2026-10-20",
                 ).imported
                 selected = next(a for a in imported.areas if a.element_id.startswith("way/106/"))
                 self.assertEqual(selected.category, category)
@@ -202,8 +206,12 @@ class LandscapeTests(unittest.TestCase):
                     {s.TreeVisualSpec, s.ShrubVisualSpec, s.GrassVisualSpec},
                 )
                 polygon = Polygon(selected.rings_enu_m[0], selected.rings_enu_m[1:])
-                inferred = [v for v in vegetation if not str(v.vegetation_id).startswith("osm/tree/")]
-                self.assertTrue(all(polygon.covers(Point(*v.base_pose.position_enu_m[:2])) for v in inferred))
+                inferred = [
+                    v for v in vegetation if not str(v.vegetation_id).startswith("osm/tree/")
+                ]
+                self.assertTrue(
+                    all(polygon.covers(Point(*v.base_pose.position_enu_m[:2])) for v in inferred)
+                )
 
     def test_point_forest_and_area_tree_ids_are_disjoint_and_render_semantic_trees(self) -> None:
         imported = prepare()
@@ -221,7 +229,11 @@ class LandscapeTests(unittest.TestCase):
             trees = [v for v in vegetation if str(v.vegetation_id).startswith(prefix)]
             self.assertTrue(trees)
             self.assertTrue(all(isinstance(v.visual, s.TreeVisualSpec) for v in trees))
-            self.assertEqual({v.visual.part for v in trees}, {s.TreePart.TRUNK, s.TreePart.CANOPY})
+            parts = set()
+            for tree in trees:
+                assert isinstance(tree.visual, s.TreeVisualSpec)
+                parts.add(tree.visual.part)
+            self.assertEqual(parts, {s.TreePart.TRUNK, s.TreePart.CANOPY})
 
     def test_dem_mesh_and_feature_heights_match(self) -> None:
         imported = prepare(GRID)
@@ -279,7 +291,8 @@ class LandscapeTests(unittest.TestCase):
         imported = prepare(GRID)
         payload = asset_bytes(imported)
         spec = attach_landscape(
-            demo_spec(), s.OSMLandscape("memory:landscape.json", hashlib.sha256(payload).hexdigest(), imported)
+            demo_spec(),
+            s.OSMLandscape("memory:landscape.json", hashlib.sha256(payload).hexdigest(), imported),
         )
         scene = sample(spec)
         registry = _EntityResources()

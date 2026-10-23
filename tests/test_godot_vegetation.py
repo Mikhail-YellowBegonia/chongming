@@ -30,10 +30,22 @@ class GodotVegetationTests(unittest.TestCase):
         ).stdout.strip()
         self.assertTrue(version.startswith(f"{GODOT_VERSION}.stable."), version)
         result = subprocess.run(
-            [executable, "--path", str(PROJECT), "--audio-driver", "Dummy",
-             "--rendering-method", "gl_compatibility", "--disable-render-loop",
-             "--script", str(SCRIPT)],
-            capture_output=True, text=True, timeout=30, check=False,
+            [
+                executable,
+                "--path",
+                str(PROJECT),
+                "--audio-driver",
+                "Dummy",
+                "--rendering-method",
+                "gl_compatibility",
+                "--disable-render-loop",
+                "--script",
+                str(SCRIPT),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("vegetation tests passed", result.stdout + result.stderr)

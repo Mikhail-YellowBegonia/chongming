@@ -483,15 +483,16 @@ def area_tree_points(imported: s.OSMImport) -> tuple[s.OSMPointFeature, ...]:
         return ()
     exclusions = [Polygon(building.footprint_enu_m).buffer(2.0) for building in imported.buildings]
     exclusions.extend(
-        LineString(road.centerline_enu_m).buffer(road.width_m / 2 + 2.0)
-        for road in imported.roads
+        LineString(road.centerline_enu_m).buffer(road.width_m / 2 + 2.0) for road in imported.roads
     )
     exclusions.extend(
         Polygon(area.rings_enu_m[0], area.rings_enu_m[1:])
         for area in imported.areas
         if area.category == "water"
     )
-    exclusions.extend(Point(*point.position_enu_m).buffer(point.radius_m + 2.0) for point in imported.points)
+    exclusions.extend(
+        Point(*point.position_enu_m).buffer(point.radius_m + 2.0) for point in imported.points
+    )
     excluded = unary_union(exclusions) if exclusions else None
     result: list[s.OSMPointFeature] = []
     for area in imported.areas:
@@ -594,15 +595,16 @@ def tree_objects(imported: s.OSMImport) -> tuple[s.VegetationSpec, ...]:
     # building, water or a neighboring forest polygon at its corners.
     exclusions = [Polygon(building.footprint_enu_m).buffer(1.5) for building in imported.buildings]
     exclusions.extend(
-        LineString(road.centerline_enu_m).buffer(road.width_m / 2 + 1.5)
-        for road in imported.roads
+        LineString(road.centerline_enu_m).buffer(road.width_m / 2 + 1.5) for road in imported.roads
     )
     exclusions.extend(
         Polygon(area.rings_enu_m[0], area.rings_enu_m[1:]).buffer(1.5)
         for area in imported.areas
         if area.category == "water"
     )
-    exclusions.extend(Point(*point.position_enu_m).buffer(point.radius_m + 1.5) for point in imported.points)
+    exclusions.extend(
+        Point(*point.position_enu_m).buffer(point.radius_m + 1.5) for point in imported.points
+    )
     excluded = unary_union(exclusions) if exclusions else None
     total_patches = 0
     max_total_patches = 2048
@@ -618,7 +620,9 @@ def tree_objects(imported: s.OSMImport) -> tuple[s.VegetationSpec, ...]:
             continue
         left, bottom, right, top = inset.bounds
         spacing = 18.0
-        if (math.ceil((right - left) / spacing) + 2) * (math.ceil((top - bottom) / spacing) + 2) > 250_000:
+        if (math.ceil((right - left) / spacing) + 2) * (
+            math.ceil((top - bottom) / spacing) + 2
+        ) > 250_000:
             raise ValueError("grass candidate budget exceeded; reduce the selected area")
         patch_index = 0
         for ix in range(math.floor(left / spacing), math.ceil(right / spacing)):
@@ -640,12 +644,18 @@ def tree_objects(imported: s.OSMImport) -> tuple[s.VegetationSpec, ...]:
                 if grass_pose is None:
                     continue
                 rotation = grass_pose.rotation_enu_from_body
-                footprint = Polygon([
-                    (x + rotation[0][0] * a + rotation[0][1] * b,
-                     y + rotation[1][0] * a + rotation[1][1] * b)
-                    for a, b in ((-6.0, -6.0), (6.0, -6.0), (6.0, 6.0), (-6.0, 6.0))
-                ])
-                if not mask.covers(footprint) or (excluded is not None and excluded.intersects(footprint)):
+                footprint = Polygon(
+                    [
+                        (
+                            x + rotation[0][0] * a + rotation[0][1] * b,
+                            y + rotation[1][0] * a + rotation[1][1] * b,
+                        )
+                        for a, b in ((-6.0, -6.0), (6.0, -6.0), (6.0, 6.0), (-6.0, 6.0))
+                    ]
+                )
+                if not mask.covers(footprint) or (
+                    excluded is not None and excluded.intersects(footprint)
+                ):
                     continue
                 objects.append(
                     s.VegetationSpec(
@@ -733,8 +743,14 @@ def _grass_pose(imported: s.OSMImport, x: float, y: float, width: float) -> s.Ki
     nx, nz = math.sqrt(1 + dx * dx), math.sqrt(1 + dx * dx + dy * dy)
     axis_x = (1 / nx, 0.0, dx / nx)
     normal = (-dx / nz, -dy / nz, 1 / nz)
-    axis_y = (normal[1] * axis_x[2], normal[2] * axis_x[0] - normal[0] * axis_x[2], -normal[1] * axis_x[0])
-    rotation: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]] = (
+    axis_y = (
+        normal[1] * axis_x[2],
+        normal[2] * axis_x[0] - normal[0] * axis_x[2],
+        -normal[1] * axis_x[0],
+    )
+    rotation: tuple[
+        tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]
+    ] = (
         (axis_x[0], axis_y[0], normal[0]),
         (axis_x[1], axis_y[1], normal[1]),
         (axis_x[2], axis_y[2], normal[2]),
@@ -746,9 +762,7 @@ def _grass_pose(imported: s.OSMImport, x: float, y: float, width: float) -> s.Ki
             pz = z + axis_x[2] * a + axis_y[2] * b
             if abs(pz - elevation_at(imported, px, py)) > 0.05:
                 return None
-    return s.KinematicState(
-        (x, y, z + 0.05), (0.0, 0.0, 0.0), rotation, (0.0, 0.0, 0.0)
-    )
+    return s.KinematicState((x, y, z + 0.05), (0.0, 0.0, 0.0), rotation, (0.0, 0.0, 0.0))
 
 
 def validate_features(imported: s.OSMImport) -> None:
