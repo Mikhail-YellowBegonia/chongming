@@ -1,5 +1,22 @@
 {
   "nodes": {
+    "godot-demo-projects": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1791451544,
+        "narHash": "sha256-GY2Xzu+ImS1OjJdw9Me4KhcHcyY/NdVhhijtp8qe690=",
+        "owner": "godotengine",
+        "repo": "godot-demo-projects",
+        "rev": "b761b4cd5718a7118f2c95eb55f181d0a5f004f1",
+        "type": "github"
+      },
+      "original": {
+        "owner": "godotengine",
+        "repo": "godot-demo-projects",
+        "rev": "b761b4cd5718a7118f2c95eb55f181d0a5f004f1",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1792502884,
@@ -15,6 +32,7 @@
     },
     "root": {
       "inputs": {
+        "godot-demo-projects": "godot-demo-projects",
         "nixpkgs": "nixpkgs"
       }
     }

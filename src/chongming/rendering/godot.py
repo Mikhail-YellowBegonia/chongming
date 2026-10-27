@@ -533,11 +533,22 @@ class GodotRenderer:
             # Overlay the package worker project on a copy of the external project.
             # The external project.godot is intentionally ignored so the worker
             # remains the main scene; all external res:// assets stay addressable.
+            # Copy external project (read-only from Nix store)
             shutil.copytree(
                 source,
                 launch_project,
                 ignore=shutil.ignore_patterns(".godot", "project.godot"),
             )
+
+            # Make all copied content writable before overlaying worker files
+            for root, dirs, filenames in os.walk(launch_project, topdown=False):
+                for f in filenames:
+                    os.chmod(os.path.join(root, f), 0o644)
+                for d in dirs:
+                    os.chmod(os.path.join(root, d), 0o755)
+            os.chmod(launch_project, 0o755)
+
+            # Overlay worker project, which may overwrite external files
             shutil.copytree(project, launch_project, dirs_exist_ok=True)
         else:
             shutil.copytree(project, launch_project)

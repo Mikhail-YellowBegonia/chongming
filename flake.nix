@@ -3,8 +3,17 @@
 
   inputs.nixpkgs.url = "https://channels.nixos.org/nixos-unstable/nixexprs.tar.zst";
 
+  inputs.godot-demo-projects = {
+    url = "github:godotengine/godot-demo-projects/b761b4cd5718a7118f2c95eb55f181d0a5f004f1";
+    flake = false;
+  };
+
   outputs =
-    { nixpkgs, ... }:
+    {
+      nixpkgs,
+      godot-demo-projects,
+      ...
+    }:
     let
       inherit (nixpkgs) lib;
 
@@ -16,15 +25,22 @@
 
       pkgsFor = system: nixpkgs.legacyPackages.${system};
 
-      runtimeEnv = pkgs: {
-        CHONGMING_GODOT = lib.getExe pkgs.godot_4_7;
-        CHONGMING_FFMPEG = lib.getExe pkgs.ffmpeg;
-        LD_LIBRARY_PATH = lib.makeLibraryPath [
-          pkgs.stdenv.cc.cc.lib
-          pkgs.zlib
-        ];
-        UV_PYTHON_DOWNLOADS = "never";
+      externalProjectsFor = system: {
+        truck-town = "${godot-demo-projects}/3d/truck_town";
       };
+
+      runtimeEnv =
+        pkgs: externalProjects:
+        {
+          CHONGMING_GODOT = lib.getExe pkgs.godot_4_7;
+          CHONGMING_FFMPEG = lib.getExe pkgs.ffmpeg;
+          LD_LIBRARY_PATH = lib.makeLibraryPath [
+            pkgs.stdenv.cc.cc.lib
+            pkgs.zlib
+          ];
+          UV_PYTHON_DOWNLOADS = "never";
+          CHONGMING_EXTERNAL_TRUCK_TOWN = externalProjects.truck-town;
+        };
 
       treefmtFor =
         pkgs:
@@ -46,6 +62,7 @@
         system:
         let
           pkgs = pkgsFor system;
+          externalProjects = externalProjectsFor system;
           preview = {
             type = "app";
             program = lib.getExe (
@@ -57,7 +74,7 @@
                   pkgs.godot_4_7
                   pkgs.ffmpeg
                 ];
-                runtimeEnv = runtimeEnv pkgs;
+                runtimeEnv = runtimeEnv pkgs externalProjects;
                 text = ''
                   exec uv run --frozen chongming-preview "$@"
                 '';
@@ -75,6 +92,7 @@
         let
           pkgs = pkgsFor system;
           treefmt = treefmtFor pkgs;
+          externalProjects = externalProjectsFor system;
 
           shellFor =
             extra:
@@ -92,9 +110,11 @@
                 ++ lib.optional pkgs.stdenv.hostPlatform.isLinux pkgs.xvfb-run;
                 shellHook = ''
                   echo "Python deps come from uv: run 'uv run chongming-center ...' from the repository root." >&2
+                  echo "External Godot projects available:" >&2
+                  echo "  CHONGMING_EXTERNAL_TRUCK_TOWN=${externalProjects.truck-town}" >&2
                 '';
               }
-              // runtimeEnv pkgs
+              // runtimeEnv pkgs externalProjects
               // extra
             );
         in
