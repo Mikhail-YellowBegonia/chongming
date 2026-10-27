@@ -1,0 +1,39 @@
+{
+  "format": "scenario-authoring-v2",
+  "scenario_id": "realistic-env-ocean-v1",
+  "random_seed": 42,
+  "duration_s": 15,
+  "fps": 30,
+  "occlusion_mode": "unknown",
+  "stations": [
+    {
+      "id": "station-01",
+      "position_enu_m": [0, -30, 15],
+      "main_yaw_deg": 0,
+      "main_elevation_deg": -10,
+      "auxiliary_yaw_deg": 30
+    },
+    {
+      "id": "station-02",
+      "position_enu_m": [50, -20, 12],
+      "main_yaw_deg": 180,
+      "main_elevation_deg": -8,
+      "auxiliary_yaw_deg": 160
+    }
+  ],
+  "targets": [
+    {
+      "id": "target-01",
+      "display_name": "Ocean test target",
+      "geometry": {"type": "aircraft"},
+      "motion": {
+        "type": "constant_velocity",
+        "position_enu_m": [20, 0, 25],
+        "velocity_enu_mps": [3, 2, 0]
+      }
+    }
+  ],
+  "world_objects": [],
+  "vegetation": [],
+  "wind": null
+}

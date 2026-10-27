@@ -570,7 +570,7 @@ class GodotRenderer:
                 ],
                 capture_output=True,
                 text=True,
-                timeout=120,
+                timeout=600,
                 check=False,
             )
             if import_result.returncode != 0:

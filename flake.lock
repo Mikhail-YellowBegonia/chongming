@@ -19,21 +19,39 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1792502884,
-        "narHash": "sha256-ij8QUxzTOHovLrNOxVRx+RAhGQFOMsJbji0veiatH5k=",
-        "rev": "02c087f3fe673c9e317f206a627cb6b910336dbe",
+        "lastModified": 1792773339,
+        "narHash": "sha256-17eNBI5Khe4JZaRkL5hRGPWf8MZ6qv+bWAr4V8YeKBw=",
+        "rev": "3ec636362e1816bc2f0888fa0fa2c69f1bc9e504",
         "type": "tarball",
-        "url": "https://releases.nixos.org/nixos/unstable/nixos-26.11pre1097682.02c087f3fe67/nixexprs.tar.zst"
+        "url": "https://releases.nixos.org/nixos/unstable/nixos-26.11pre1100280.3ec636362e18/nixexprs.tar.zst"
       },
       "original": {
         "type": "tarball",
         "url": "https://channels.nixos.org/nixos-unstable/nixexprs.tar.zst"
       }
     },
+    "realistic-environments": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1792821440,
+        "narHash": "sha256-ER34bhGC6MA3u+jrMMM/DpYTst3ENvDb0UBt93oO/84=",
+        "owner": "itzMeerkat",
+        "repo": "Godot-RealisticEnvironments",
+        "rev": "169a472c0f019f51052d3e6893395a8425260ab6",
+        "type": "github"
+      },
+      "original": {
+        "owner": "itzMeerkat",
+        "repo": "Godot-RealisticEnvironments",
+        "rev": "169a472c0f019f51052d3e6893395a8425260ab6",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "godot-demo-projects": "godot-demo-projects",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "realistic-environments": "realistic-environments"
       }
     }
   },

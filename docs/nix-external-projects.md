@@ -6,9 +6,12 @@
 
 | 项目 | 来源 | 提交 | 许可 | 路径 |
 |------|------|------|------|------|
-| Truck Town | [godot-demo-projects](https://github.com/godotengine/godot-demo-projects) | `ad5bb61` | MIT | `3d/truck_town` |
+| Truck Town | [godot-demo-projects](https://github.com/godotengine/godot-demo-projects) | `b761b4c` | MIT | `3d/truck_town` |
+| Realistic Environments | [Godot-RealisticEnvironments](https://github.com/itzMeerkat/Godot-RealisticEnvironments) | `169a472` | MIT | 根目录 |
 
-环境变量 `CHONGMING_EXTERNAL_TRUCK_TOWN` 在 `nix develop` 后自动设置。
+环境变量在 `nix develop` 后自动设置：
+- `CHONGMING_EXTERNAL_TRUCK_TOWN`
+- `CHONGMING_EXTERNAL_REALISTIC_ENV`
 
 ## 添加新项目
 
@@ -45,6 +48,13 @@ Nix store 文件只读，系统启动时：
 1. 复制外部项目到临时目录（排除 `.godot` 和 `project.godot`）
 2. 递归设置文件和目录为可写（`topdown=False` 先文件后目录）
 3. 叠加本地 worker 项目文件
-4. Godot 重新导入资源
+4. Godot 重新导入资源（超时 600 秒，大型项目需要更长时间）
 
-相关代码：`src/chongming/rendering/godot.py:536-554`
+相关代码：`src/chongming/rendering/godot.py:536-581`
+
+### 性能特征
+
+**Realistic Environments** (ocean_only.tscn)：
+- 首次导入：约 2-3 分钟
+- 渲染性能：2-3 fps（1920×1080 主相机）
+- 适用场景：天气系统、云雾干扰测试

@@ -27,10 +27,18 @@ uv run --frozen chongming-preview --scenario scenarios/review.json
 外部 Godot 项目通过 Nix 管理，录制外部场景需设置环境变量：
 
 ```sh
+# Truck Town 示例
 export CHONGMING_GODOT_EXTERNAL_PROJECT="$CHONGMING_EXTERNAL_TRUCK_TOWN"
 export CHONGMING_GODOT_EXTERNAL_SCENE="res://town/model/town_model.gltf"
-uv run chongming-scene --scenario scenarios/truck_town.json --output recordings/output
+uv run chongming-scene --scenario scenarios/truck_town.json --output recordings/truck_town
+
+# Realistic Environments 海洋场景
+export CHONGMING_GODOT_EXTERNAL_PROJECT="$CHONGMING_EXTERNAL_REALISTIC_ENV"
+export CHONGMING_GODOT_EXTERNAL_SCENE="res://examples/ocean_only.tscn"
+uv run chongming-scene --scenario scenarios/realistic_env_ocean.json --output recordings/ocean
 ```
+
+可用外部项目及性能特征见 [Nix 外部项目集成](docs/nix-external-projects.md)。
 
 从用户发行归档安装普通 wheel，见[用户指南](docs/user-guide.md#安装)。
 

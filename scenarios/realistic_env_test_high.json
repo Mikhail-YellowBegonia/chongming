@@ -1,0 +1,32 @@
+{
+  "format": "scenario-authoring-v2",
+  "scenario_id": "realistic-env-test-v2",
+  "random_seed": 42,
+  "duration_s": 10,
+  "fps": 30,
+  "occlusion_mode": "unknown",
+  "stations": [
+    {
+      "id": "station-01",
+      "position_enu_m": [0, -50, 50],
+      "main_yaw_deg": 0,
+      "main_elevation_deg": -20,
+      "auxiliary_yaw_deg": 30
+    }
+  ],
+  "targets": [
+    {
+      "id": "target-01",
+      "display_name": "High altitude test",
+      "geometry": {"type": "aircraft"},
+      "motion": {
+        "type": "constant_velocity",
+        "position_enu_m": [30, 20, 40],
+        "velocity_enu_mps": [5, 3, 0]
+      }
+    }
+  ],
+  "world_objects": [],
+  "vegetation": [],
+  "wind": null
+}

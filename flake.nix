@@ -8,10 +8,16 @@
     flake = false;
   };
 
+  inputs.realistic-environments = {
+    url = "github:itzMeerkat/Godot-RealisticEnvironments/169a472c0f019f51052d3e6893395a8425260ab6";
+    flake = false;
+  };
+
   outputs =
     {
       nixpkgs,
       godot-demo-projects,
+      realistic-environments,
       ...
     }:
     let
@@ -27,6 +33,7 @@
 
       externalProjectsFor = system: {
         truck-town = "${godot-demo-projects}/3d/truck_town";
+        realistic-environments = "${realistic-environments}";
       };
 
       runtimeEnv =
@@ -40,6 +47,7 @@
           ];
           UV_PYTHON_DOWNLOADS = "never";
           CHONGMING_EXTERNAL_TRUCK_TOWN = externalProjects.truck-town;
+          CHONGMING_EXTERNAL_REALISTIC_ENV = externalProjects.realistic-environments;
         };
 
       treefmtFor =
@@ -112,6 +120,7 @@
                   echo "Python deps come from uv: run 'uv run chongming-center ...' from the repository root." >&2
                   echo "External Godot projects available:" >&2
                   echo "  CHONGMING_EXTERNAL_TRUCK_TOWN=${externalProjects.truck-town}" >&2
+                  echo "  CHONGMING_EXTERNAL_REALISTIC_ENV=${externalProjects.realistic-environments}" >&2
                 '';
               }
               // runtimeEnv pkgs externalProjects
