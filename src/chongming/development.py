@@ -1,4 +1,4 @@
-"""Discrete clean-ray workbench. All declared modules retain their lifecycle."""
+"""Discrete device/center workbench. All declared modules retain their lifecycle."""
 
 from __future__ import annotations
 
@@ -12,10 +12,11 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import ExitStack
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
+from chongming.center_ui import CenterRunUi
 from chongming.composition.development import development_run
 from chongming.composition.graph import declare_assembly
 from chongming.contracts.development import (
@@ -23,17 +24,26 @@ from chongming.contracts.development import (
     CenterInputStep,
     CenterRegistration,
 )
+from chongming.contracts.device import DevicePolicy
 from chongming.contracts.fusion import StationEventTimeProgress
 from chongming.contracts.model import (
     CameraRole,
     CaptureTime,
+    DiagnosticEvent,
     ProcessingTime,
     RayEvent,
     ReceivedEvent,
     StationEvent,
+    StationId,
 )
-from chongming.contracts.runtime import ModuleHealth
+from chongming.contracts.runtime import EventPath, ModuleHealth
 from chongming.contracts.scene import ScenarioStep
+from chongming.edge_runtime import (
+    EdgeRun,
+    EdgeStepOutput,
+    load_device_policies,
+    validate_device_policies,
+)
 from chongming.ports.development import CenterAlgorithm
 from chongming.rendering.godot import default_renderer
 from chongming.scenarios.run import SceneEvidenceWriter, _json, _provenance
@@ -86,23 +96,68 @@ class CenterSession:
         *,
         algorithm: CenterAlgorithm | None = None,
         video_enabled: bool = False,
+        mode: int = 3,
+        device_policies: dict[StationId, DevicePolicy] | None = None,
     ) -> None:
+        if type(mode) is not int or mode not in (2, 3, 4):
+            raise ValueError("mode must be 2, 3 or 4")
+        if mode == 2 and algorithm is not None:
+            raise ValueError("mode 2 does not accept a center algorithm")
+        if mode == 3 and device_policies is not None:
+            raise ValueError("device policies are only used in modes 2 and 4")
+        self.mode = mode
+        self.video_enabled = video_enabled
         self.path = path
         self.spec = load_scenario(path)
         validate_supported_features(self.spec)
         self.run_spec = development_run(self.spec, output)
+        if mode != 3:
+            if device_policies is None:
+                raise ValueError("modes 2 and 4 require explicit per-station device policies")
+            validate_device_policies(device_policies, self.spec.station_configs)
+            self.run_spec = replace(
+                self.run_spec,
+                center_input=EventPath.IMAGE_PIPELINE,
+                stations=tuple(
+                    replace(station, device_policy=device_policies[station.sessions.station_id])
+                    for station in self.run_spec.stations
+                ),
+            )
         self.assembly = declare_assembly(self.spec, self.run_spec)
         self.source = self.assembly.scene.scenario
-        self.source.video_enabled = video_enabled
-        self.algorithm: CenterAlgorithm = algorithm if algorithm is not None else InputInspector()
+        self.source.video_enabled = video_enabled or mode != 3
+        self.source.virtual_enabled = mode == 3
+        if algorithm is None and mode == 4:
+            from chongming.reference import create_algorithm
+
+            algorithm = create_algorithm()
+        self.algorithm: CenterAlgorithm | None = (
+            None if mode == 2 else algorithm if algorithm is not None else InputInspector()
+        )
         with ExitStack() as resources:
             self.writer = SceneEvidenceWriter(output, self.spec)
             resources.callback(self.writer.close)
-            self._online = resources.enter_context(
-                (output / "center-input.jsonl").open("x", encoding="utf-8")
+            self._online = (
+                resources.enter_context((output / "center-input.jsonl").open("x", encoding="utf-8"))
+                if mode != 2
+                else None
             )
-            self._results = resources.enter_context(
-                (output / "center-output.jsonl").open("x", encoding="utf-8")
+            self._results = (
+                resources.enter_context(
+                    (output / "center-output.jsonl").open("x", encoding="utf-8")
+                )
+                if mode != 2
+                else None
+            )
+            self.edge = (
+                EdgeRun(
+                    self.assembly.stations,
+                    resources.enter_context(
+                        (output / "edge-output.jsonl").open("x", encoding="utf-8")
+                    ),
+                )
+                if mode != 3
+                else None
             )
             self._resources = resources.pop_all()
         self._steps: Iterator[ScenarioStep] = iter(self.source.generate(self.spec))
@@ -116,6 +171,7 @@ class CenterSession:
         self.error: str | None = None
         self.status = "paused"
         self._step_lock = threading.Lock()
+        self._ui: CenterRunUi | None = None
         self._algorithm_started = False
         self._started_bindings = []
         try:
@@ -133,18 +189,30 @@ class CenterSession:
                 clock_mapping=self.run_spec.processing_to_capture_clock,
                 started_at=now,
             )
-            self._algorithm_started = True
-            self.algorithm.start(registration)
-            self.writer.document("center-registration.json", registration)
+            if self.algorithm is not None:
+                self._algorithm_started = True
+                self.algorithm.start(registration)
+                self.writer.document("center-registration.json", registration)
             self.writer.document("authoring.json", json.loads(path.read_text()))
             self.writer.document(
                 "manifest.json",
                 {
                     **_provenance(),
-                    "scope": "center-development",
+                    "scope": "edge-development"
+                    if mode == 2
+                    else "integrated-development"
+                    if mode == 4
+                    else "center-development",
+                    "execution_mode": mode,
+                    "input_source": "rendered_images" if mode != 3 else "virtual_rays",
+                    "virtual_events_enabled": self.source.virtual_enabled,
+                    "sensor_rendering_required": mode != 3,
+                    "center_algorithm_started": self._algorithm_started,
                     "run_id": self.run_spec.run_id,
                     "run_spec": self.run_spec,
-                    "algorithm": type(self.algorithm).__name__,
+                    "algorithm": type(self.algorithm).__name__
+                    if self.algorithm is not None
+                    else None,
                     "startup": self.health,
                     "all_modules_initialized": True,
                     "algorithms_complete": False,
@@ -162,11 +230,22 @@ class CenterSession:
                 logger.exception("Cleanup after initialization failure failed")
             raise
 
-    def _input(self, step: ScenarioStep | None) -> CenterInputStep:
+    def _input(
+        self, step: ScenarioStep | None, edge: EdgeStepOutput | None = None
+    ) -> CenterInputStep:
         ended = step is None
         clock = self.spec.timeline.clock_domain.clock_domain_id
         t = self.spec.timeline.end_time_ns + 1 if step is None else step.packets.sample_time.time_ns
         now = ProcessingTime(clock_domain_id=clock, time_ns=t)
+        if edge is not None:
+            return CenterInputStep(
+                step_no=self.step_count,
+                time=now,
+                solutions=edge.solutions,
+                events=tuple(ReceivedEvent(event=event, arrival_time=now) for event in edge.events),
+                progress=edge.progress,
+                stream_ended=ended,
+            )
         events: tuple[StationEvent, ...]
         if step is not None:
             for frame in step.truth.camera_frames:
@@ -231,49 +310,85 @@ class CenterSession:
             return self.snapshot()
         try:
             step = next(self._steps, None)
-            online = self._input(step)
-            self._online.write(_json(online) + "\n")
-            self._online.flush()
-            if step is not None:
-                self.writer.record(step)
-            began = time.perf_counter()
-            result = self.algorithm.process(online)
-            measurements, tracks = result.measurements, result.tracks
-            center_ms = (time.perf_counter() - began) * 1000
-            self._results.write(
-                _json(
-                    {
-                        "step_no": online.step_no,
-                        "time": online.time,
-                        "measurements": measurements,
-                        "tracks": tracks,
-                        "batches": result.batches,
-                        "center_ms": center_ms,
-                        "stream_ended": online.stream_ended,
-                    }
+            edge_output = None
+            edge_ms = None
+            if self.edge is not None:
+                if step is not None and step.video.skipped_frame_ids:
+                    raise RuntimeError("edge modes require every scheduled sensor image")
+                began = time.perf_counter()
+                edge_output = self.edge.process(
+                    step.video.frames if step is not None else (),
+                    ProcessingTime(
+                        clock_domain_id=self.spec.timeline.clock_domain.clock_domain_id,
+                        time_ns=step.video.sample_time.time_ns
+                        if step is not None
+                        else self.spec.timeline.end_time_ns + 1,
+                    ),
+                    ended=step is None,
                 )
-                + "\n"
-            )
-            self._results.flush()
+                edge_ms = (time.perf_counter() - began) * 1000
+            online = self._input(step, edge_output)
+            if self._online is not None:
+                self._online.write(_json(online) + "\n")
+                self._online.flush()
+            if step is not None:
+                evidence_step = (
+                    step
+                    if self.video_enabled
+                    else replace(step, video=replace(step.video, frames=()))
+                )
+                self.writer.record(evidence_step)
+            result = None
+            center_ms = None
+            if self.algorithm is not None:
+                began = time.perf_counter()
+                result = self.algorithm.process(online)
+                center_ms = (time.perf_counter() - began) * 1000
+                assert self._results is not None
+                self._results.write(
+                    _json(
+                        {
+                            "step_no": online.step_no,
+                            "time": online.time,
+                            "measurements": result.measurements,
+                            "tracks": result.tracks,
+                            "batches": result.batches,
+                            "center_ms": center_ms,
+                            "stream_ended": online.stream_ended,
+                        }
+                    )
+                    + "\n"
+                )
+                self._results.flush()
+            rays = sum(isinstance(received.event, RayEvent) for received in online.events)
             if step is not None:
                 self.step_count += 1
-                self.ray_count += len(step.packets.rays)
+                self.ray_count += rays
             else:
                 self.ended = True
                 self.status = "complete"
             self.last = {
                 "step_no": online.step_no,
                 "time_ns": online.time.time_ns,
-                "ray_count": len(step.packets.rays) if step else 0,
+                "ray_count": rays,
                 "progress_count": len(online.progress),
                 "stream_ended": self.ended,
-                "video_enabled": self.source.video_enabled,
-                "measurements": asdict_list(measurements),
-                "tracks": asdict_list(tracks),
-                "batches": asdict_list(result.batches),
+                "video_enabled": self.video_enabled,
+                "measurements": asdict_list(result.measurements) if result is not None else [],
+                "tracks": asdict_list(result.tracks) if result is not None else [],
+                "batches": asdict_list(result.batches) if result is not None else [],
                 "center_ms": center_ms,
+                "edge_ms": edge_ms,
+                "edge_frame_count": len(edge_output.frames) if edge_output is not None else 0,
+                "edge_diagnostic_count": sum(
+                    isinstance(event, DiagnosticEvent) for event in edge_output.events
+                )
+                if edge_output is not None
+                else 0,
                 "stages": asdict(step.truth.timing) if step and step.truth.timing else None,
             }
+            if self._ui is not None:
+                self._ui.publish(step, result, edge_output=edge_output)
             return self.snapshot()
         except BaseException as error:
             self.status = "failed"
@@ -283,6 +398,20 @@ class CenterSession:
             except Exception:
                 logger.exception("Cleanup after step failure failed")
             raise
+
+    def run_ui(self, *, tick_hz: float = 10) -> None:
+        """Run synchronously to completion or quit, then close this worker and run."""
+        if self.closed or self.step_count or self.ended or self._ui is not None:
+            raise RuntimeError("start a new session for each UI run")
+        try:
+            self._ui = CenterRunUi(self, default_renderer())
+            self._ui.run(tick_hz)
+        except BaseException as error:
+            self.status = "failed"
+            self.error = f"{type(error).__name__}: {error}"
+            raise
+        finally:
+            self.close()
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -299,7 +428,8 @@ class CenterSession:
         try:
             if self.closed:
                 raise RuntimeError("session is closed")
-            self.source.video_enabled = enabled
+            self.video_enabled = enabled
+            self.source.video_enabled = enabled or self.mode != 3
         finally:
             self._step_lock.release()
 
@@ -310,6 +440,7 @@ class CenterSession:
         errors = []
         if self._algorithm_started:
             try:
+                assert self.algorithm is not None
                 self.algorithm.close()
             except Exception as error:
                 logger.exception("Algorithm cleanup failed")
@@ -358,16 +489,42 @@ def asdict_list(items: tuple[Any, ...]) -> list[dict[str, Any]]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="干净射线开发工具；默认无视频、暂停，无服务端口")
+    parser = argparse.ArgumentParser(
+        description="设备、中心及集成开发工具；默认模式 3、无录像、暂停"
+    )
     parser.add_argument("--scenario", type=Path, required=True)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--check", action="store_true", help="只校验 JSON，不创建运行或输出")
     parser.add_argument("--run", action="store_true", help="连续运行至有限终点")
+    parser.add_argument("--ui", action="store_true", help="Godot 显示与诊断，有限结束后退出")
+    parser.add_argument(
+        "--video",
+        action="store_true",
+        help="显示传感器图像并录制证据视频；不控制模式 2／4 的算法成像",
+    )
+    parser.add_argument(
+        "--mode", type=int, choices=(2, 3, 4), default=3, help="2 边缘、3 中心（默认）、4 集成"
+    )
+    parser.add_argument(
+        "--device-policy", type=Path, help="模式 2／4 必填：按站点 ID 提供完整 DevicePolicy 的 JSON"
+    )
     parser.add_argument("--tick-hz", type=float, default=10)
     parser.add_argument("--algorithm", help="受信任的 Python module:factory；JSON 不加载代码")
     args = parser.parse_args()
     spec = load_scenario(args.scenario)
     validate_supported_features(spec)
+    if args.mode == 2 and args.algorithm is not None:
+        parser.error("mode 2 does not accept --algorithm")
+    if args.mode == 3 and args.device_policy is not None:
+        parser.error("--device-policy is only used in modes 2 and 4")
+    policies = None
+    if args.mode != 3:
+        if args.device_policy is None:
+            parser.error("modes 2 and 4 require --device-policy")
+        try:
+            policies = load_device_policies(args.device_policy, spec.station_configs)
+        except (OSError, TypeError, ValueError) as error:
+            parser.error(str(error))
     if args.check:
         print(
             f"有效：{spec.scenario_id}，{len(spec.station_configs)} 站，"
@@ -379,13 +536,27 @@ def main() -> None:
     if not math.isfinite(args.tick_hz) or not 0 < args.tick_hz <= 240:
         parser.error("--tick-hz must be in (0, 240]")
     factory: Any = InputInspector
+    if args.mode == 4 or (args.mode == 3 and args.ui):
+        from chongming.reference import create_algorithm
+
+        factory = create_algorithm
     if args.algorithm:
         module, sep, name = args.algorithm.partition(":")
         if not sep:
             parser.error("--algorithm must be module:factory")
         factory = getattr(importlib.import_module(module), name)
-    session = CenterSession(args.scenario, args.output, algorithm=factory())
+    session = CenterSession(
+        args.scenario,
+        args.output,
+        algorithm=factory() if args.mode != 2 else None,
+        video_enabled=args.video,
+        mode=args.mode,
+        device_policies=policies,
+    )
     try:
+        if args.ui:
+            session.run_ui(tick_hz=args.tick_hz)
+            return
         if not args.run:
             print("已暂停。命令：step / run [步数] / video on|off / status / reset / quit")
         while True:
@@ -404,7 +575,14 @@ def main() -> None:
             elif parts[0] == "reset":
                 session.close()
                 path = args.output.with_name(f"{args.output.name}-reset-{time.time_ns()}")
-                session = CenterSession(args.scenario, path, algorithm=factory())
+                session = CenterSession(
+                    args.scenario,
+                    path,
+                    algorithm=factory() if args.mode != 2 else None,
+                    video_enabled=args.video,
+                    mode=args.mode,
+                    device_policies=policies,
+                )
             elif parts[0] == "run":
                 if len(parts) > 2 or (
                     len(parts) == 2 and (not parts[1].isdigit() or int(parts[1]) <= 0)

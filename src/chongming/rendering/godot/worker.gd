@@ -8,6 +8,8 @@ const TerrainShader = preload("res://terrain.gdshader")
 const BuildingShader = preload("res://building.gdshader")
 const GroundcoverShader = preload("res://groundcover.gdshader")
 const PreviewUi = preload("res://ui.gd")
+const Visualization = preload("res://visualization.gd")
+var _visualization := Visualization.new()
 var _server := TCPServer.new()
 var _peer: StreamPeerTCP
 var _buffer := PackedByteArray()
@@ -108,6 +110,7 @@ func _setup_world() -> void:
 	_free_camera.fov = 70.0
 	_free_camera.far = 5000.0
 	_free_viewport.add_child(_free_camera)
+	_visualization.attach(_world, _free_camera, _enu)
 	_editor_gizmos = Node3D.new()
 	_world.add_child(_editor_gizmos)
 	_editor_display = TextureRect.new()
@@ -275,7 +278,11 @@ func _ui_exchange(request: Dictionary, trailer: PackedByteArray) -> PackedByteAr
 	var images = request.get("images")
 	if not state is Dictionary or not images is Array:
 		return PackedByteArray()
+	var version = state.get("version")
+	if not (version is int or version is float) or not is_finite(float(version)) or version != floor(version):
+		return PackedByteArray()
 	var keys: Array[String] = []
+	var expected_offset := 0
 	for entry_value in images:
 		if not entry_value is Dictionary:
 			return PackedByteArray()
@@ -285,9 +292,23 @@ func _ui_exchange(request: Dictionary, trailer: PackedByteArray) -> PackedByteAr
 		var height := int(entry.get("height", 0))
 		var offset := int(entry.get("offset", -1))
 		var length := int(entry.get("length", -1))
-		if key.is_empty() or width <= 0 or height <= 0 or length != width * height * 3 \
-				or offset < 0 or offset + length > trailer.size():
+		if key.is_empty() or key in keys or width <= 0 or height <= 0 or length != width * height * 3 \
+				or offset != expected_offset or offset + length > trailer.size():
 			return PackedByteArray()
+		keys.append(key)
+		expected_offset += length
+	if expected_offset != trailer.size():
+		return PackedByteArray()
+	var previous_update_count := _visualization.update_count
+	if not _visualization.receive(state):
+		push_error("Godot visualization rejected UI update: %s" % _visualization.error)
+		return PackedByteArray()
+	for entry in images:
+		var key: String = entry.key
+		var width := int(entry.width)
+		var height := int(entry.height)
+		var offset := int(entry.offset)
+		var length := int(entry.length)
 		var image := Image.create_from_data(width, height, false, Image.FORMAT_RGB8,
 			trailer.slice(offset, offset + length))
 		var texture: ImageTexture = _ui_textures.get(key)
@@ -295,11 +316,13 @@ func _ui_exchange(request: Dictionary, trailer: PackedByteArray) -> PackedByteAr
 			texture.update(image)
 		else:
 			_ui_textures[key] = ImageTexture.create_from_image(image)
-		keys.append(key)
 	_ui_state = state
 	if _ui == null:
 		_open_ui()
-	_ui.show_state(state, _ui_textures)
+	_ui.show_state(state, _ui_textures, _visualization.station_states, _visualization.evaluation.summary())
+	_refresh_visualization_controls()
+	if _visualization.update_count != previous_update_count:
+		_redraw_freeview()
 	var reply := {
 		"accepted": {"version": state.get("version"), "images": keys},
 		"commands": _ui_commands,
@@ -595,7 +618,24 @@ func _position_editor_overview(entities: Array) -> void:
 	_free_camera.look_at(focus, Vector3.UP)
 
 
+func ui_set_visualization_layer(key: String, enabled: bool) -> void:
+	_visualization.set_layer_visible(key, enabled)
+	_redraw_freeview()
+
+
+func ui_select_measurement(id: String) -> void:
+	if _visualization.select_measurement(id):
+		_refresh_visualization_controls()
+		_redraw_freeview()
+
+
+func _refresh_visualization_controls() -> void:
+	_ui.show_visualization(_visualization.measurements, _visualization.selection_summary(),
+		_visualization.voxel_space, _visualization.voxel_update_id)
+
+
 func _sync_editor_markers(markers: Array) -> void:
+	_visualization.set_station_origins(markers)
 	for child in _editor_gizmos.get_children():
 		child.free()
 	for marker_value in markers:

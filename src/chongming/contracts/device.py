@@ -30,6 +30,12 @@ class DetectionPolicy:
     score_definition: ScoreDefinition
     minimum_component_area_px2: float
     maximum_component_area_px2: float | None
+    # None means unconfigured; MOG2 execution requires every background parameter.
+    background_warmup_frame_count: int | None = None
+    background_history_frame_count: int | None = None
+    background_variance_threshold: float | None = None
+    background_learning_rate: float | None = None
+    background_detect_shadows: bool | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -157,6 +163,8 @@ class RayGenerationPolicy:
     # None is unknown, never zero. Shared installation/solution errors stay separate.
     # Jitter/flex terms are residual experiment models, not automatically independent.
     # Slow shared flex is scanned separately; repeated frames cannot shrink it away.
+    # Nonzero residuals require a declared mutual/pixel-independence model basis.
+    residual_independence_basis: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)

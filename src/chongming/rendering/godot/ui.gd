@@ -4,7 +4,7 @@ extends Control
 ## into commands for the next UI exchange; it owns no experiment or edit state.
 
 const PANEL_WIDTH := 440
-const STATE_TEXT := {"playing": "播放中", "paused": "已暂停", "failed": "生成失败"}
+const STATE_TEXT := {"playing": "播放中", "paused": "已暂停", "running": "执行中", "complete": "已完成", "failed": "运行失败"}
 const EDIT_FIELDS := [
 	["E", "位置 E (m)"], ["N", "位置 N (m)"], ["U", "位置 U (m)"],
 	["yaw", "主相机偏航角 (°)"], ["elevation", "主相机俯仰角 (°)"],
@@ -77,6 +77,12 @@ var _edit_fields: Dictionary = {}
 var _edit_labels: Dictionary = {}
 var _edit_apply: Button
 var _edit_hint: Label
+var _visualization_layers: Dictionary = {}
+var _station_states: TextEdit
+var _diagnostics: TextEdit
+var _measurement_select: OptionButton
+var _measurement_details: Label
+var _voxel_status: Label
 
 
 ## Build the window around the worker's freeview display, which moves into a tab.
@@ -111,6 +117,11 @@ func build(freeview: TextureRect, freeview_fps: Label) -> void:
 	_panel.add_child(_editor_tab())
 	_log = _text_view()
 	_panel.add_child(_log)
+	_panel.add_child(_visualization_tab())
+	_panel.set_tab_title(3, "算法图层")
+	_diagnostics = _text_view()
+	_panel.add_child(_diagnostics)
+	_panel.set_tab_title(4, "误差诊断")
 	_panel.set_tab_title(0, "信息")
 	_panel.set_tab_title(1, "编辑")
 	_panel.set_tab_title(2, "日志")
@@ -185,6 +196,101 @@ func _freeview_tab(freeview: TextureRect, freeview_fps: Label) -> Control:
 	_freeview_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(_freeview_hint)
 	return box
+
+
+func _visualization_tab() -> ScrollContainer:
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	var box := VBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(box)
+	for pair in [["truth", "真值：绿色圆圈、速度及视场连线"], ["rays", "边缘：黄色射线及独立角度 σ 圆锥"],
+			["measurements", "中心：红色测量位置及尺寸圆"], ["tracks", "轨迹：历史及当前位置"],
+			["voxels", "体素：无先验原始站点投票（线框）"]]:
+		var check := CheckBox.new()
+		var key: String = pair[0]
+		check.text = pair[1]
+		check.button_pressed = true
+		check.toggled.connect(func(enabled: bool) -> void: worker.ui_set_visualization_layer(key, enabled))
+		_visualization_layers[key] = check
+		box.add_child(check)
+	var legend := Label.new()
+	legend.text = "仅自由视角，不写入传感器像素。\n射线：VALID 实线 / FROZEN 虚线 / STALE 点线\n轨迹：暂定浅红 / 确认深红 / 滑行橙 / 删除灰\n射线保留 1 s，测量及删除轨迹保留 3 s（实验时间）。\n轨迹保留最近 100 点；速度箭头为 1 s 位移。\n测量圆直径 = max(σE, σN, σU)，仅尺寸示意。\n未知 σ 不绘制；角度 σ ≥ π/2 无法绘制圆锥。\n\n站点姿态差：配置相机坐标系（右 / 下 / 前），单位 rad。"
+	legend.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(legend)
+	_voxel_status = Label.new()
+	_voxel_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(_voxel_status)
+	_measurement_select = OptionButton.new()
+	_measurement_select.clip_text = true
+	_measurement_select.fit_to_longest_item = false
+	_measurement_select.item_selected.connect(func(index: int) -> void:
+		worker.ui_select_measurement(str(_measurement_select.get_item_metadata(index))))
+	box.add_child(_measurement_select)
+	_measurement_details = Label.new()
+	_measurement_details.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(_measurement_details)
+	_station_states = _text_view()
+	_station_states.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_station_states.custom_minimum_size.y = 140
+	box.add_child(_station_states)
+	return scroll
+
+
+func show_visualization(measurements: Dictionary, selection: Dictionary, voxels: Variant, voxel_update: int) -> void:
+	var ids: Array = measurements.keys()
+	ids.sort()
+	var selected: String = selection.measurement_id
+	if selection.expired:
+		ids.append(selected)
+	ids.push_front("")
+	var previous: Array = []
+	for index in range(_measurement_select.item_count):
+		previous.append(str(_measurement_select.get_item_metadata(index)))
+	if previous != ids:
+		_measurement_select.clear()
+		for id in ids:
+			_measurement_select.add_item("不选择测量" if id == "" else ("已过期：" if id == selected and selection.expired else "测量：") + id)
+			_measurement_select.set_item_metadata(_measurement_select.item_count - 1, id)
+	_measurement_select.select(ids.find(selected))
+	if selected == "":
+		_measurement_details.text = "选择测量后，以青色高亮缓存中尚存的支持射线。"
+	elif selection.expired:
+		_measurement_details.text = "测量 %s 已过期，无法显示；不重建支持射线。" % selected
+	else:
+		var measurement: Dictionary = measurements[selected]
+		_measurement_details.text = "%s · %s · 参考时刻 %d ns\n支持射线：可显示 %d / %d\n%s" % [selected,
+			measurement.status, measurement.reference_time_ns, selection.available_ray_ids.size(),
+			measurement.supporting_ray_ids.size(),
+			"全部仍在缓存中。" if selection.missing_ray_ids.is_empty() else "部分或全部未接收或已过期，无法显示；不重建。"]
+	_voxel_status.text = "体素：尚无快照（或最后封口窗口未提供原始投票），不保留旧窗口。" if voxels == null else \
+		"体素：更新 #%d · 最后封口窗口\n%d 个非零网格 · 最大站点票数 %d\n仅无先验搜索，透明度不超过 0.3；空快照会清除旧图。" % [
+			voxel_update, voxels.scored_voxels.size(), voxels.max_score]
+
+
+func _show_station_states(stations: Dictionary) -> void:
+	var lines := []
+	for station in stations.values():
+		lines.append("%s · %s\n  实际相对配置：%s\n  校准相对配置：%s" % [station.station_id,
+			"未知" if station.calibration_usage == null else str(station.calibration_usage).to_upper(),
+			_vector(station.truth_orientation_error_rad, 9), _vector(station.calibration_orientation_error_rad, 9)])
+	_set_text(_station_states, "尚无站点状态" if lines.is_empty() else "\n\n".join(lines))
+
+
+func _diagnostics_text(summary: Dictionary) -> String:
+	var lines := ["门限内匹配样本误差（本次运行累计）",
+		"开发门限：指向 %s rad；定位 %s m" % [String.num(summary.angle_gate_rad), String.num(summary.distance_gate_m)],
+		"门限仅为开发配置，不代表适用性验证。"]
+	for pair in [["edge", "边缘射线 · 指向偏差", "rad"], ["center", "中心测量 · 定位误差", "m"]]:
+		var stats: Dictionary = summary[pair[0]]
+		lines.append("\n%s\n已接收 %d · 有效（可评估）%d\n匹配 %d · 未匹配 %d · 无法评估 %d\n误差样本数 %d" % [
+			pair[1], stats.outputs, stats.valid, stats.matched, stats.unmatched, stats.unevaluable, stats.sample_count])
+		for metric in [["mean_error", "平均误差"], ["rmse", "RMSE"], ["max_error", "最大误差"]]:
+			var value = stats[metric[0]]
+			lines.append("%s：%s" % [metric[1], "不可计算（无匹配样本）" if value == null else
+				String.num(value, 12) + " " + pair[2]])
+	lines.append("\n接收数 = 匹配 + 未匹配 + 无法评估；有效数 = 匹配 + 未匹配。\n匹配使用对应时刻全部真值，可见性不作门控。\n空真值中的输出记未匹配；无有效位置或方向无法定义记无法评估。\n未匹配输出不等同误报；不提供 TP/FP/FN、召回率或综合分数。")
+	return "\n".join(lines)
 
 
 func _text_view() -> TextEdit:
@@ -353,7 +459,7 @@ func _apply_edit() -> void:
 
 ## Show the state Python just pushed. Textures are the worker's keyed images,
 ## updated in place; a state without a frame keeps showing the previous one.
-func show_state(state: Dictionary, textures: Dictionary) -> void:
+func show_state(state: Dictionary, textures: Dictionary, station_states: Dictionary, diagnostics: Dictionary) -> void:
 	_state = state
 	_textures = textures
 	if state.get("frame") is Dictionary:
@@ -363,18 +469,21 @@ func show_state(state: Dictionary, textures: Dictionary) -> void:
 	_set_text(_info, _info_text())
 	_show_log()
 	_show_editor()
+	_show_station_states(station_states)
+	_set_text(_diagnostics, _diagnostics_text(diagnostics))
 
 
 func _show_controls() -> void:
 	var playback: Dictionary = _state.get("playback", {})
 	var editor: Dictionary = _state.get("editor", {})
 	var state := str(playback.get("state", ""))
-	var locked := state == "failed" or bool(editor.get("active", false))
+	var locked := int(_state.get("execution_mode", 1)) != 1 or state == "failed" or bool(editor.get("active", false))
 	_play.text = "播放" if state == "paused" else "暂停"
 	for button in [_play, _step, _restart]:
 		button.disabled = locked
 	var seeking := bool(playback.get("seeking", false))
 	_seek.disabled = locked or seeking
+	_seek_time.editable = not locked and not seeking
 	_seek_time.placeholder_text = "0–%.1f s" % float(playback.get("duration_s", 0.0))
 	if seeking:
 		_seek_hint.text = "跳转中…"
@@ -470,6 +579,13 @@ static func _vector(value: Variant, digits := 1) -> String:
 func _info_text() -> String:
 	var playback: Dictionary = _state.get("playback", {})
 	var lines := []
+	var mode := int(_state.get("execution_mode", 1))
+	if mode == 2:
+		lines.append("模式 2 · 边缘测试（真实图像算法输入）\n不运行中心算法；缺失边缘结果不使用虚拟射线替代。\n")
+	elif mode == 3:
+		lines.append("模式 3 · 中心测试（普通虚拟射线输入）\n同步执行，结束后退出；不支持编辑或时间跳转。\n体素仅支持参考中心算法的无先验原始投票。\n")
+	elif mode == 4:
+		lines.append("模式 4 · 集成测试（图像 → 设备实际事件 → 中心算法）\n同步执行，结束后退出；体素仅支持参考中心算法的无先验原始投票。\n")
 	if playback.get("error") != null:
 		lines.append("错误：%s" % playback.error)
 		lines.append("")
@@ -513,6 +629,18 @@ func _info_text() -> String:
 		lines.append("  %s (%s)  位置 %s m  速度 %.2f m/s  %s" % [item.display_name, item.truth_object_id,
 			_vector(item.state.position_enu_m), speed, capture])
 	lines.append("")
+	if mode != 1:
+		var last: Dictionary = playback.get("last", {}) if playback.get("last") is Dictionary else {}
+		if mode == 2 or mode == 4:
+			lines.append("设备处理 %s ms · 完成主帧 %d · 诊断 %d" % [
+				last.get("edge_ms", "—"), last.get("edge_frame_count", 0), last.get("edge_diagnostic_count", 0)])
+			lines.append("算法成像始终开启；--video 仅控制图像显示与证据视频。")
+			lines.append("无曝光时刻的控制诊断见日志，不计为射线误差样本。")
+		if mode == 3 or mode == 4:
+			lines.append("中心算法 %s ms · 本步测量 %d · 轨迹事件 %d" % [
+				last.get("center_ms", "—"), last.get("measurement_count", 0), last.get("track_event_count", 0)])
+		lines.append("校准使用状态与姿态差见“算法图层”。")
+		return "\n".join(lines)
 	lines.append("辅助相机标定")
 	var calibration: Dictionary = _frame.get("calibration", {})
 	if calibration.is_empty():
@@ -555,15 +683,16 @@ static func _set_text(view: TextEdit, text: String) -> void:
 
 func _show_editor() -> void:
 	var editor: Dictionary = _state.get("editor", {})
-	var active := bool(editor.get("active", false))
+	var run_mode := int(_state.get("execution_mode", 1)) != 1
+	var active := not run_mode and bool(editor.get("active", false))
 	var document := _document()
-	_edit_begin.disabled = active or document.is_empty()
+	_edit_begin.disabled = run_mode or active or document.is_empty()
 	for control in [_edit_cancel, _edit_commit, _edit_object, _edit_add_station,
 			_edit_add_target, _edit_delete, _edit_landscape, _edit_apply]:
 		control.disabled = not active
 	for edit in _edit_fields.values() + [_edit_new_id]:
 		edit.editable = active
-	_edit_state.text = "编辑中，实验已暂停" if active else "需要 --scenario 启动" if document.is_empty() else "未锁定"
+	_edit_state.text = "运行模式不支持编辑" if run_mode else "编辑中，实验已暂停" if active else "需要 --scenario 启动" if document.is_empty() else "未锁定"
 	var options := []
 	for pair in [["stations", "station", "相机站"], ["targets", "target", "飞行物"]]:
 		for item in document.get(pair[0], []):

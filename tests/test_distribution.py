@@ -48,6 +48,9 @@ chongming-center = "chongming.development:main"
                 "src/chongming/rendering/godot/worker.gd": b"extends Node\n",
                 "src/chongming/rendering/godot/worker.tscn": b"[gd_scene format=3]\n",
                 "src/chongming/rendering/godot/terrain.gdshader": b"shader_type spatial;\n",
+                "src/chongming/rendering/godot/ui.gd": b"extends Control\n",
+                "src/chongming/rendering/godot/visualization.gd": b"extends RefCounted\n",
+                "src/chongming/rendering/godot/evaluation.gd": b"extends RefCounted\n",
                 "scenarios/center_clean.json": b'{"scenario_id": "fixture"}\n',
                 "scenarios/assets/grid.json": b'{ "heights_m": [[0, 1], [2, 3]] }\n',
             }
@@ -110,6 +113,17 @@ chongming-center = "chongming.development:main"
         del self.wheel["chongming/web/preview.html"]
         with self.assertRaisesRegex(ValueError, "missing.*preview.html"):
             check_wheel(self.sources, self.wheel, self.version)
+
+    def test_visualization_resources_are_required_even_if_both_archives_omit_them(self) -> None:
+        for filename in ("ui.gd", "visualization.gd", "evaluation.gd"):
+            with self.subTest(filename=filename):
+                name = f"chongming/rendering/godot/{filename}"
+                sources = {
+                    key: value for key, value in self.sources.items() if key != f"src/{name}"
+                }
+                wheel = {key: value for key, value in self.wheel.items() if key != name}
+                with self.assertRaisesRegex(ValueError, f"missing.*{filename}"):
+                    check_wheel(sources, wheel, self.version)
 
     def test_wheel_license_and_entry_points_are_checked(self) -> None:
         for name in ("licenses/COPYING", "entry_points.txt"):

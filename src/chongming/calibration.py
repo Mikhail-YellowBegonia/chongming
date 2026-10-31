@@ -209,8 +209,9 @@ def _camera_matrix(config: StationConfig, auxiliary: bool = True) -> np.ndarray:
     return matrix
 
 
-def _distortion_coefficients(config: StationConfig) -> np.ndarray:
-    distortion = config.auxiliary_camera.distortion
+def _distortion_coefficients(config: StationConfig, auxiliary: bool = True) -> np.ndarray:
+    camera = config.auxiliary_camera if auxiliary else config.main_camera
+    distortion = camera.distortion
     model = distortion.model.lower().replace("-", "_")
     if model in {"none", "pinhole", "zero"}:
         return np.zeros((5, 1), dtype=np.float64)
@@ -222,7 +223,7 @@ def _distortion_coefficients(config: StationConfig) -> np.ndarray:
         if len(coefficients) not in {5, 8, 12, 14}:
             raise ValueError("Brown-Conrady distortion needs 4, 5, 8, 12 or 14 coefficients")
         return np.asarray(coefficients, dtype=np.float64).reshape(-1, 1)
-    raise ValueError(f"unsupported auxiliary distortion model: {distortion.model}")
+    raise ValueError(f"unsupported camera distortion model: {distortion.model}")
 
 
 def _landmark_corners(

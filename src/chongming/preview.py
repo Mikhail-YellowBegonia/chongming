@@ -44,10 +44,16 @@ from chongming.contracts.scene import (
     TreePart,
     TreeVisualSpec,
 )
+from chongming.contracts.visualization import AlgorithmOutputUpdate, TruthComparisonSnapshot
 from chongming.joint_calibration import JointCalibrationRunner
 from chongming.modules.scene import ScenarioModule
 from chongming.ports.scene import ScenarioSource
-from chongming.rendering.godot import UiImage, close_default_renderer, default_renderer
+from chongming.rendering.godot import (
+    UiImage,
+    close_default_renderer,
+    default_renderer,
+    visualization_ui_state,
+)
 from chongming.scenarios.assets import read_verified_json
 from chongming.scenarios.authoring import compile_authoring, save_authoring
 from chongming.scenarios.demo import demo_source, demo_spec
@@ -974,6 +980,58 @@ class PreviewRuntime:
                 self._condition.notify_all()
 
 
+class GodotUiChannel:
+    """Shared synchronous UI transport, independent of preview/run command handling."""
+
+    def __init__(
+        self,
+        exchange: Callable[[dict[str, Any], tuple[UiImage, ...]], list[dict[str, Any]]],
+    ) -> None:
+        self._exchange = exchange
+        self._version = 0
+        self._sent_frame: tuple[int, str] | None = None
+
+    def push(
+        self,
+        *,
+        status: dict[str, Any],
+        payload: dict[str, Any] | None,
+        step: ScenarioStep | None,
+        station_id: str,
+        editor: dict[str, Any],
+        log: list[dict[str, Any]],
+        execution_mode: int = 1,
+        algorithm_output: AlgorithmOutputUpdate | None = None,
+        truth_snapshots: tuple[TruthComparisonSnapshot, ...] | None = None,
+    ) -> list[dict[str, Any]]:
+        if (algorithm_output is None) != (truth_snapshots is None):
+            raise ValueError("algorithm_output and truth_snapshots must be supplied together")
+        sequence = payload["sequence"] if payload is not None else None
+        frame: dict[str, Any] | None = None
+        images: tuple[UiImage, ...] = ()
+        if payload is not None and step is not None and sequence is not None:
+            current = (sequence, station_id)
+            # Frames are immutable per sequence; Godot keeps showing the last one.
+            if current != self._sent_frame:
+                frame = payload
+                images = ui_images(step, station_id)
+                self._sent_frame = current
+        self._version += 1
+        state = {
+            "version": self._version,
+            "execution_mode": execution_mode,
+            "playback": status,
+            "station": station_id,
+            "frame_sequence": sequence,
+            "frame": frame,
+            "editor": editor,
+            "log": log,
+        }
+        if algorithm_output is not None and truth_snapshots is not None:
+            state.update(visualization_ui_state(algorithm_output, truth_snapshots))
+        return self._exchange(state, images)
+
+
 class GodotUiSession:
     """Drive the Godot window: push runtime state, dispatch the commands it returns.
 
@@ -993,39 +1051,31 @@ class GodotUiSession:
         if not 0 < rate_hz <= 120:
             raise ValueError("UI rate must be greater than 0 and at most 120 Hz")
         self.runtime = runtime
-        self._exchange = exchange
+        self._channel = GodotUiChannel(exchange)
         self._period_s = 1.0 / rate_hz
-        self._version = 0
         self._station_id = runtime.ui_view()[0]["stations"][0]
         self._edit_token: str | None = None
-        self._sent_frame: tuple[int, str] | None = None
         self._log = _UiLogBuffer()
         self._running = True
 
-    def tick(self) -> bool:
-        """Run one exchange. Returns False once the user asked to quit."""
+    def tick(
+        self,
+        *,
+        algorithm_output: AlgorithmOutputUpdate | None = None,
+        truth_snapshots: tuple[TruthComparisonSnapshot, ...] | None = None,
+    ) -> bool:
+        """Send each supplied algorithm increment synchronously, independently of images."""
         status, payload, step = self.runtime.ui_view()
-        sequence = payload["sequence"] if payload is not None else None
-        frame: dict[str, Any] | None = None
-        images: tuple[UiImage, ...] = ()
-        if payload is not None and step is not None and sequence is not None:
-            current = (sequence, self._station_id)
-            # Frames are immutable per sequence; Godot keeps showing the last one.
-            if current != self._sent_frame:
-                frame = payload
-                images = ui_images(step, self._station_id)
-                self._sent_frame = current
-        self._version += 1
-        state = {
-            "version": self._version,
-            "playback": status,
-            "station": self._station_id,
-            "frame_sequence": sequence,
-            "frame": frame,
-            "editor": self.runtime.editor_status(),
-            "log": self._log.snapshot(),
-        }
-        for command in self._exchange(state, images):
+        for command in self._channel.push(
+            status=status,
+            payload=payload,
+            step=step,
+            station_id=self._station_id,
+            editor=self.runtime.editor_status(),
+            log=self._log.snapshot(),
+            algorithm_output=algorithm_output,
+            truth_snapshots=truth_snapshots,
+        ):
             self._dispatch(command)
         return self._running
 

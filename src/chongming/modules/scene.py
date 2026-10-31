@@ -1698,6 +1698,7 @@ class ScenarioModule(ModuleShell):
         station_sessions: tuple[StationSessionBinding, ...],
         render_every: int = 1,
         video_enabled: bool = True,
+        virtual_enabled: bool = True,
     ) -> None:
         if type(render_every) is not int or render_every <= 0:
             raise ValueError("render_every must be positive")
@@ -1708,6 +1709,7 @@ class ScenarioModule(ModuleShell):
         self.station_sessions = station_sessions
         self.render_every = render_every
         self.video_enabled = video_enabled
+        self.virtual_enabled = virtual_enabled
 
     def generate(self, spec: ScenarioSpec) -> Iterable[ScenarioStep]:
         from chongming.scenarios.serialization import (
@@ -1804,17 +1806,27 @@ class ScenarioModule(ModuleShell):
             else:
                 imaging = ImagingBatch(frames=())
             render_finished = perf_counter()
-            virtual, virtual_truth = self.virtual_generator.generate(
-                VirtualObservationRequest(
-                    scenario_id=spec.scenario_id,
-                    random_seed=spec.random_seed,
-                    generation_spec=spec.virtual_observations,
-                    online_station_configs=spec.station_configs,
-                    frames=imaging_truth.frame_truth,
-                    station_sessions=self.station_sessions,
-                    camera_jitter=spec.perturbations.camera_jitter,
+            if self.virtual_enabled:
+                virtual, virtual_truth = self.virtual_generator.generate(
+                    VirtualObservationRequest(
+                        scenario_id=spec.scenario_id,
+                        random_seed=spec.random_seed,
+                        generation_spec=spec.virtual_observations,
+                        online_station_configs=spec.station_configs,
+                        frames=imaging_truth.frame_truth,
+                        station_sessions=self.station_sessions,
+                        camera_jitter=spec.perturbations.camera_jitter,
+                    )
                 )
-            )
+            else:
+                virtual = VirtualObservationBatch(
+                    calibration_states=(),
+                    calibration_solutions=(),
+                    calibration_events=(),
+                    rays=(),
+                    diagnostics=(),
+                )
+                virtual_truth = VirtualObservationTruthBatch(truth_correspondences=())
             virtual_finished = perf_counter()
             truth_rays: list[TruthRay] = []
             for frame_truth in imaging_truth.frame_truth:

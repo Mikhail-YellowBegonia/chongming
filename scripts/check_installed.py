@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,7 @@ import threading
 from dataclasses import replace
 from importlib.metadata import distribution
 from pathlib import Path
+from typing import Any
 from urllib.request import urlopen
 from zipfile import ZipFile
 
@@ -36,6 +38,57 @@ def check_preview(scenario: Path, expected_digest: str) -> None:
     if thread.is_alive():
         raise RuntimeError("Preview HTTP server did not stop")
     print("PASS: preview HTML served from the installed package", flush=True)
+
+
+def check_center_ui(scenario: Path) -> None:
+    """Run real reference output through the installed UI and its bundled scripts."""
+    from chongming.development import CenterSession
+    from chongming.reference import create_algorithm
+    from chongming.rendering.godot import UiImage, close_default_renderer, default_renderer
+    from chongming.scenarios.authoring import save_authoring
+
+    updates: list[dict[str, Any]] = []
+    renderer = default_renderer()
+    exchange = renderer.ui_exchange
+
+    def record(state: dict[str, Any], images: tuple[UiImage, ...] = ()) -> list[dict[str, Any]]:
+        commands = exchange(state, images)
+        if "SCRIPT ERROR" in renderer._diagnostics():
+            raise RuntimeError("Installed visualization reported a Godot script error")
+        if "algorithm_output" in state:
+            updates.append(state["algorithm_output"])
+        return commands
+
+    renderer.ui_exchange = record
+    try:
+        with tempfile.TemporaryDirectory(prefix="chongming-center-ui-") as directory:
+            root = Path(directory)
+            document = json.loads(scenario.read_text())
+            document["duration_s"] = 0.12
+            path = root / "scene.json"
+            save_authoring(document, path)
+            session = CenterSession(path, root / "run", algorithm=create_algorithm())
+            session.run_ui(tick_hz=240)
+            summary = json.loads((root / "run/summary.json").read_text())
+            if summary["state"] != "complete" or summary["shutdown_errors"]:
+                raise RuntimeError("Installed center UI did not complete and close cleanly")
+            if [int(update["update_id"]) for update in updates] != list(
+                range(1, session.step_count + 2)
+            ):
+                raise RuntimeError("Installed UI did not acknowledge every algorithm increment")
+            if not any(update["center_events"]["measurements"] for update in updates):
+                raise RuntimeError("Installed reference run did not produce measurements")
+            if not any(
+                update["center_events"]["voxel_space"] is not None
+                and update["center_events"]["voxel_space"]["scored_voxels"]
+                for update in updates
+            ):
+                raise RuntimeError("Installed reference run did not export raw voxel votes")
+    finally:
+        close_default_renderer()
+    print(
+        "PASS: installed center UI, acknowledged measurements and raw voxel snapshots", flush=True
+    )
 
 
 def main() -> None:
@@ -139,6 +192,7 @@ def main() -> None:
         finally:
             close_default_renderer()
         print("PASS: installed Godot renderer and finite evidence run", flush=True)
+        check_center_ui(args.scenarios / "center_clean.json")
 
     if _provenance()["package_digests"] != expected:
         raise RuntimeError("Runtime checks modified the installed package files")

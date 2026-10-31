@@ -140,6 +140,9 @@ def check_wheel(sources: dict[str, bytes], wheel: dict[str, bytes], version: str
             "chongming/rendering/godot/worker.gd",
             "chongming/rendering/godot/worker.tscn",
             "chongming/rendering/godot/terrain.gdshader",
+            "chongming/rendering/godot/ui.gd",
+            "chongming/rendering/godot/visualization.gd",
+            "chongming/rendering/godot/evaluation.gd",
         },
         "Source package",
     )

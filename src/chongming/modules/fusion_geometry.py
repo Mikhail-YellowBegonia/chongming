@@ -24,6 +24,7 @@ from chongming.modules.fusion_motion import (
 )
 from chongming.ports import fusion as ports
 from chongming.uncertainty import covariance_factor
+from chongming.voxel_diagnostics import VoxelDiagnostics
 
 Array = npt.NDArray[np.float64]
 Voxel = tuple[int, int, int]
@@ -276,6 +277,7 @@ class VoxelCandidateModule(ModuleShell):
     policy: f.CandidatePolicy
     motion_policy: f.GeometryPolicy
     weights: ports.GeometryWeighting
+    diagnostics: VoxelDiagnostics | None = None
 
     def __post_init__(self) -> None:
         validate_policy(self.motion_policy)
@@ -405,6 +407,8 @@ class VoxelCandidateModule(ModuleShell):
                 cells.setdefault(voxel, {}).setdefault(ray.event.envelope.station_id, set()).add(
                     _event_id(ray)
                 )
+        if prediction is None and self.diagnostics is not None:
+            self.diagnostics.capture(window.key, search, cells)
         # Identical evidence in neighboring cells is one coarse hypothesis, not
         # several independent targets or additional station votes.
         regions: dict[tuple[tuple[m.StationId, tuple[m.EventId, ...]], ...], list[Voxel]] = {}

@@ -11,6 +11,7 @@ from chongming.contracts.development import (
 from chongming.contracts.model import ProcessingTime, SessionId
 from chongming.ports.fusion import FusionEngine
 from chongming.ports.lifecycle import ModuleBinding
+from chongming.voxel_diagnostics import VoxelDiagnostics
 
 
 class FusionEngineAdapter:
@@ -49,6 +50,7 @@ class FusionEngineAdapter:
 
 class ReferenceFusionAlgorithm:
     def __init__(self) -> None:
+        self.voxel_diagnostics = VoxelDiagnostics()
         self.center: CenterAssembly | None = None
         self._adapter: FusionEngineAdapter | None = None
         self._started: list[ModuleBinding] = []
@@ -62,6 +64,7 @@ class ReferenceFusionAlgorithm:
             center_session_id=SessionId(registration.center_session_id),
             policy=registration.policy,
             clock_mapping=registration.clock_mapping,
+            voxel_diagnostics=self.voxel_diagnostics,
         )
         try:
             for binding in bindings:
@@ -77,7 +80,21 @@ class ReferenceFusionAlgorithm:
         if self._adapter is None:
             raise RuntimeError("reference algorithm is not running")
         self._now = step.time
-        return self._adapter.process(step)
+        self.voxel_diagnostics.clear()
+        result = self._adapter.process(step)
+        last_window = next(
+            (
+                window.key
+                for batch in reversed(result.batches)
+                for window in reversed(batch.window_update.sealed_windows)
+            ),
+            None,
+        )
+        # A last window without unguided voxel search must clear an earlier grid,
+        # including when other windows in this invocation did run voxel search.
+        if self.voxel_diagnostics.window != last_window:
+            self.voxel_diagnostics.clear()
+        return result
 
     def close(self) -> None:
         if self._adapter is not None:
@@ -87,6 +104,7 @@ class ReferenceFusionAlgorithm:
                 binding.module.stop_module(binding.node.module_key, self._now)
         self._started.clear()
         self._adapter = None
+        self.voxel_diagnostics.clear()
 
 
 def create_algorithm() -> ReferenceFusionAlgorithm:

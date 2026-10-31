@@ -21,7 +21,7 @@ import threading
 import time
 import uuid
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any
@@ -42,6 +42,7 @@ from chongming.contracts.scene import (
     TreeVisualSpec,
     TriangleMeshGeometry,
 )
+from chongming.contracts.visualization import AlgorithmOutputUpdate, TruthComparisonSnapshot
 from chongming.rendering.geometry import asset_mesh
 
 _REQUEST_HEADER = struct.Struct("<I")
@@ -819,6 +820,30 @@ class GodotRenderer:
                 raise RuntimeError("Godot UI reply has an invalid length")
             reply = _read_exact(sock, reply_length)
         return decode_ui_reply(reply, state["version"], tuple(image.key for image in images))
+
+
+def visualization_ui_state(
+    update: AlgorithmOutputUpdate, snapshots: tuple[TruthComparisonSnapshot, ...]
+) -> dict[str, Any]:
+    """Serialize visualization integers losslessly through Godot's JSON float parser."""
+
+    def encode(value: Any) -> Any:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            if not -(2**63) <= value < 2**63:
+                raise ValueError("visualization integers must fit signed 64 bits")
+            return str(value)
+        if isinstance(value, dict):
+            return {key: encode(item) for key, item in value.items()}
+        if isinstance(value, (tuple, list)):
+            return [encode(item) for item in value]
+        return value
+
+    return {
+        "algorithm_output": encode(asdict(update)),
+        "truth_snapshots": [encode(asdict(snapshot)) for snapshot in snapshots],
+    }
 
 
 def encode_ui_request(state: dict[str, Any], images: tuple[UiImage, ...]) -> bytes:

@@ -141,6 +141,7 @@ def declare_assembly(spec: ScenarioSpec, run: RunSpec) -> ArchitectureAssembly:
         history = CalibrationHistoryModule(
             station_id=sid,
             station_session_id=station.sessions.image_session_id,
+            station_config_digest=config.config_digest,
         )
         states = CalibrationStateModule(
             policy=policy.calibration,
@@ -151,10 +152,12 @@ def declare_assembly(spec: ScenarioSpec, run: RunSpec) -> ArchitectureAssembly:
             recognizer=references,
             estimator=estimation,
             states=states,
+            update_period_ns=policy.calibration.update_period_ns,
         )
         rays = RayGenerationModule(policy=policy.rays, sequencer=sequencer)
         device = DeviceModule(
             config=config,
+            station_session_id=station.sessions.image_session_id,
             detector=detection,
             calibrator=calibration,
             history=history,

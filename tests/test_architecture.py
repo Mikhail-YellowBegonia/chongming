@@ -221,6 +221,16 @@ class ArchitectureStructureTests(unittest.TestCase):
                 self.assertIs(station.device.sequencer, image_sequence)
                 self.assertIs(station.device.calibrator, station.calibration)
                 self.assertIs(station.device.ray_builder, station.rays)
+                self.assertEqual(
+                    station.device.station_session_id, image_sequence.station_session_id
+                )
+                self.assertEqual(
+                    station.history.station_config_digest, station.config.config_digest
+                )
+                self.assertEqual(
+                    station.calibration.update_period_ns,
+                    station.calibration_states.policy.update_period_ns,
+                )
                 all_sequencers.extend((image_sequence, virtual_sequence))
         self.assertEqual(len({id(s) for s in all_sequencers}), len(all_sequencers))
         self.assertEqual(
@@ -268,23 +278,6 @@ class ArchitectureStructureTests(unittest.TestCase):
     def test_remaining_shell_methods_are_explicit_stubs(self) -> None:
         module_directory = Path(inspect.getfile(base)).parent
         pending = {
-            "device.py": {
-                "MotionDetectionModule": {"detect"},
-                "Tracking2DModule": {"update"},
-                "MainDetectionModule": {"process"},
-                "ReferenceRecognitionModule": {"recognize"},
-                "CalibrationEstimationModule": {"estimate"},
-                "CalibrationHistoryModule": {
-                    "record_solution",
-                    "record_state",
-                    "lookup_solution",
-                    "snapshot_at",
-                },
-                "CalibrationStateModule": {"consider", "tick"},
-                "AuxiliaryCalibrationModule": {"process", "tick"},
-                "RayGenerationModule": {"build"},
-                "DeviceModule": {"process_main", "process_auxiliary", "tick"},
-            },
             "fusion.py": {
                 "DirectGeometryCandidateModule": {"propose"},
             },

@@ -23,6 +23,7 @@ from chongming.modules.fusion_ingress import (
 )
 from chongming.modules.fusion_tracking import CenterTrackingModule
 from chongming.ports.lifecycle import ModuleBinding, ModuleLifecycle
+from chongming.voxel_diagnostics import VoxelDiagnostics
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -135,6 +136,7 @@ def declare_center(
     center_session_id: m.SessionId,
     policy: f.FusionPolicy,
     clock_mapping: f.EventClockMappingSpec,
+    voxel_diagnostics: VoxelDiagnostics | None = None,
 ) -> tuple[CenterAssembly, tuple[ModuleBinding, ...]]:
     """Construct every center stage; never read a scenario or start business work."""
     if (
@@ -160,7 +162,10 @@ def declare_center(
     )
     weights = CalibrationWeightingModule(rules=policy.admission.calibration_usage_rules)
     voxels = VoxelCandidateModule(
-        policy=policy.candidates, motion_policy=policy.geometry, weights=weights
+        policy=policy.candidates,
+        motion_policy=policy.geometry,
+        weights=weights,
+        diagnostics=voxel_diagnostics,
     )
     direct = DirectGeometryCandidateModule(search=policy.candidates.search)
     candidates = CandidateGenerationModule(policy=policy.candidates, voxel=voxels, direct=direct)

@@ -25,12 +25,12 @@ chongming-center --scenario scenarios/center_clean.json --check
 
 ## 命令
 
-| 命令                | 用途                           |
-| ------------------- | ------------------------------ |
-| `chongming-preview` | Godot 预览窗口与浏览器工作台   |
-| `chongming-center`  | 场景检查、中心算法同步分步开发 |
-| `chongming-scene`   | 有限虚拟场景及证据导出         |
-| `chongming-osm`     | 本地 OSM XML 清洗与地景导入    |
+| 命令                | 用途                                    |
+| ------------------- | --------------------------------------- |
+| `chongming-preview` | Godot 预览窗口与浏览器工作台            |
+| `chongming-center`  | 场景检查、模式 2–4 的同步分步或图形运行 |
+| `chongming-scene`   | 有限虚拟场景及证据导出                  |
+| `chongming-osm`     | 本地 OSM XML 清洗与地景导入             |
 
 各命令的完整参数见 `--help`。`chongming-center --check` 不启动渲染、不创建输出；实际运行即使关闭视频也会启动 Godot。运行输出目录必须尚不存在。
 
@@ -50,31 +50,123 @@ uv run --frozen chongming-preview --scenario scenarios/review.json
 
 省略 `--scenario` 和 `--recording` 可查看内置演示，但不能持久化编辑或使用 `--landscape-asset`。预览会评估已生成的辅助图像并显示标定结果，不调用中心工具的算法插件。
 
-### 中心算法开发
+### 算法运行
+
+`chongming-center` 的 `--mode 2|3|4` 同时适用于图形与 CLI，省略时为 3。`--ui` 只选择 Godot 界面，不改变模式；启动后直接运行，有限结束或关闭窗口后退出，不启动浏览器服务。
+
+| 模式 | 输入来源                     | 默认中心算法                                  | 策略与插件                                       |
+| ---- | ---------------------------- | --------------------------------------------- | ------------------------------------------------ |
+| 2    | 实际渲染主辅图像             | 不启动中心                                    | 必填 `--device-policy`；拒绝 `--algorithm`       |
+| 3    | 普通虚拟射线                 | 加 `--ui` 为参考算法；CLI 为 `InputInspector` | 允许 `--algorithm`；拒绝无用的 `--device-policy` |
+| 4    | 实际渲染图像，经设备产生事件 | 参考算法                                      | 必填 `--device-policy`；允许 `--algorithm`       |
+
+模式 3 的图形示例：
 
 ```sh
-uv run --frozen chongming-center --scenario scenarios/center_clean.json --check
-uv run --frozen chongming-center --scenario scenarios/center_clean.json --output results/center-test
+uv run --frozen chongming-center --scenario scenarios/center_clean.json \
+  --output results/center-ui --ui
 ```
 
-默认暂停、无视频、不启动 HTTP 服务。交互命令：
+模式 2／4 需先准备与场景全部站点匹配的[设备策略文件](#设备策略文件)。以下路径须替换为实际文件，各输出目录须尚不存在：
 
-| 命令                     | 行为                                              |
-| ------------------------ | ------------------------------------------------- |
-| `step`                   | 完成一个曝光中点组及中心调用                      |
-| `run 10` / `run`         | 连续十步／运行到有限终点；Ctrl+C 在完整步骤后暂停 |
-| `video on` / `video off` | 恢复／停止像素生产，不暂停逻辑                    |
-| `status`                 | 查看状态                                          |
-| `reset`                  | 关闭当前会话，在新目录创建新会话和算法实例        |
-| `quit`                   | 关闭资源并退出                                    |
+```sh
+uv run --frozen chongming-center --mode 2 --scenario scenarios/center_clean.json \
+  --device-policy /path/to/device-policy.json --check
+uv run --frozen chongming-center --mode 2 --scenario scenarios/center_clean.json \
+  --device-policy /path/to/device-policy.json --output results/edge-ui --ui
+uv run --frozen chongming-center --mode 4 --scenario scenarios/center_clean.json \
+  --device-policy /path/to/device-policy.json --output results/integrated-ui --ui
+```
 
-`--run --tick-hz 10` 可直接连续运行，节拍只影响墙钟速度。默认 `InputInspector` 检查配置、校准引用、序号与射线，不计算位置或轨迹。
+默认关闭传感器显示和证据录像；`--video` 同时开启两者。模式 2／4 无论是否加该参数都生成全部应采样图像并执行设备算法；失败保留诊断，绝不改用虚拟射线。模式 3 的虚拟输入不冒充边缘输出，因此其边缘射线统计为零。
 
-受信任的 Python 工厂可通过 `--algorithm my_center:factory` 接入，接口与策略装配见[开发指南](development.md#中心算法接入)。JSON 不加载 Python 代码，算法不得读取真值文件或完整场景配置。
+不加 `--ui` 时默认暂停，可交互分步，或加 `--run --tick-hz 10` 连续运行。`--tick-hz` 范围为 `(0, 240]`，只限制墙钟节拍，不改变曝光时刻或保证实际吞吐。交互命令如下：
+
+| 命令                     | 行为                                          |
+| ------------------------ | --------------------------------------------- |
+| `step`                   | 完成一个曝光组及本模式算法调用                |
+| `run 10` / `run`         | 连续十步／至有限终点；Ctrl+C 在完整步骤后暂停 |
+| `video on` / `video off` | 改变显示／录像；模式 2／4 的算法成像不受影响  |
+| `status`                 | 查看状态                                      |
+| `reset`                  | 关闭旧会话，在新目录创建新源与算法实例        |
+| `quit`                   | 关闭资源并退出                                |
+
+`InputInspector` 只检查输入，不计算位置。受信任的 Python 工厂通过 `--algorithm my_center:factory` 接入，见[中心算法接入](development.md#中心算法接入)；JSON 不加载代码，在线算法不得读取真值或完整场景配置。
+
+### 设备策略文件
+
+`--device-policy` 是站点 ID 到完整 `DevicePolicy` 的 JSON 对象。字段由 [contracts/device.py](../src/chongming/contracts/device.py) 定义；缺站、多站、重复键、字段缺失／未知、非法类型或不支持策略在创建输出和分配 worker 前拒绝。`--check` 也验证所选模式的策略，但不检查图像质量或算法效果。
+
+下面只展示一个站点的完整结构。数值来自合成组件测试，不是建议参数或部署配置；复制时须改为场景的实际站点 ID，并为每站提供完整对象。例中的未知误差保留 `null`，因此即使检测和校准成功，也不会生成具备必要不确定度的射线。
+
+```json
+{
+  "example-station": {
+    "detection": {
+      "algorithm_id": "mog2-components-v1",
+      "score_definition": {
+        "definition_id": "foreground-component-fill-ratio-v1",
+        "kind": "ranking",
+        "minimum": 0.0,
+        "maximum": 1.0,
+        "cross_station_comparison_group": null
+      },
+      "minimum_component_area_px2": 1.0,
+      "maximum_component_area_px2": null,
+      "background_warmup_frame_count": 1,
+      "background_history_frame_count": 20,
+      "background_variance_threshold": 16.0,
+      "background_learning_rate": 0.0,
+      "background_detect_shadows": false
+    },
+    "tracking": {
+      "algorithm_id": "constant-velocity-nearest-neighbor-v1",
+      "association_gate_px": 6.0,
+      "confirmation_frame_count": 2,
+      "maximum_missing_duration_ns": 500000000,
+      "quality_definition": {
+        "definition_id": "consecutive-detection-fraction-v1",
+        "kind": "ranking",
+        "minimum": 0.0,
+        "maximum": 1.0,
+        "cross_station_comparison_group": null
+      }
+    },
+    "calibration": {
+      "update_period_ns": 0,
+      "stale_after_ns": 2000000000,
+      "recovery_success_count": 1,
+      "minimum_reference_count": 4,
+      "maximum_reprojection_rmse_px": 2.0,
+      "maximum_rotation_only_parallax_px": null,
+      "estimator_id": "opencv-checkerboard-v1"
+    },
+    "rays": {
+      "uncertainty_model_id": "tangent_gaussian_v1",
+      "fallback_centroid_covariance_px2": null,
+      "unmodelled_high_frequency_jitter_covariance_rad2": null,
+      "unmodelled_relative_flex_covariance_rad2": null,
+      "residual_independence_basis": null
+    }
+  }
+}
+```
+
+所有 `*_ns` 字段以纳秒计。背景参数全部显式提供：预热为非负整数，history 为正的 32 位有符号整数，variance threshold 为正有限数，learning rate 为 `[0,1]`（不接受自动值 `-1`），阴影开关为布尔值。跟踪关联门限、确认帧数及最长失联时长均须为正。校准更新周期与过期时长非负，恢复次数为正，最少参照点不少于 4，RMSE 上限为正；可选视差上限非负。检测与跟踪的算法 ID、分数定义须与实现一致。
+
+协方差使用 2×2 对称半正定矩阵，像素项单位 px²，角残差单位 rad²；`null` 表示未知，零矩阵表示显式零误差假设，两者不可互换。当前检测器不给出质心协方差，要产生射线须另提供有依据的像素 fallback 与两项已知残差。非零残差还须填写彼此及与像素误差独立的 `residual_independence_basis`；未经实测的开发假设须明确注明，系统不自动生成依据。模型与校准历史限制见[设备检测与射线](design.md#设备检测与射线)。
+
+### 图层与诊断面板
+
+模式 2–4 的窗口保留站点选择、主辅图像检查（需 `--video`）、自由视角和退出，禁用场景编辑、播放／单步／重启及时间跳转。重新运行或切换模式须退出旧会话，再用新命令启动；不复用旧状态。
+
+“图层”页可分别开关真值、射线、测量、轨迹和体素，查看站点校准状态与姿态差。在下拉框选择测量后，面板显示参考时刻及可显示的支持射线数，并以青色高亮；缺失或过期射线不重建。模式 3 不缓存虚拟输入作为边缘射线，因此可能有测量而无可高亮支持；体素仅支持参考中心的无先验原始投票。颜色、尺寸、保留期限与最后窗口语义见[图形口径](design.md#图形口径)及[原始体素](design.md#原始体素)。这些图层不进入传感器像素，开关与选择不改变算法或累计统计。
+
+“误差诊断”页列出接收、可评估、匹配、未匹配、无法评估数量及匹配样本的均值、RMSE、最大误差，同时显示开发门限。无样本显示“不可计算”，不代表零误差；低匹配样本误差也不代表整体性能较高。匹配与统计口径见[设计说明](design.md#匹配与统计)。窗口内的统计和选择不生成独立评分文件，原始证据仍是复查依据。
 
 ### 参考融合与跟踪
 
-显式启用参考算法，默认仍无视频：
+CLI 模式 3 需显式启用参考算法；模式 3 的 `--ui` 和模式 4 默认已启用：
 
 ```sh
 uv run --frozen chongming-center --scenario scenarios/center_clean.json \
@@ -84,7 +176,7 @@ uv run --frozen chongming-center --scenario scenarios/center_clean.json \
 
 该示例为 30 秒双站单目标实验。`--tick-hz 240` 仅缩短墙钟等待，不改变曝光时刻，也不保证实际运行速率；省略 `--run` 可用 `step`／`run N` 检查阶段结果。无桌面 Linux 的图形环境见[开发指南](development.md#图形环境)。
 
-参考路径消费普通虚拟射线，执行事件准入、封口窗口、体素候选、多目标关联、加权连续定位及恒速跟踪，不运行主相机检测或完整设备射线链路。已有有效速度先验可对齐异步站点，新目标仍须具备足够窄的多站曝光支持。运动、误差和失败语义见[设计说明](design.md#中心融合与三维跟踪)。
+参考中心执行事件准入、封口窗口、体素候选、多目标关联、加权定位及恒速跟踪。已有有效速度先验可对齐异步站点，新目标仍须具备足够窄的多站曝光支持；异步并不保证能够初始化目标。运动、误差和失败语义见[设计说明](design.md#中心融合与三维跟踪)。
 
 `composition/center.py::reference_policy()` 的主要默认设置如下。这些是实验策略，不是部署精度或性能承诺；自定义策略需要 Python 装配，不能通过修改 authoring JSON 任意覆盖。
 
@@ -110,7 +202,7 @@ uv run --frozen chongming-center --scenario scenarios/center_clean.json \
 
 算法可能因站数不足、关联歧义、搜索截断、近共线、精确约束冲突或求解失败而没有有效位置。先查阶段状态和原因，再判断是否可用；`solver_converged` 本身不代表通过质量门限。条件协方差不包含共享安装／校准误差，零条件协方差也不等于零绝对误差。
 
-`manifest.json` 的 `algorithms_complete` 保持 `false`，表示完整系统链路尚未完成；`summary.json` 的 `state: "complete"` 只表示本次有限运行结束。
+运行状态与全系统能力声明分别记录，见[有限导出与输出](#有限导出与输出)。
 
 ### 有限导出与输出
 
@@ -132,7 +224,9 @@ uv run --frozen chongming-scene --scenario scenarios/empty.json --output results
 | `video/camera-*.mp4`           | 按流编号保存的高质量 H.264 视频，不以用户 ID 构造路径                         |
 | `video.json`                   | 视频编码、尺寸、帧率、帧数和文件摘要                                          |
 
-中心工具另保存 `center-registration.json`、`center-input.jsonl` 和 `center-output.jsonl`。完整 manifest 与真值是审计资料，不是中心算法输入。失败时保留已写证据，不自动清理输出目录。
+模式 3／4 另保存 `center-registration.json`、`center-input.jsonl` 和 `center-output.jsonl`；模式 2 不创建这些中心文件。模式 2／4 的 `edge-output.jsonl` 逐项保存输入帧元数据及像素 SHA-256、实际校准／主帧结果和步骤完成／失败记录；未开启录像时不保存原始像素。无曝光控制诊断原样留存，不伪造曝光时间。
+
+开发运行 manifest 的 `execution_mode`、`input_source`、`virtual_events_enabled`、`sensor_rendering_required`、`center_algorithm_started` 区分真实路径；实际逐站策略保存在 `run_spec` 中。`algorithms_complete` 保持 `false`，不代表本次设备流程没有执行；`summary.json` 的 `state: "complete"` 只表示有限运行结束，不证明算法输出有效。完整 manifest 与真值不是在线输入。设备、中心或 UI 后续失败均保留已刷新证据，不自动清理目录。
 
 `truth.jsonl` 使用 `truth-jsonl-v2` 布局。每条记录的 `logical_scene_static_ref` 指向同目录的 `truth-static.json`；评估读取器会校验摘要并将静态 `world_objects` 恢复到内存中的完整场景快照。运行期间若静态对象发生变化，运行会失败而不会静默生成错误真值。
 
