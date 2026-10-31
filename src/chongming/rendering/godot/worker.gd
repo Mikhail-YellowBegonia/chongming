@@ -2,6 +2,7 @@ extends Node
 
 ## Python owns simulation time; Godot owns procedural visuals. Render only on a snapshot request.
 const Vegetation = preload("res://vegetation.gd")
+const VegetationInstancing = preload("res://vegetation_instancing.gd")
 const AtmosphereShader = preload("res://atmosphere.gdshader")
 const OpticsShader = preload("res://optics.gdshader")
 const TerrainShader = preload("res://terrain.gdshader")
@@ -50,6 +51,13 @@ var _editor_active := false
 var _editor_realtime := false
 var _editor_closed := false
 var _free_viewport: SubViewport
+var _vegetation_instancing: VegetationInstancing
+var _use_vegetation_instancing := true  # Feature flag for GPU instancing
+var _vegetation_batch_count := 0  # Debug: track number of batches
+var _vegetation_instance_count := 0  # Debug: track number of instances
+# Static scene caching: store static entities to avoid rebuilding every frame
+var _static_entities_cached: Array = []
+var _scene_initialized := false
 var _free_camera: Camera3D
 var _editor_gizmos: Node3D
 var _editor_display: TextureRect
@@ -61,6 +69,8 @@ var _free_pitch := 0.0
 
 
 func _ready() -> void:
+	# DEBUG: Verify GPU instancing code is loaded
+	DisplayServer.window_set_title("Chongming 预览 [GPU INSTANCING]")
 	get_tree().auto_accept_quit = false
 	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_MINIMIZED)
 	get_viewport().disable_3d = true
@@ -81,6 +91,9 @@ func _setup_world() -> void:
 	add_child(_viewport)
 	_world = Node3D.new()
 	_viewport.add_child(_world)
+	# Initialize vegetation GPU instancing system
+	_vegetation_instancing = VegetationInstancing.new()
+	_vegetation_instancing.initialize(_world)
 	if not _external_scene_path.is_empty():
 		_external_scene_active = true
 		var external_scene := load(_external_scene_path) as PackedScene
@@ -174,7 +187,14 @@ func _process(_delta: float) -> void:
 		_move_free_camera(_delta)
 		_fps_elapsed += _delta
 		if _fps_elapsed >= 0.5:
-			_editor_fps.text = "%d FPS · EDIT" % Engine.get_frames_per_second() if _editor_realtime else "FREEVIEW · simulation clock"
+			var fps_text := "%d FPS" % Engine.get_frames_per_second()
+			if _use_vegetation_instancing and _vegetation_instance_count > 0:
+				fps_text += " · GPU: %d inst / %d batch" % [_vegetation_instance_count, _vegetation_batch_count]
+			if _editor_realtime:
+				fps_text += " · EDIT"
+			else:
+				fps_text = "FREEVIEW · simulation clock"
+			_editor_fps.text = fps_text
 			_fps_elapsed = 0.0
 	if _peer == null:
 		if _server.is_connection_available():
@@ -342,7 +362,7 @@ func _open_ui() -> void:
 		_redraw_freeview())
 	DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_NO_FOCUS, false)
 	DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_BORDERLESS, false)
-	DisplayServer.window_set_title("Chongming 预览")
+	DisplayServer.window_set_title("Chongming 预览 [GPU INSTANCING]")
 	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
 	DisplayServer.window_set_size(Vector2i(1440, 900))
 	RenderingServer.render_loop_enabled = true
@@ -431,7 +451,8 @@ func _render(request: Dictionary) -> PackedByteArray:
 	var sun_direction := _enu(request["sun"]).normalized()
 	_sun.basis = Basis.looking_at(-sun_direction, Vector3.FORWARD if absf(sun_direction.y) > 0.99 else Vector3.UP)
 	_sync_resources(request.get("resources", []))
-	_sync_entities(request["entities"])
+	var scene_mode := str(request.get("scene_mode", "init"))
+	_sync_entities(request["entities"], scene_mode)
 	# Resolve terrain presence before positioning the fallback. This avoids
 	# using the previous snapshot's DEM flag when a scene changes between flat
 	# and heightfield terrain.
@@ -713,25 +734,57 @@ func _sync_editor_markers(markers: Array) -> void:
 		anchor.add_child(lines)
 
 
-func _sync_entities(entities: Array) -> void:
-	while _instances.size() > entities.size():
+func _sync_entities(entities: Array, scene_mode: String = "init") -> void:
+	# Static scene caching: handle init vs update modes
+	
+	if scene_mode == "update" and _scene_initialized:
+		# Update mode: static scene already built, nothing to do!
+		# All static entities (vegetation, terrain, buildings) are already in the scene
+		# Dynamic objects (aircraft) are handled by camera/environment updates
+		return
+	
+	if scene_mode == "init":
+		# Init mode: build the full static scene
+		_scene_initialized = true
+	
+	var all_entities: Array = entities
+	
+	# GPU Instancing: batch vegetation entities first
+	if _use_vegetation_instancing:
+		var grouped := _vegetation_instancing.group_vegetation_entities(all_entities)
+		# Store batch statistics for debug display
+		_vegetation_batch_count = grouped.size()
+		_vegetation_instance_count = 0
+		for key in grouped.keys():
+			_vegetation_instance_count += grouped[key].size()
+		_vegetation_instancing.update_batches(grouped, _wind_time, _wind_mean, _wind_turbulence)
+		# Filter out vegetation entities from regular processing
+		var non_vegetation: Array = []
+		for entity_dict in all_entities:
+			var entity: Dictionary = entity_dict
+			var category := str(entity.get("category", ""))
+			if category != "vegetation":
+				non_vegetation.append(entity)
+		all_entities = non_vegetation
+
+	while _instances.size() > all_entities.size():
 		_instances.pop_back().free()
 		_signatures.pop_back()
 	var resolved: Array = []
-	for light_entity in entities:
+	for light_entity in all_entities:
 		resolved.append(_resolve_entity(light_entity))
 	# A card tree is rendered as one whole-tree model on its ground trunk entity.
 	# Pair it with the canopy entity so semantic crown dimensions and the sampled
 	# wind rotation stay available without changing the Python contract.
 	var canopies: Dictionary = {}
-	for index in range(entities.size()):
+	for index in range(all_entities.size()):
 		var entity: Dictionary = resolved[index]
 		if entity.is_empty():
 			continue
 		var visual_value: Variant = entity.get("visual", null)
 		if visual_value is Dictionary and str(visual_value.get("kind", "")) == "tree_canopy":
 			var base_id := str(entity.get("object_id", "")).trim_suffix("/canopy")
-			var light: Dictionary = entities[index]
+			var light: Dictionary = all_entities[index]
 			canopies[base_id] = {
 				"visual": visual_value,
 				"position": light.get("position", entity.get("position", [0.0, 0.0, 0.0])),
@@ -752,8 +805,8 @@ func _sync_entities(entities: Array) -> void:
 		# fallback plane enabled creates a second visible/shadow-catching ground
 		# one metre below the DEM, especially obvious in freeview.
 		_ground.visible = not has_mesh_terrain and not _external_scene_active
-	for index in range(entities.size()):
-		var light_entity: Dictionary = entities[index]
+	for index in range(all_entities.size()):
+		var light_entity: Dictionary = all_entities[index]
 		var entity: Dictionary = resolved[index]
 		if entity.is_empty():
 			push_error("render entity could not be resolved")

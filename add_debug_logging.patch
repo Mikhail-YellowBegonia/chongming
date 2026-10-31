@@ -1,0 +1,22 @@
+--- a/src/chongming/rendering/godot.py
++++ b/src/chongming/rendering/godot.py
+@@ -770,6 +770,12 @@ class GodotRenderer:
+             static_entities, dynamic_entities = _separate_static_dynamic_entities(entities)
+             current_hash = _compute_static_scene_hash(static_entities)
+ 
++            # Debug logging
++            import sys
++            print(f"[CACHE] Total: {len(entities)}, Static: {len(static_entities)}, Dynamic: {len(dynamic_entities)}", file=sys.stderr, flush=True)
++            print(f"[CACHE] Current hash: {current_hash[:16]}..., Cached: {self._static_scene_hash[:16] if self._static_scene_hash else 'None'}...", file=sys.stderr, flush=True)
++
+             # Check if static scene has changed
+             if current_hash != self._static_scene_hash:
+                 # Static scene changed, send full initialization
+@@ -778,6 +784,7 @@ class GodotRenderer:
+                 self._static_scene_hash = current_hash
+                 self._last_static_entities = static_entities
+             else:
++                print(f"[CACHE] Mode: UPDATE (sending {len(dynamic_entities)} dynamic entities)", file=sys.stderr, flush=True)
+                 # Static scene unchanged, send only dynamic update
+                 request = _request(scene, camera, dynamic_entities)
+                 request["scene_mode"] = "update"  # Mark as update

@@ -25,6 +25,7 @@ import time
 import webbrowser
 from collections import deque
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
@@ -273,6 +274,11 @@ class PreviewRuntime:
             if self._authoring_path is None:
                 raise ValueError("--landscape-asset requires --scenario")
             read_verified_json(self._landscape_asset, _HANNOVER_CONTENT_SHA256)
+
+        # Async PNG encoding pool
+        self._png_encoder = ThreadPoolExecutor(max_workers=2, thread_name_prefix="png-encoder")
+        self._pending_encodes: dict[str, Any] = {}  # station_id -> Future
+        self._encode_queue_lock = threading.Lock()
         self._editing = False
         self._edit_token: str | None = None
         self._draft: dict[str, Any] | None = None
@@ -347,6 +353,8 @@ class PreviewRuntime:
         self._thread.join(timeout=30)
         if self._thread.is_alive():
             raise RuntimeError("scene video producer did not stop")
+        # Shutdown PNG encoder pool
+        self._png_encoder.shutdown(wait=True, cancel_futures=False)
         close_default_renderer()
 
     def control(self, action: str) -> None:
@@ -766,18 +774,54 @@ class PreviewRuntime:
             result["snapshot"] = None
             return result
         if step is not None and payload is not None:
-            # Encode on demand outside the producer's lock. All viewers share
-            # one per-station cache for this immutable latest sample. Replacing
-            # the cache on publication bounds history; paused polls reuse PNGs.
-            with self._encode_lock:
+            # Async PNG encoding: check if encoding is in progress or complete
+            with self._encode_queue_lock:
+                future = self._pending_encodes.get(station_id)
+                if future is not None and future.done():
+                    # Encoding completed, get result
+                    try:
+                        encoded = future.result()
+                        cache[station_id] = encoded
+                        del self._pending_encodes[station_id]
+                    except Exception as e:
+                        # Encoding failed, fall back to sync
+                        logging.error(f"Async PNG encoding failed: {e}")
+                        future = None
+
+                # Check cache
                 encoded = cache.get(station_id)
                 if encoded is None:
-                    began = time.perf_counter()
-                    encoded = {"video": _video_payload(step, station_id)}
-                    encoded["png_encode_ms"] = round((time.perf_counter() - began) * 1000, 2)
-                    cache[station_id] = encoded
+                    # Start async encoding if not already in progress
+                    if future is None or not future.done():
+                        began = time.perf_counter()
+                        # Submit encoding job
+                        future = self._png_encoder.submit(self._encode_video_payload, step, station_id, began)
+                        self._pending_encodes[station_id] = future
+
+                    # For first request, wait for encoding to complete (blocking)
+                    # This ensures we always have something to return
+                    try:
+                        encoded = future.result(timeout=5.0)
+                        cache[station_id] = encoded
+                        with self._encode_queue_lock:
+                            if station_id in self._pending_encodes:
+                                del self._pending_encodes[station_id]
+                    except Exception as e:
+                        # Timeout or error, fall back to sync encoding
+                        logging.warning(f"Async encoding timeout, falling back to sync: {e}")
+                        began = time.perf_counter()
+                        encoded = {"video": _video_payload(step, station_id)}
+                        encoded["png_encode_ms"] = round((time.perf_counter() - began) * 1000, 2)
+                        cache[station_id] = encoded
+
             result["snapshot"] = {**payload, **encoded, "preview_station_id": station_id}
         return result
+
+    def _encode_video_payload(self, step: ScenarioStep, station_id: str, began: float) -> dict[str, Any]:
+        """Encode video payload (runs in thread pool)."""
+        encoded = {"video": _video_payload(step, station_id)}
+        encoded["png_encode_ms"] = round((time.perf_counter() - began) * 1000, 2)
+        return encoded
 
     def ui_view(self) -> tuple[dict[str, Any], dict[str, Any] | None, ScenarioStep | None]:
         """Playback status plus the latest published payload and step, without encoding."""
