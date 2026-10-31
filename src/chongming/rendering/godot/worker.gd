@@ -51,6 +51,8 @@ var _editor_closed := false
 var _free_viewport: SubViewport
 var _vegetation_instancing: VegetationInstancing
 var _use_vegetation_instancing := true  # Feature flag for GPU instancing
+var _vegetation_batch_count := 0  # Debug: track number of batches
+var _vegetation_instance_count := 0  # Debug: track number of instances
 var _free_camera: Camera3D
 var _editor_gizmos: Node3D
 var _editor_display: TextureRect
@@ -177,7 +179,14 @@ func _process(_delta: float) -> void:
 		_move_free_camera(_delta)
 		_fps_elapsed += _delta
 		if _fps_elapsed >= 0.5:
-			_editor_fps.text = "%d FPS · EDIT" % Engine.get_frames_per_second() if _editor_realtime else "FREEVIEW · simulation clock"
+			var fps_text := "%d FPS" % Engine.get_frames_per_second()
+			if _use_vegetation_instancing and _vegetation_instance_count > 0:
+				fps_text += " · GPU: %d inst / %d batch" % [_vegetation_instance_count, _vegetation_batch_count]
+			if _editor_realtime:
+				fps_text += " · EDIT"
+			else:
+				fps_text = "FREEVIEW · simulation clock"
+			_editor_fps.text = fps_text
 			_fps_elapsed = 0.0
 	if _peer == null:
 		if _server.is_connection_available():
@@ -682,9 +691,12 @@ func _sync_editor_markers(markers: Array) -> void:
 func _sync_entities(entities: Array) -> void:
 	# GPU Instancing: batch vegetation entities first
 	if _use_vegetation_instancing:
-		push_warning("[Worker] _sync_entities called with %d entities" % entities.size())
 		var grouped := _vegetation_instancing.group_vegetation_entities(entities)
-		push_warning("[Worker] Grouped into %d vegetation variants" % grouped.size())
+		# Store batch statistics for debug display
+		_vegetation_batch_count = grouped.size()
+		_vegetation_instance_count = 0
+		for key in grouped.keys():
+			_vegetation_instance_count += grouped[key].size()
 		_vegetation_instancing.update_batches(grouped, _wind_time, _wind_mean, _wind_turbulence)
 		# Filter out vegetation entities from regular processing
 		var non_vegetation: Array = []
@@ -693,7 +705,6 @@ func _sync_entities(entities: Array) -> void:
 			var category := str(entity.get("category", ""))
 			if category != "vegetation":
 				non_vegetation.append(entity)
-		push_warning("[Worker] After filtering, %d non-vegetation entities remain" % non_vegetation.size())
 		entities = non_vegetation
 
 	while _instances.size() > entities.size():
