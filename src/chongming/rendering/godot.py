@@ -766,32 +766,22 @@ class GodotRenderer:
             entities = _entities(scene, self._resources)
             self._resources.finish()
 
-            # Static scene caching: separate static and dynamic entities
-            static_entities, dynamic_entities = _separate_static_dynamic_entities(entities)
-            current_hash = _compute_static_scene_hash(static_entities)
-
-            # Debug logging
+            # Static scene caching: simplified strategy
+            # Since all entities are static (vegetation, terrain, buildings),
+            # and dynamic objects (aircraft) are NOT in entities,
+            # we send entities only on the first frame.
             import sys
-            print(f"[CACHE] Total: {len(entities)}, Static: {len(static_entities)}, Dynamic: {len(dynamic_entities)}", file=sys.stderr, flush=True)
-            print(f"[CACHE] Hash: {current_hash[:16]}..., Cached: {self._static_scene_hash[:16] if self._static_scene_hash else 'None'}...", file=sys.stderr, flush=True)
-            # Debug: print first few object IDs
-            if dynamic_entities:
-                print(f"[CACHE] Dynamic object IDs: {[e.get('object_id', 'NO_ID') for e in dynamic_entities[:5]]}", file=sys.stderr, flush=True)
-            else:
-                sample_ids = [e.get('object_id', 'NO_ID') for e in entities[-10:]]
-                print(f"[CACHE] WARNING: No dynamic entities! Last 10 object_ids: {sample_ids}", file=sys.stderr, flush=True)
-
-            # Check if static scene has changed
-            if current_hash != self._static_scene_hash:
-                # Static scene changed, send full initialization
+            if self._static_scene_hash is None:
+                # First frame: send everything
+                print(f"[CACHE] First frame: sending {len(entities)} static entities", file=sys.stderr, flush=True)
                 request = _request(scene, camera, entities)
-                request["scene_mode"] = "init"  # Mark as initialization
-                self._static_scene_hash = current_hash
-                self._last_static_entities = static_entities
+                request["scene_mode"] = "init"
+                self._static_scene_hash = "initialized"  # Mark as initialized
             else:
-                # Static scene unchanged, send only dynamic update
-                request = _request(scene, camera, dynamic_entities)
-                request["scene_mode"] = "update"  # Mark as update
+                # Subsequent frames: send empty entities (all cached in Godot)
+                print(f"[CACHE] Update frame: sending 0 entities (all cached)", file=sys.stderr, flush=True)
+                request = _request(scene, camera, [])  # Empty entities!
+                request["scene_mode"] = "update"
 
             request["resources"] = self._resources.definitions
             payload = json.dumps(request, separators=(",", ":")).encode()
