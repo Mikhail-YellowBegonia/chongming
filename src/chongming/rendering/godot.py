@@ -770,6 +770,11 @@ class GodotRenderer:
             static_entities, dynamic_entities = _separate_static_dynamic_entities(entities)
             current_hash = _compute_static_scene_hash(static_entities)
 
+            # Debug logging
+            import sys
+            print(f"[CACHE] Total: {len(entities)}, Static: {len(static_entities)}, Dynamic: {len(dynamic_entities)}", file=sys.stderr, flush=True)
+            print(f"[CACHE] Hash: {current_hash[:16]}..., Cached: {self._static_scene_hash[:16] if self._static_scene_hash else 'None'}...", file=sys.stderr, flush=True)
+
             # Check if static scene has changed
             if current_hash != self._static_scene_hash:
                 # Static scene changed, send full initialization
