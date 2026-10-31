@@ -336,7 +336,7 @@ func _open_ui() -> void:
 		_redraw_freeview())
 	DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_NO_FOCUS, false)
 	DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_BORDERLESS, false)
-	DisplayServer.window_set_title("Chongming 预览")
+	DisplayServer.window_set_title("Chongming 预览 [GPU INSTANCING]")
 	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
 	DisplayServer.window_set_size(Vector2i(1440, 900))
 	RenderingServer.render_loop_enabled = true
