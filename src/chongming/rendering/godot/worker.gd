@@ -696,23 +696,19 @@ func _sync_editor_markers(markers: Array) -> void:
 
 func _sync_entities(entities: Array, scene_mode: String = "init") -> void:
 	# Static scene caching: handle init vs update modes
-	var all_entities: Array = entities
-
-	if scene_mode == "update":
-		# Update mode: combine cached static entities with new dynamic entities
-		all_entities = _static_entities_cached + entities
-	elif scene_mode == "init":
-		# Init mode: full scene, cache the static entities
-		# Separate static (vegetation, terrain, buildings) from dynamic (aircraft)
-		_static_entities_cached = []
-		for entity_dict in entities:
-			var entity: Dictionary = entity_dict
-			var object_id := str(entity.get("object_id", ""))
-			# Cache everything except aircraft
-			if not object_id.begins_with("aircraft/"):
-				_static_entities_cached.append(entity)
+	
+	if scene_mode == "update" and _scene_initialized:
+		# Update mode: static scene already built, nothing to do!
+		# All static entities (vegetation, terrain, buildings) are already in the scene
+		# Dynamic objects (aircraft) are handled by camera/environment updates
+		return
+	
+	if scene_mode == "init":
+		# Init mode: build the full static scene
 		_scene_initialized = true
-
+	
+	var all_entities: Array = entities
+	
 	# GPU Instancing: batch vegetation entities first
 	if _use_vegetation_instancing:
 		var grouped := _vegetation_instancing.group_vegetation_entities(all_entities)
