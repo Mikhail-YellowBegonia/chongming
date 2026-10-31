@@ -774,6 +774,12 @@ class GodotRenderer:
             import sys
             print(f"[CACHE] Total: {len(entities)}, Static: {len(static_entities)}, Dynamic: {len(dynamic_entities)}", file=sys.stderr, flush=True)
             print(f"[CACHE] Hash: {current_hash[:16]}..., Cached: {self._static_scene_hash[:16] if self._static_scene_hash else 'None'}...", file=sys.stderr, flush=True)
+            # Debug: print first few object IDs
+            if dynamic_entities:
+                print(f"[CACHE] Dynamic object IDs: {[e.get('object_id', 'NO_ID') for e in dynamic_entities[:5]]}", file=sys.stderr, flush=True)
+            else:
+                sample_ids = [e.get('object_id', 'NO_ID') for e in entities[-10:]]
+                print(f"[CACHE] WARNING: No dynamic entities! Last 10 object_ids: {sample_ids}", file=sys.stderr, flush=True)
 
             # Check if static scene has changed
             if current_hash != self._static_scene_hash:
