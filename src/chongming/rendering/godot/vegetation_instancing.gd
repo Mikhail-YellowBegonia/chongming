@@ -126,7 +126,9 @@ func update_batches(grouped: Dictionary, wind_time: float, wind_mean: Vector2, w
 	for key in grouped.keys():
 		total_instances += grouped[key].size()
 	if total_instances > 0:
-		print("[VegetationInstancing] Processing %d vegetation instances across %d variants" % [total_instances, grouped.size()])
+		push_warning("[VegetationInstancing] Processing %d vegetation instances across %d variants" % [total_instances, grouped.size()])
+	else:
+		push_warning("[VegetationInstancing] No vegetation instances to process!")
 
 	var active_keys: Dictionary = {}
 	for key in grouped.keys():

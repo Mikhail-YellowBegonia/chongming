@@ -682,9 +682,9 @@ func _sync_editor_markers(markers: Array) -> void:
 func _sync_entities(entities: Array) -> void:
 	# GPU Instancing: batch vegetation entities first
 	if _use_vegetation_instancing:
-		print("[Worker] _sync_entities called with %d entities" % entities.size())
+		push_warning("[Worker] _sync_entities called with %d entities" % entities.size())
 		var grouped := _vegetation_instancing.group_vegetation_entities(entities)
-		print("[Worker] Grouped into %d vegetation variants" % grouped.size())
+		push_warning("[Worker] Grouped into %d vegetation variants" % grouped.size())
 		_vegetation_instancing.update_batches(grouped, _wind_time, _wind_mean, _wind_turbulence)
 		# Filter out vegetation entities from regular processing
 		var non_vegetation: Array = []
@@ -693,7 +693,7 @@ func _sync_entities(entities: Array) -> void:
 			var category := str(entity.get("category", ""))
 			if category != "vegetation":
 				non_vegetation.append(entity)
-		print("[Worker] After filtering, %d non-vegetation entities remain" % non_vegetation.size())
+		push_warning("[Worker] After filtering, %d non-vegetation entities remain" % non_vegetation.size())
 		entities = non_vegetation
 
 	while _instances.size() > entities.size():
