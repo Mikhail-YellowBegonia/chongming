@@ -64,6 +64,8 @@ var _free_pitch := 0.0
 
 
 func _ready() -> void:
+	# DEBUG: Verify GPU instancing code is loaded
+	DisplayServer.window_set_title("Chongming 预览 [GPU INSTANCING]")
 	get_tree().auto_accept_quit = false
 	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_MINIMIZED)
 	get_viewport().disable_3d = true
