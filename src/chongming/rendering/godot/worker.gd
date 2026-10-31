@@ -2,6 +2,7 @@ extends Node
 
 ## Python owns simulation time; Godot owns procedural visuals. Render only on a snapshot request.
 const Vegetation = preload("res://vegetation.gd")
+const VegetationInstancing = preload("res://vegetation_instancing.gd")
 const AtmosphereShader = preload("res://atmosphere.gdshader")
 const OpticsShader = preload("res://optics.gdshader")
 const TerrainShader = preload("res://terrain.gdshader")
@@ -48,6 +49,8 @@ var _editor_active := false
 var _editor_realtime := false
 var _editor_closed := false
 var _free_viewport: SubViewport
+var _vegetation_instancing: VegetationInstancing
+var _use_vegetation_instancing := true  # Feature flag for GPU instancing
 var _free_camera: Camera3D
 var _editor_gizmos: Node3D
 var _editor_display: TextureRect
@@ -79,6 +82,9 @@ func _setup_world() -> void:
 	add_child(_viewport)
 	_world = Node3D.new()
 	_viewport.add_child(_world)
+	# Initialize vegetation GPU instancing system
+	_vegetation_instancing = VegetationInstancing.new()
+	_vegetation_instancing.initialize(_world)
 	if not _external_scene_path.is_empty():
 		_external_scene_active = true
 		var external_scene := load(_external_scene_path) as PackedScene
@@ -674,6 +680,19 @@ func _sync_editor_markers(markers: Array) -> void:
 
 
 func _sync_entities(entities: Array) -> void:
+	# GPU Instancing: batch vegetation entities first
+	if _use_vegetation_instancing:
+		var grouped := _vegetation_instancing.group_vegetation_entities(entities)
+		_vegetation_instancing.update_batches(grouped, _wind_time, _wind_mean, _wind_turbulence)
+		# Filter out vegetation entities from regular processing
+		var non_vegetation: Array = []
+		for entity_dict in entities:
+			var entity: Dictionary = entity_dict
+			var category := str(entity.get("category", ""))
+			if category != "vegetation":
+				non_vegetation.append(entity)
+		entities = non_vegetation
+
 	while _instances.size() > entities.size():
 		_instances.pop_back().free()
 		_signatures.pop_back()
