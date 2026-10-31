@@ -53,6 +53,9 @@ var _vegetation_instancing: VegetationInstancing
 var _use_vegetation_instancing := true  # Feature flag for GPU instancing
 var _vegetation_batch_count := 0  # Debug: track number of batches
 var _vegetation_instance_count := 0  # Debug: track number of instances
+# Static scene caching: store static entities to avoid rebuilding every frame
+var _static_entities_cached: Array = []
+var _scene_initialized := false
 var _free_camera: Camera3D
 var _editor_gizmos: Node3D
 var _editor_display: TextureRect
@@ -425,7 +428,8 @@ func _render(request: Dictionary) -> PackedByteArray:
 	var sun_direction := _enu(request["sun"]).normalized()
 	_sun.basis = Basis.looking_at(-sun_direction, Vector3.FORWARD if absf(sun_direction.y) > 0.99 else Vector3.UP)
 	_sync_resources(request.get("resources", []))
-	_sync_entities(request["entities"])
+	var scene_mode := str(request.get("scene_mode", "init"))
+	_sync_entities(request["entities"], scene_mode)
 	# Resolve terrain presence before positioning the fallback. This avoids
 	# using the previous snapshot's DEM flag when a scene changes between flat
 	# and heightfield terrain.
@@ -690,10 +694,28 @@ func _sync_editor_markers(markers: Array) -> void:
 		anchor.add_child(lines)
 
 
-func _sync_entities(entities: Array) -> void:
+func _sync_entities(entities: Array, scene_mode: String = "init") -> void:
+	# Static scene caching: handle init vs update modes
+	var all_entities: Array = entities
+
+	if scene_mode == "update":
+		# Update mode: combine cached static entities with new dynamic entities
+		all_entities = _static_entities_cached + entities
+	elif scene_mode == "init":
+		# Init mode: full scene, cache the static entities
+		# Separate static (vegetation, terrain, buildings) from dynamic (aircraft)
+		_static_entities_cached = []
+		for entity_dict in entities:
+			var entity: Dictionary = entity_dict
+			var object_id := str(entity.get("object_id", ""))
+			# Cache everything except aircraft
+			if not object_id.begins_with("aircraft/"):
+				_static_entities_cached.append(entity)
+		_scene_initialized = true
+
 	# GPU Instancing: batch vegetation entities first
 	if _use_vegetation_instancing:
-		var grouped := _vegetation_instancing.group_vegetation_entities(entities)
+		var grouped := _vegetation_instancing.group_vegetation_entities(all_entities)
 		# Store batch statistics for debug display
 		_vegetation_batch_count = grouped.size()
 		_vegetation_instance_count = 0
@@ -702,31 +724,31 @@ func _sync_entities(entities: Array) -> void:
 		_vegetation_instancing.update_batches(grouped, _wind_time, _wind_mean, _wind_turbulence)
 		# Filter out vegetation entities from regular processing
 		var non_vegetation: Array = []
-		for entity_dict in entities:
+		for entity_dict in all_entities:
 			var entity: Dictionary = entity_dict
 			var category := str(entity.get("category", ""))
 			if category != "vegetation":
 				non_vegetation.append(entity)
-		entities = non_vegetation
+		all_entities = non_vegetation
 
-	while _instances.size() > entities.size():
+	while _instances.size() > all_entities.size():
 		_instances.pop_back().free()
 		_signatures.pop_back()
 	var resolved: Array = []
-	for light_entity in entities:
+	for light_entity in all_entities:
 		resolved.append(_resolve_entity(light_entity))
 	# A card tree is rendered as one whole-tree model on its ground trunk entity.
 	# Pair it with the canopy entity so semantic crown dimensions and the sampled
 	# wind rotation stay available without changing the Python contract.
 	var canopies: Dictionary = {}
-	for index in range(entities.size()):
+	for index in range(all_entities.size()):
 		var entity: Dictionary = resolved[index]
 		if entity.is_empty():
 			continue
 		var visual_value: Variant = entity.get("visual", null)
 		if visual_value is Dictionary and str(visual_value.get("kind", "")) == "tree_canopy":
 			var base_id := str(entity.get("object_id", "")).trim_suffix("/canopy")
-			var light: Dictionary = entities[index]
+			var light: Dictionary = all_entities[index]
 			canopies[base_id] = {
 				"visual": visual_value,
 				"position": light.get("position", entity.get("position", [0.0, 0.0, 0.0])),
@@ -747,8 +769,8 @@ func _sync_entities(entities: Array) -> void:
 		# fallback plane enabled creates a second visible/shadow-catching ground
 		# one metre below the DEM, especially obvious in freeview.
 		_ground.visible = not has_mesh_terrain and not _external_scene_active
-	for index in range(entities.size()):
-		var light_entity: Dictionary = entities[index]
+	for index in range(all_entities.size()):
+		var light_entity: Dictionary = all_entities[index]
 		var entity: Dictionary = resolved[index]
 		if entity.is_empty():
 			push_error("render entity could not be resolved")

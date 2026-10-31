@@ -191,6 +191,39 @@ class _EntityResources:
         self._items = {key: value for key, value in self._items.items() if key in self.active}
 
 
+def _separate_static_dynamic_entities(
+    entities: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Separate entities into static and dynamic groups.
+
+    Returns:
+        (static_entities, dynamic_entities)
+
+    Static: vegetation, terrain, buildings (don't move)
+    Dynamic: aircraft (move every frame)
+    """
+    static = []
+    dynamic = []
+
+    for entity in entities:
+        object_id = entity.get("object_id", "")
+        # Aircraft are dynamic
+        if object_id.startswith("aircraft/"):
+            dynamic.append(entity)
+        else:
+            # Everything else (vegetation, terrain, buildings) is static
+            static.append(entity)
+
+    return static, dynamic
+
+
+def _compute_static_scene_hash(entities: list[dict[str, Any]]) -> str:
+    """Compute a hash of static entities to detect scene changes."""
+    # Use a stable serialization for hashing
+    serialized = json.dumps(entities, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode()).hexdigest()
+
+
 def _entities(
     scene: LogicalSceneSnapshot,
     resources: _EntityResources | None = None,
@@ -653,6 +686,9 @@ class GodotRenderer:
         self._socket: socket.socket | None = None
         self._lock = threading.Lock()
         self._resources = _EntityResources()
+        # Static scene caching: track static entities to avoid resending every frame
+        self._static_scene_hash: str | None = None
+        self._last_static_entities: list[dict[str, Any]] = []
         deadline = time.monotonic() + startup_timeout
         last_error = ""
         while time.monotonic() < deadline:
@@ -729,7 +765,23 @@ class GodotRenderer:
             self._resources.begin()
             entities = _entities(scene, self._resources)
             self._resources.finish()
-            request = _request(scene, camera, entities)
+
+            # Static scene caching: separate static and dynamic entities
+            static_entities, dynamic_entities = _separate_static_dynamic_entities(entities)
+            current_hash = _compute_static_scene_hash(static_entities)
+
+            # Check if static scene has changed
+            if current_hash != self._static_scene_hash:
+                # Static scene changed, send full initialization
+                request = _request(scene, camera, entities)
+                request["scene_mode"] = "init"  # Mark as initialization
+                self._static_scene_hash = current_hash
+                self._last_static_entities = static_entities
+            else:
+                # Static scene unchanged, send only dynamic update
+                request = _request(scene, camera, dynamic_entities)
+                request["scene_mode"] = "update"  # Mark as update
+
             request["resources"] = self._resources.definitions
             payload = json.dumps(request, separators=(",", ":")).encode()
             if len(payload) >= 2**32 or len(payload) > _MAX_REQUEST:
