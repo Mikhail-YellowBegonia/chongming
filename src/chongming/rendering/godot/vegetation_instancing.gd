@@ -121,6 +121,13 @@ func update_batches(grouped: Dictionary, wind_time: float, wind_mean: Vector2, w
 	_wind_turbulence = wind_turbulence
 
 	# Remove stale batches
+	# Debug: print batch statistics
+	var total_instances := 0
+	for key in grouped.keys():
+		total_instances += grouped[key].size()
+	if total_instances > 0:
+		print("[VegetationInstancing] Processing %d vegetation instances across %d variants" % [total_instances, grouped.size()])
+
 	var active_keys: Dictionary = {}
 	for key in grouped.keys():
 		active_keys[key] = true
