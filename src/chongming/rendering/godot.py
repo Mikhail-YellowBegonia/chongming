@@ -218,13 +218,6 @@ def _separate_static_dynamic_entities(
     return static, dynamic
 
 
-def _compute_static_scene_hash(entities: list[dict[str, Any]]) -> str:
-    """Compute a hash of static entities to detect scene changes."""
-    # Use a stable serialization for hashing
-    serialized = json.dumps(entities, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(serialized.encode()).hexdigest()
-
-
 def _entities(
     scene: LogicalSceneSnapshot,
     resources: _EntityResources | None = None,
@@ -687,9 +680,6 @@ class GodotRenderer:
         self._socket: socket.socket | None = None
         self._lock = threading.Lock()
         self._resources = _EntityResources()
-        # Static scene caching: track static entities to avoid resending every frame
-        self._static_scene_hash: str | None = None
-        self._last_static_entities: list[dict[str, Any]] = []
         deadline = time.monotonic() + startup_timeout
         last_error = ""
         while time.monotonic() < deadline:
