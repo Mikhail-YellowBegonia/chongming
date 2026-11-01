@@ -942,21 +942,52 @@ func _apply_tree_wind(instance: Node3D, rotation: Array) -> void:
 	var crown := instance.get_node_or_null("Model/Crown") as Node3D
 	if crown == null:
 		return
-	var basis := _basis(rotation)
-	var lean := basis.z - Vector3.UP
-	if lean.length() < 1e-5:
+
+	# Check if wind is active
+	var speed := _wind_mean.length()
+	if not _wind_active or speed <= 0.05:
 		crown.position = Vector3.ZERO
 		crown.scale = Vector3.ONE
 		return
-	var model := crown.get_parent() as Node3D
+
+	# Get tree seed for phase offset (so trees don't all sway in sync)
+	# Use world position as seed if visual_seed is not set
+	var seed := int(instance.get_meta("visual_seed", 0))
+	if seed == 0:
+		var pos := instance.global_position
+		seed = int(abs(pos.x * 1000.0 + pos.y * 1000.0 + pos.z * 1000.0))
+	var phase := float(posmod(seed, 100003)) / 100003.0 * TAU
+
+	# Time-driven wave (slower than shrubs/grass, trees sway more majestically)
+	var time := _wind_time
+	var wave := (
+		sin(time * 0.8 + phase)
+		+ 0.25 * sin(time * 2.1 + phase * 1.3)
+		+ 0.12 * sin(time * 4.5 + phase * 0.6)
+	)
+
+	# Wind speed and turbulence
+	var turbulence := 1.0 + minf(1.5, _wind_turbulence / maxf(speed, 0.1))
+	var amplitude := 0.08 * minf(speed, 12.0) * turbulence
+	var direction := _wind_mean.normalized()
+
+	# Apply offset (taller trees sway more)
 	var native_height := float(crown.get_meta("native_height", 10.0))
-	var offset := lean * native_height * 0.18
+	var offset := Vector3(
+		direction.x * amplitude * wave * native_height * 0.15,
+		direction.y * amplitude * wave * native_height * 0.15,
+		0.0
+	)
+
+	var model := crown.get_parent() as Node3D
 	if model != null:
 		crown.position = model.basis.inverse() * offset
 	else:
 		crown.position = offset
-	var squash := minf(0.06, lean.length() * 0.30)
-	crown.scale = Vector3(1.0 + squash, 1.0 - squash * 0.35, 1.0 + squash)
+
+	# Squash effect (crown slightly flattens when wind is strong)
+	var squash := 0.04 * minf(1.0, absf(wave)) * minf(speed / 6.0, 1.0)
+	crown.scale = Vector3(1.0 + squash, 1.0 - squash * 0.4, 1.0 + squash)
 
 
 func _sync_resources(definitions: Array) -> void:
