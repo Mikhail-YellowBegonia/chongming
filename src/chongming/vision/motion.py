@@ -16,7 +16,9 @@ class FrameDiffConfig:
     """Configuration for frame differencing."""
 
     mode: str = "two_frame"  # "two_frame", "three_frame", "five_frame"
-    threshold: float = 2.0  # Binarization threshold (very low for high sensitivity with 2x downsample)
+    threshold: float = (
+        2.0  # Binarization threshold (very low for high sensitivity with 2x downsample)
+    )
     use_binarize: bool = True
 
 

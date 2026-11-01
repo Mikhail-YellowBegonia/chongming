@@ -776,7 +776,7 @@ class GodotRenderer:
             else:
                 # Subsequent frames: send empty entities (all cached in Godot)
                 print(
-                    f"[CACHE] Update frame: sending 0 entities (all cached)",
+                    "[CACHE] Update frame: sending 0 entities (all cached)",
                     file=sys.stderr,
                     flush=True,
                 )
