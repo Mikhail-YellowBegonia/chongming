@@ -128,7 +128,15 @@ nix fmt -- docs/development.md
 nix fmt -- --no-cache --fail-on-change
 ```
 
-最后一条命令仍会改写不合规文件，并以失败状态报告改动，不是只读检查。不要用 `--excludes` 临时追加规则，它会覆盖配置中的全局排除项；选择文件时直接传路径。
+`nix fmt` 会改写不合规文件，不因格式变更本身返回失败。最后一条命令与 CI 使用相同的检查参数：仍会改写文件，但发现变更时返回失败，不是只读检查。首次失败后再次运行可能通过；应审查并提交格式变更，再在干净检出中验证，不能仅以重复检查通过判断远程提交合规。
+
+可在源码根目录使用 CI 环境复现检查，无需准备图形环境或 Python 依赖：
+
+```sh
+nix develop --no-update-lock-file .#ci --command treefmt --no-cache --fail-on-change
+```
+
+CI 在格式检查失败时输出变更摘要和完整 diff，原检查仍保持失败。不要用 `--excludes` 临时追加规则，它会覆盖配置中的全局排除项；选择文件时直接传路径。
 
 格式化涵盖 Python、Nix、JSON、Web 文件及 Markdown，不执行 lint 自动修复。缓存、输出、锁文件及不匹配的原始 OSM/HGT、Godot 文件不参与格式化。JSON 资产排版不会改变内容摘要；具体规则见[用户指南](user-guide.md#json-资产)。
 

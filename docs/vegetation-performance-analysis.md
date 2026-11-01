@@ -50,11 +50,13 @@ world.add_child(instance)  // 只添加一个节点！
 ```
 
 **效果**：
+
 - 绘制调用：3796 → **1**
 - Node3D 数量：~15,000 → **1**
 - GPU 开销：降低 **1000 倍以上**
 
 **我们的现状**：
+
 - ✅ 草地已使用 MultiMesh（最多 256 个草簇/patch）
 - ❌ 树木和灌木使用独立节点（文档："未实现全局合批"）
 
@@ -63,6 +65,7 @@ world.add_child(instance)  // 只添加一个节点！
 ### 2. **空间分区与视锥剔除**
 
 **游戏做法**：
+
 ```
 世界划分为 Grid Cell (如 100m × 100m)
 ├─ Cell A: 200 棵树 → 1 个 MultiMesh
@@ -71,11 +74,13 @@ world.add_child(instance)  // 只添加一个节点！
 ```
 
 **效果**：
+
 - 只渲染可见 Cell
 - 每个 Cell 一次绘制调用
 - 远距离 Cell 切换到 LOD
 
 **我们的现状**：
+
 - ✅ 有 LOD（45px、75px 阈值）
 - ❌ 无空间分区
 - ❌ 每棵树独立判断可见性（CPU 开销大）
@@ -85,6 +90,7 @@ world.add_child(instance)  // 只添加一个节点！
 ### 3. **静态批处理（Static Batching）**
 
 **游戏做法**：
+
 ```
 场景加载时：
   合并所有相同材质的静态物体网格
@@ -93,10 +99,12 @@ world.add_child(instance)  // 只添加一个节点！
 ```
 
 **适用场景**：
+
 - 建筑、岩石、栅栏等不动的物体
 - 远景树木（无风摆）
 
 **我们的现状**：
+
 - 树木需要风摆动画（每帧更新 Transform）
 - 无法静态批处理
 
@@ -105,12 +113,14 @@ world.add_child(instance)  // 只添加一个节点！
 ### 4. **遮挡剔除（Occlusion Culling）**
 
 **游戏做法**：
+
 ```
 预计算哪些植被被建筑/山体遮挡
 → 不渲染被遮挡的物体
 ```
 
 **我们的现状**：
+
 - Python 端有 `OcclusionIndex`（用于真值计算）
 - Godot 端无遮挡剔除（所有可见 Cell 都渲染）
 
@@ -118,13 +128,13 @@ world.add_child(instance)  // 只添加一个节点！
 
 ## 性能对比
 
-| 技术 | 游戏引擎 | 我们的实现 | 性能差距 |
-|------|---------|-----------|---------|
-| GPU Instancing | ✅ MultiMesh | ❌ 独立节点 | **1000x** |
-| 空间分区 | ✅ Grid/Octree | ❌ 平铺所有 | **10x** |
-| 视锥剔除 | ✅ Cell 级别 | ✅ 节点级别（慢） | **5x** |
-| 静态批处理 | ✅ 远景 | ❌ 风摆冲突 | **N/A** |
-| 遮挡剔除 | ✅ 预计算 | ❌ 无 | **2-5x** |
+| 技术           | 游戏引擎       | 我们的实现        | 性能差距  |
+| -------------- | -------------- | ----------------- | --------- |
+| GPU Instancing | ✅ MultiMesh   | ❌ 独立节点       | **1000x** |
+| 空间分区       | ✅ Grid/Octree | ❌ 平铺所有       | **10x**   |
+| 视锥剔除       | ✅ Cell 级别   | ✅ 节点级别（慢） | **5x**    |
+| 静态批处理     | ✅ 远景        | ❌ 风摆冲突       | **N/A**   |
+| 遮挡剔除       | ✅ 预计算      | ❌ 无             | **2-5x**  |
 
 **综合性能差距：约 100-5000 倍**
 
@@ -135,6 +145,7 @@ world.add_child(instance)  // 只添加一个节点！
 ### 设计约束
 
 **1. Python 拥有植被真值和遮挡逻辑**
+
 ```python
 # Python 负责：
 - 植被位置和尺寸（动态）
@@ -144,6 +155,7 @@ world.add_child(instance)  // 只添加一个节点！
 ```
 
 **2. Godot 只负责渲染**
+
 ```gdscript
 # Godot 接收：
 - 每帧完整的植被快照
@@ -152,6 +164,7 @@ world.add_child(instance)  // 只添加一个节点！
 ```
 
 **3. 实验确定性要求**
+
 - 风摆从实验时刻和固定种子求值
 - 不依赖墙钟或 Godot 物理引擎
 - Python 计算风摆 → Godot 只应用 Transform
@@ -188,6 +201,7 @@ for i in range(instances.size()):
 ```
 
 **效果**：
+
 - 绘制调用：3796 → **~20**（按树种分批）
 - 性能提升：**50-200 倍**
 
@@ -201,11 +215,12 @@ for i in range(instances.size()):
 
 ```python
 # Python 端：按相机位置筛选
-visible_vegetation = [v for v in all_vegetation 
+visible_vegetation = [v for v in all_vegetation
                      if distance(v, camera) < render_distance]
 ```
 
 **效果**：
+
 - 3796 棵 → **~500-1000 棵**（可见范围）
 - 性能提升：**3-7 倍**
 
@@ -224,6 +239,7 @@ if preview_mode:
 ```
 
 **效果**：
+
 - 3796 棵 → **~750 棵**
 - 性能提升：**5 倍**
 
@@ -236,6 +252,7 @@ if preview_mode:
 ### 游戏引擎的典型配置
 
 **开放世界游戏（如 GTA V, Witcher 3）**：
+
 - 植被总数：100,000+ 棵
 - 可见范围：500-1000 棵（视锥 + 遮挡剔除）
 - 渲染方式：MultiMesh + 空间分区
@@ -243,6 +260,7 @@ if preview_mode:
 - 帧率：60 fps
 
 **我们的配置**：
+
 - 植被总数：3,796 棵
 - 可见范围：3,796 棵（全部渲染）
 - 渲染方式：独立节点
@@ -250,6 +268,7 @@ if preview_mode:
 - 帧率：10-30 fps
 
 **核心差异**：
+
 1. 游戏用 **GPU Instancing**（1 次绘制 = 1000 棵树）
 2. 我们用 **独立节点**（1 次绘制 = 1 棵树）
 
@@ -260,16 +279,19 @@ if preview_mode:
 ### 为什么可以接受？
 
 **1. 设计目标不是实时游戏**
+
 - 预览用于验证测例，不需要 60 fps
 - 录制是离线生成，可以接受慢速
 
 **2. 已有的优化足够**
+
 - ✅ LOD 系统（远景切换简化模型）
 - ✅ 草地 MultiMesh（最密集部分已优化）
 - ✅ 禁用遮挡计算（occlusion_mode: "unknown"）
 - ✅ 轨迹预测（无需播放完整场景）
 
 **3. 性能已可用**
+
 - 10-30 fps 足够预览和调整
 - 轨迹可视化立即显示完整路径
 - 不影响最终录制质量
@@ -285,20 +307,24 @@ if preview_mode:
 ## 总结
 
 **为什么别人不卡？**
+
 - 游戏：GPU Instancing（1 次绘制 = 1000 棵树）
 - 我们：独立节点（1 次绘制 = 1 棵树）
 
 **为什么我们这样做？**
+
 - Python 拥有植被真值和风摆逻辑
 - 实验确定性要求（固定种子、实验时钟）
 - 设计目标是离线录制，不是实时游戏
 
 **需要优化吗？**
+
 - 当前性能已可接受（10-30 fps + 轨迹预测）
 - 如需优化，GPU Instancing 是最佳方案（50-200x 提升）
 - 遵循 AGENTS.md：不为尚未出现的问题增加功能
 
 **技术债**：
+
 - 文档已标注："未实现全局合批"
 - 已知限制，有明确优化路径
 - 优先级低于算法功能开发
@@ -308,10 +334,12 @@ if preview_mode:
 ## 参考
 
 **Godot 文档**：
+
 - [Using MultiMeshInstance3D](https://docs.godotengine.org/en/stable/tutorials/3d/using_multi_mesh_instance.html)
 - [Optimizing 3D performance](https://docs.godotengine.org/en/stable/tutorials/performance/optimizing_3d_performance.html)
 
 **游戏引擎优化技术**：
+
 - GPU Instancing: 1 次绘制调用 → 数千实例
 - Spatial Hashing: O(1) 邻域查询
 - Occlusion Culling: 跳过被遮挡物体

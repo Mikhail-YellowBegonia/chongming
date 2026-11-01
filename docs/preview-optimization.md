@@ -3,6 +3,7 @@
 ## 问题诊断
 
 ### 根本原因
+
 **性能瓶颈不在帧率限制，而在每帧计算开销过大**
 
 - 测例使用 Hannover 地景（**3796 棵植被**）
@@ -24,11 +25,13 @@
 ```
 
 **效果**：
+
 - 跳过所有遮挡计算
 - 只判断目标是否在视场内
 - **预期性能提升 10-50 倍**
 
 **权衡**：
+
 - ✅ 预览速度大幅提升
 - ✅ 测例仍可用于算法开发和相对性能比较
 - ❌ 不提供遮挡真值（无法评估绝对准确率）
@@ -39,6 +42,7 @@
 **原理**：只迭代飞行器运动代码，跳过遮挡、渲染、真值计算
 
 **实现**：
+
 1. **Python 端** (`src/chongming/rendering/godot.py`):
    - 添加 `_sample_trajectory_preview()` 函数
    - 直接调用 `sample_behavior()` 采样轨迹点
@@ -55,6 +59,7 @@
    - 半透明橙色线条，与目标标签颜色一致
 
 **效果**：
+
 - ✅ 编辑模式下立即显示完整 60 秒轨迹
 - ✅ 无需播放即可验证运动合理性
 - ✅ 轨迹计算极快（纯运动学，无 GPU 开销）
@@ -70,6 +75,7 @@ uv run --frozen chongming-preview \
 ```
 
 **预期体验**：
+
 1. 打开 Godot 预览窗口
 2. 自由视角中看到 7 条橙色轨迹线
 3. 每条线显示该目标从当前时刻到 60 秒的运动路径
@@ -78,6 +84,7 @@ uv run --frozen chongming-preview \
 ### 验证轨迹
 
 **在 Godot 自由视角中**：
+
 - 鼠标右键拖动旋转视角
 - WASD 平移，Q/E 升降，Shift 加速
 - 观察 7 条轨迹线：
@@ -86,6 +93,7 @@ uv run --frozen chongming-preview \
   - 检查是否有交叉、碰撞或超出范围
 
 **编辑调整**：
+
 1. 点击"编辑"按钮
 2. 在编辑面板调整目标初始位置或速度
 3. 轨迹线实时更新
@@ -106,12 +114,14 @@ def _sample_trajectory_preview(
 ```
 
 **采样参数**：
+
 - 间隔：2 秒（60 秒场景 = 30 个采样点）
 - 范围：当前时刻 → 场景结束
 - 输入：初始状态 + behavior 参数
 - 输出：位置序列（ENU 坐标）
 
 **性能**：
+
 - 单目标：< 1 ms（纯数学计算）
 - 7 目标：< 10 ms
 - 对比：完整渲染 ~300 ms/帧
@@ -132,11 +142,11 @@ material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 
 ## 性能对比
 
-| 配置 | 遮挡计算 | 预期帧率 | 60秒场景播放时间 |
-|------|---------|---------|----------------|
-| 默认（known） | 3796 植被 | ~3 fps | ~20 分钟 |
-| unknown | 禁用 | ~10-30 fps | ~2-6 秒 |
-| 轨迹预览 | 无需播放 | N/A | **立即可见** |
+| 配置          | 遮挡计算  | 预期帧率   | 60秒场景播放时间 |
+| ------------- | --------- | ---------- | ---------------- |
+| 默认（known） | 3796 植被 | ~3 fps     | ~20 分钟         |
+| unknown       | 禁用      | ~10-30 fps | ~2-6 秒          |
+| 轨迹预览      | 无需播放  | N/A        | **立即可见**     |
 
 ## 后续测例录制
 
@@ -150,11 +160,13 @@ material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 ```
 
 **原因**：
+
 - 录制是一次性操作，可以接受慢速
 - 完整遮挡真值用于算法评估
 - 使用 `chongming-scene --output` 离线生成，不需要实时交互
 
 **工作流**：
+
 1. **预览阶段**：`occlusion_mode: "unknown"` + 轨迹可视化，快速验证
 2. **录制阶段**：恢复 `occlusion_mode: "known"`，完整生成真值
 3. **算法开发**：使用录制结果，无需重新渲染
@@ -175,12 +187,14 @@ uv run --frozen chongming-preview --scenario scenarios/hannover_multi_target.jso
 ## 文件变更
 
 ### 修改文件
+
 - `scenarios/hannover_multi_target.json` - 添加 `occlusion_mode: "unknown"`
 - `src/chongming/rendering/godot.py` - 轨迹采样和标记生成
 - `src/chongming/preview.py` - 传递场景定义和时间
 - `src/chongming/rendering/godot/worker.gd` - 绘制轨迹线
 
 ### 验证状态
+
 - ✅ 场景配置有效
 - ✅ Python 导入成功
 - ⏳ 实际预览验证（待用户执行）
@@ -190,10 +204,12 @@ uv run --frozen chongming-preview --scenario scenarios/hannover_multi_target.jso
 **问题**：Hannover 地景（3796 植被）+ 遮挡计算 → 3 fps
 
 **解决**：
+
 1. ✅ 禁用遮挡计算 → 预期 10-30 fps（10倍加速）
 2. ✅ 轨迹预测可视化 → 立即显示完整 60 秒轨迹
 
 **下一步**：运行预览验证效果
+
 ```bash
 uv run --frozen chongming-preview --scenario scenarios/hannover_multi_target.json
 ```

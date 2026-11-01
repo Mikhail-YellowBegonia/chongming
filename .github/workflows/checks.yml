@@ -48,7 +48,14 @@ jobs:
               run: uv sync --frozen
 
             - name: Check formatting
+              id: formatting
               run: treefmt --no-cache --fail-on-change
+
+            - name: Show formatting diff
+              if: ${{ failure() && steps.formatting.outcome == 'failure' }}
+              run: |
+                  git diff --stat
+                  git diff --no-ext-diff --no-color
 
             - name: Lint Python
               run: ruff check src tests scripts
