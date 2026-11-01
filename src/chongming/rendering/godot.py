@@ -218,13 +218,6 @@ def _separate_static_dynamic_entities(
     return static, dynamic
 
 
-def _compute_static_scene_hash(entities: list[dict[str, Any]]) -> str:
-    """Compute a hash of static entities to detect scene changes."""
-    # Use a stable serialization for hashing
-    serialized = json.dumps(entities, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(serialized.encode()).hexdigest()
-
-
 def _entities(
     scene: LogicalSceneSnapshot,
     resources: _EntityResources | None = None,
@@ -687,9 +680,6 @@ class GodotRenderer:
         self._socket: socket.socket | None = None
         self._lock = threading.Lock()
         self._resources = _EntityResources()
-        # Static scene caching: track static entities to avoid resending every frame
-        self._static_scene_hash: str | None = None
-        self._last_static_entities: list[dict[str, Any]] = []
         deadline = time.monotonic() + startup_timeout
         last_error = ""
         while time.monotonic() < deadline:
@@ -766,24 +756,7 @@ class GodotRenderer:
             self._resources.begin()
             entities = _entities(scene, self._resources)
             self._resources.finish()
-
-            # Static scene caching: simplified strategy
-            # Since all entities are static (vegetation, terrain, buildings),
-            # and dynamic objects (aircraft) are NOT in entities,
-            # we send entities only on the first frame.
-            import sys
-            if self._static_scene_hash is None:
-                # First frame: send everything
-                print(f"[CACHE] First frame: sending {len(entities)} static entities", file=sys.stderr, flush=True)
-                request = _request(scene, camera, entities)
-                request["scene_mode"] = "init"
-                self._static_scene_hash = "initialized"  # Mark as initialized
-            else:
-                # Subsequent frames: send empty entities (all cached in Godot)
-                print(f"[CACHE] Update frame: sending 0 entities (all cached)", file=sys.stderr, flush=True)
-                request = _request(scene, camera, [])  # Empty entities!
-                request["scene_mode"] = "update"
-
+            request = _request(scene, camera, entities)
             request["resources"] = self._resources.definitions
             payload = json.dumps(request, separators=(",", ":")).encode()
             if len(payload) >= 2**32 or len(payload) > _MAX_REQUEST:
