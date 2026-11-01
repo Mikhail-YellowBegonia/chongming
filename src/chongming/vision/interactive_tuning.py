@@ -3,6 +3,7 @@
 import argparse
 import logging
 from pathlib import Path
+from typing import TypedDict
 
 import cv2
 import numpy as np
@@ -11,17 +12,35 @@ from chongming.vision.blob import BlobExtractionConfig, BlobExtractionStage
 from chongming.vision.morphology import MorphologicalConfig, MorphologicalFilterStage
 from chongming.vision.motion import FrameDiffConfig, FrameDifferenceStage
 from chongming.vision.occupancy import OccupancyConfig, OccupancyFilterStage
-from chongming.vision.pipeline import PipelineContext
+from chongming.vision.pipeline import PipelineContext, Stage
 from chongming.vision.preprocess import PreprocessConfig, PreprocessStage
 from chongming.vision.tracking import TrackingConfig, TrackingStage
 
 logger = logging.getLogger(__name__)
 
 
+class TuningParameters(TypedDict):
+    mode: str
+    threshold: float
+    downsample: int
+    morph_kernel: int
+    apply_opening: bool
+    score_inc: float
+    score_decay: float
+    occ_threshold: float
+    occ_dilate: int
+    min_area: float
+    blob_dilation: int
+    confirm_frames: int
+    max_lost: int
+    assoc_gate: float
+    show: int
+
+
 class InteractivePipeline:
     """Interactive parameter tuning workbench."""
 
-    def __init__(self, video_path: Path):
+    def __init__(self, video_path: Path) -> None:
         self.cap = cv2.VideoCapture(str(video_path))
         self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 30.0
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -78,8 +97,8 @@ class InteractivePipeline:
         )  # 0=result, 1=motion, 2=filtered, 3=occupancy
 
         # Initialize stages (will be recreated on param change)
-        self.stages = []
-        self.last_params = None
+        self.stages: list[Stage] = []
+        self.last_params: TuningParameters | None = None
 
     def _on_frame_change(self, value: int) -> None:
         self.current_frame_idx = value
@@ -87,7 +106,7 @@ class InteractivePipeline:
     def _on_pause_change(self, value: int) -> None:
         self.paused = bool(value)
 
-    def _get_params(self) -> dict:
+    def _get_params(self) -> TuningParameters:
         """Read current parameters from trackbars."""
         mode_idx = cv2.getTrackbarPos("Mode", "Controls")
         mode = ["two_frame", "three_frame", "five_frame"][mode_idx]
@@ -110,7 +129,7 @@ class InteractivePipeline:
             "show": cv2.getTrackbarPos("Show", "Controls"),
         }
 
-    def _rebuild_pipeline(self, params: dict) -> None:
+    def _rebuild_pipeline(self, params: TuningParameters) -> None:
         """Rebuild pipeline stages with new parameters."""
         self.stages = [
             PreprocessStage(PreprocessConfig(downsample_factor=params["downsample"])),

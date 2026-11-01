@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import struct
 import tempfile
 import unittest
 from contextlib import chdir
@@ -14,12 +15,14 @@ from pathlib import Path
 from unittest.mock import patch
 from uuid import UUID
 
+from chongming.contracts.scene import SphereGeometry
 from chongming.preview import PreviewRuntime
 from chongming.rendering.godot import GODOT_VERSION, GodotRenderer
 from chongming.scenarios.authoring import compile_authoring, demo_authoring, save_authoring
 from chongming.scenarios.demo import demo_source
 from chongming.scenarios.json_content import content_sha256, parse_json
 from chongming.scenarios.run import _package_digests, _provenance
+from tests.test_scene_rendering import snapshot, test_scene
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -221,6 +224,52 @@ class PreviewPathTests(unittest.TestCase):
 
 
 class GodotWorkspaceTests(unittest.TestCase):
+    def test_first_render_initializes_the_static_scene_cache(self) -> None:
+        scene = snapshot(test_scene(SphereGeometry(1.0)))
+        camera = scene.cameras[0]
+        pixel_count = (
+            camera.actual_intrinsics.image_width_px * camera.actual_intrinsics.image_height_px
+        )
+        pixels = b"\x10\x20\x30" * pixel_count
+        header = struct.pack("<QQ", len(pixels), 1_000_000)
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "godot"
+            project.mkdir()
+            (project / "project.godot").write_text("config_version=5\n")
+            (project / "worker.gd").write_text("extends Node\n")
+            with (
+                patch("chongming.rendering.godot.files", return_value=project.parent),
+                patch("chongming.rendering.godot._godot_executable", return_value="godot"),
+                patch("chongming.rendering.godot.subprocess.run") as version,
+                patch("chongming.rendering.godot.subprocess.Popen") as process,
+                patch("chongming.rendering.godot.socket.create_connection") as connect,
+                patch("chongming.rendering.godot.uuid.uuid4", return_value=UUID(int=1)),
+                patch(
+                    "chongming.rendering.godot._read_line",
+                    return_value=f"READY {UUID(int=1).hex}\n".encode(),
+                ),
+            ):
+                version.return_value.stdout = f"{GODOT_VERSION}.stable.test\n"
+                process.return_value.poll.return_value = None
+                process.return_value.stdout = process.return_value.stderr = None
+                connect.return_value.recv.side_effect = [header, pixels, header, pixels]
+                renderer = GodotRenderer()
+                try:
+                    self.assertIsNone(renderer._static_scene_hash)
+                    self.assertEqual(renderer.render(scene, camera), (pixels, 1.0))
+                    self.assertEqual(renderer._static_scene_hash, "initialized")
+                    self.assertEqual(renderer.render(scene, camera), (pixels, 1.0))
+                    calls = connect.return_value.sendall.call_args_list
+                    self.assertEqual(len(calls), 2)
+                    first = json.loads(calls[0].args[0][4:])
+                    second = json.loads(calls[1].args[0][4:])
+                    self.assertEqual(first["scene_mode"], "init")
+                    self.assertTrue(first["entities"])
+                    self.assertEqual(second["scene_mode"], "update")
+                    self.assertEqual(second["entities"], [])
+                finally:
+                    renderer.close()
+
     def test_read_only_package_project_uses_a_separate_working_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "godot"

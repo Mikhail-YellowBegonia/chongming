@@ -825,7 +825,7 @@ class PreviewRuntime:
         self, step: ScenarioStep, station_id: str, began: float
     ) -> dict[str, Any]:
         """Encode video payload (runs in thread pool)."""
-        encoded = {"video": _video_payload(step, station_id)}
+        encoded: dict[str, Any] = {"video": _video_payload(step, station_id)}
         encoded["png_encode_ms"] = round((time.perf_counter() - began) * 1000, 2)
         return encoded
 

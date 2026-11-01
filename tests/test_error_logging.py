@@ -25,6 +25,20 @@ class PreviewEncodingLoggingTests(unittest.TestCase):
         runtime._published = {"sequence": 1}
         return runtime
 
+    def test_encoded_payload_keeps_video_and_numeric_timing(self) -> None:
+        runtime = self.make_runtime()
+        step = runtime._published_step
+        assert step is not None
+        station_id = runtime._station_ids[0]
+        with (
+            patch("chongming.preview._video_payload", return_value=[]) as video,
+            patch("chongming.preview.time.perf_counter", return_value=1.25),
+        ):
+            encoded = runtime._encode_video_payload(step, station_id, began=1.0)
+
+        video.assert_called_once_with(step, station_id)
+        self.assertEqual(encoded, {"video": [], "png_encode_ms": 250.0})
+
     def test_completed_encoding_failure_logs_traceback_and_keeps_cached_payload(self) -> None:
         runtime = self.make_runtime()
         station_id = runtime._station_ids[0]

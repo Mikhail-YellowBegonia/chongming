@@ -680,6 +680,7 @@ class GodotRenderer:
         self._socket: socket.socket | None = None
         self._lock = threading.Lock()
         self._resources = _EntityResources()
+        self._static_scene_hash: str | None = None
         deadline = time.monotonic() + startup_timeout
         last_error = ""
         while time.monotonic() < deadline:
