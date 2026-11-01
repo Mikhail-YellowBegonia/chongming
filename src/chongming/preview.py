@@ -795,7 +795,9 @@ class PreviewRuntime:
                     if future is None or not future.done():
                         began = time.perf_counter()
                         # Submit encoding job
-                        future = self._png_encoder.submit(self._encode_video_payload, step, station_id, began)
+                        future = self._png_encoder.submit(
+                            self._encode_video_payload, step, station_id, began
+                        )
                         self._pending_encodes[station_id] = future
 
                     # For first request, wait for encoding to complete (blocking)
@@ -817,7 +819,9 @@ class PreviewRuntime:
             result["snapshot"] = {**payload, **encoded, "preview_station_id": station_id}
         return result
 
-    def _encode_video_payload(self, step: ScenarioStep, station_id: str, began: float) -> dict[str, Any]:
+    def _encode_video_payload(
+        self, step: ScenarioStep, station_id: str, began: float
+    ) -> dict[str, Any]:
         """Encode video payload (runs in thread pool)."""
         encoded = {"video": _video_payload(step, station_id)}
         encoded["png_encode_ms"] = round((time.perf_counter() - began) * 1000, 2)

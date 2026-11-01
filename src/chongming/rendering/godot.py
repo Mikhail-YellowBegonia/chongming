@@ -193,7 +193,7 @@ class _EntityResources:
 
 
 def _separate_static_dynamic_entities(
-    entities: list[dict[str, Any]]
+    entities: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Separate entities into static and dynamic groups.
 
@@ -772,15 +772,24 @@ class GodotRenderer:
             # and dynamic objects (aircraft) are NOT in entities,
             # we send entities only on the first frame.
             import sys
+
             if self._static_scene_hash is None:
                 # First frame: send everything
-                print(f"[CACHE] First frame: sending {len(entities)} static entities", file=sys.stderr, flush=True)
+                print(
+                    f"[CACHE] First frame: sending {len(entities)} static entities",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 request = _request(scene, camera, entities)
                 request["scene_mode"] = "init"
                 self._static_scene_hash = "initialized"  # Mark as initialized
             else:
                 # Subsequent frames: send empty entities (all cached in Godot)
-                print(f"[CACHE] Update frame: sending 0 entities (all cached)", file=sys.stderr, flush=True)
+                print(
+                    f"[CACHE] Update frame: sending 0 entities (all cached)",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 request = _request(scene, camera, [])  # Empty entities!
                 request["scene_mode"] = "update"
 
