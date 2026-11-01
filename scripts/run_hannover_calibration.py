@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Render Hannover and evaluate auxiliary-camera visual calibration."""
 
 from __future__ import annotations

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Pack a local asset directory into a deterministic .tar.gz.
 
 The archive bytes depend only on file names and contents: entries are sorted,

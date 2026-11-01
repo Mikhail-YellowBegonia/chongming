@@ -13,6 +13,8 @@ Nix 提供 Python 3.12、uv、Godot 4.7.2 stable、Ruff、treefmt 和 Git；Linu
 
 uv 将运行及开发依赖安装到 `.venv/`，默认以 editable 方式安装本项目。日常使用 `uv run --frozen …`，不重新解析或修改锁文件。Nix 设置 `UV_PYTHON_DOWNLOADS=never`，解释器由 Nix 提供。Ruff 使用 shell 中的 `ruff`，不要通过 `uv run ruff` 替换为可能无法在 NixOS 启动的 PyPI 二进制。
 
+`scripts/` 下的 Python 脚本统一使用 `uv run --frozen python scripts/<name>.py` 调用，不保留 shebang 或文件执行位。
+
 未经维护者授权，不执行依赖升级、`uv add`、`uv lock` 或 Nix 输入更新。获准变更时只调整必要依赖，审查锁文件差异并运行相关检查。环境故障应先检查解释器、动态库和图形驱动，不以升级依赖作为默认修复。
 
 Nix shell 为 manylinux wheel 设置 `LD_LIBRARY_PATH`。在 shell 外直接使用 `.venv/bin/python`，可能因缺少 `libstdc++.so.6` 等动态库而失败。首次准备环境及构建隔离环境可能联网；锁文件不等于离线依赖缓存。
