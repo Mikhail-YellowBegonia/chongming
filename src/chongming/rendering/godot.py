@@ -680,6 +680,7 @@ class GodotRenderer:
         self._socket: socket.socket | None = None
         self._lock = threading.Lock()
         self._resources = _EntityResources()
+        self._static_scene_hash: str | None = None
         deadline = time.monotonic() + startup_timeout
         last_error = ""
         while time.monotonic() < deadline:
@@ -776,7 +777,7 @@ class GodotRenderer:
             else:
                 # Subsequent frames: send empty entities (all cached in Godot)
                 print(
-                    f"[CACHE] Update frame: sending 0 entities (all cached)",
+                    "[CACHE] Update frame: sending 0 entities (all cached)",
                     file=sys.stderr,
                     flush=True,
                 )

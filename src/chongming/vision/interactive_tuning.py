@@ -1,7 +1,9 @@
 """Interactive tuning workbench with cv2 trackbars."""
 
 import argparse
+import logging
 from pathlib import Path
+from typing import TypedDict
 
 import cv2
 import numpy as np
@@ -10,15 +12,35 @@ from chongming.vision.blob import BlobExtractionConfig, BlobExtractionStage
 from chongming.vision.morphology import MorphologicalConfig, MorphologicalFilterStage
 from chongming.vision.motion import FrameDiffConfig, FrameDifferenceStage
 from chongming.vision.occupancy import OccupancyConfig, OccupancyFilterStage
-from chongming.vision.pipeline import PipelineContext
+from chongming.vision.pipeline import PipelineContext, Stage
 from chongming.vision.preprocess import PreprocessConfig, PreprocessStage
 from chongming.vision.tracking import TrackingConfig, TrackingStage
+
+logger = logging.getLogger(__name__)
+
+
+class TuningParameters(TypedDict):
+    mode: str
+    threshold: float
+    downsample: int
+    morph_kernel: int
+    apply_opening: bool
+    score_inc: float
+    score_decay: float
+    occ_threshold: float
+    occ_dilate: int
+    min_area: float
+    blob_dilation: int
+    confirm_frames: int
+    max_lost: int
+    assoc_gate: float
+    show: int
 
 
 class InteractivePipeline:
     """Interactive parameter tuning workbench."""
 
-    def __init__(self, video_path: Path):
+    def __init__(self, video_path: Path) -> None:
         self.cap = cv2.VideoCapture(str(video_path))
         self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 30.0
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -70,11 +92,13 @@ class InteractivePipeline:
         cv2.createTrackbar("Assoc Gate", "Controls", 50, 200, lambda x: None)
 
         # Visualization
-        cv2.createTrackbar("Show", "Controls", 0, 3, lambda x: None)  # 0=result, 1=motion, 2=filtered, 3=occupancy
+        cv2.createTrackbar(
+            "Show", "Controls", 0, 3, lambda x: None
+        )  # 0=result, 1=motion, 2=filtered, 3=occupancy
 
         # Initialize stages (will be recreated on param change)
-        self.stages = []
-        self.last_params = None
+        self.stages: list[Stage] = []
+        self.last_params: TuningParameters | None = None
 
     def _on_frame_change(self, value: int) -> None:
         self.current_frame_idx = value
@@ -82,7 +106,7 @@ class InteractivePipeline:
     def _on_pause_change(self, value: int) -> None:
         self.paused = bool(value)
 
-    def _get_params(self) -> dict:
+    def _get_params(self) -> TuningParameters:
         """Read current parameters from trackbars."""
         mode_idx = cv2.getTrackbarPos("Mode", "Controls")
         mode = ["two_frame", "three_frame", "five_frame"][mode_idx]
@@ -105,7 +129,7 @@ class InteractivePipeline:
             "show": cv2.getTrackbarPos("Show", "Controls"),
         }
 
-    def _rebuild_pipeline(self, params: dict) -> None:
+    def _rebuild_pipeline(self, params: TuningParameters) -> None:
         """Rebuild pipeline stages with new parameters."""
         self.stages = [
             PreprocessStage(PreprocessConfig(downsample_factor=params["downsample"])),
@@ -160,8 +184,10 @@ class InteractivePipeline:
             if params != self.last_params:
                 self._rebuild_pipeline(params)
                 self.last_params = params
-                print(f"\nParams updated: mode={params['mode']}, threshold={params['threshold']}, "
-                      f"downsample={params['downsample']}x")
+                print(
+                    f"\nParams updated: mode={params['mode']}, threshold={params['threshold']}, "
+                    f"downsample={params['downsample']}x"
+                )
 
             # Get current frame
             if self.current_frame_idx >= len(self.frames):
@@ -178,22 +204,31 @@ class InteractivePipeline:
 
                     # Flow protection: skip tracking if too many blobs
                     # This prevents workbench freeze when occupancy hasn't learned yet
-                    if hasattr(context, 'blobs') and len(context.blobs) > 50:
+                    if hasattr(context, "blobs") and len(context.blobs) > 50:
                         # Clear blobs to prevent tracking stage from processing
-                        print(f"WARNING: {len(context.blobs)} blobs detected, skipping tracking (occupancy learning)")
+                        print(
+                            f"WARNING: {len(context.blobs)} blobs detected, skipping tracking (occupancy learning)"
+                        )
                         context.blobs = []
                         context.detections = []
                         break
 
             except Exception as e:
-                print(f"Pipeline error: {e}")
+                logger.exception("Pipeline error")
                 # Show error on screen
                 vis = frame.copy()
-                cv2.putText(vis, f"Pipeline Error: {str(e)[:60]}", (10, 30),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                cv2.putText(
+                    vis,
+                    f"Pipeline Error: {str(e)[:60]}",
+                    (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 0, 255),
+                    2,
+                )
                 cv2.imshow("Pipeline Tuning", vis)
                 key = cv2.waitKey(33) & 0xFF
-                if key == ord('q') or key == 27:
+                if key == ord("q") or key == 27:
                     break
                 continue
 
@@ -206,27 +241,41 @@ class InteractivePipeline:
             elif show_mode == 3:
                 # Visualize occupancy map (score heatmap)
                 occ_stage = self.stages[3]  # OccupancyFilterStage
-                if hasattr(occ_stage, 'score_map') and occ_stage.score_map is not None:
+                if hasattr(occ_stage, "score_map") and occ_stage.score_map is not None:
                     # Normalize to 0-255 for visualization
                     occ_vis = occ_stage.score_map.copy()
                     # Clip to threshold range for better contrast
                     occ_threshold = params["occ_threshold"]
                     # Clamp score map values to prevent overflow (max 1000)
                     occ_vis = np.clip(occ_vis, 0, 1000)
-                    occ_vis = np.clip(occ_vis * (255.0 / max(occ_threshold, 1.0)), 0, 255).astype(np.uint8)
+                    occ_vis = np.clip(occ_vis * (255.0 / max(occ_threshold, 1.0)), 0, 255).astype(
+                        np.uint8
+                    )
                     vis = cv2.applyColorMap(occ_vis, cv2.COLORMAP_JET)
 
                     # Add threshold line indicator and stats
                     max_score = float(np.clip(occ_stage.score_map.max(), 0, 10000))
                     mean_score = float(np.clip(occ_stage.score_map.mean(), 0, 10000))
                     cv2.putText(
-                        vis, f"Occupancy: max={max_score:.1f} mean={mean_score:.2f} thr={occ_threshold:.0f}",
-                        (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2
+                        vis,
+                        f"Occupancy: max={max_score:.1f} mean={mean_score:.2f} thr={occ_threshold:.0f}",
+                        (10, 90),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (255, 255, 255),
+                        2,
                     )
                 else:
                     vis = frame.copy()
-                    cv2.putText(vis, "Occupancy stage not initialized (wait for first frame)", (10, 90),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                    cv2.putText(
+                        vis,
+                        "Occupancy stage not initialized (wait for first frame)",
+                        (10, 90),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (0, 0, 255),
+                        2,
+                    )
             else:
                 # Result view
                 vis = frame.copy()
@@ -243,13 +292,21 @@ class InteractivePipeline:
                     cv2.rectangle(vis, (x1, y1), (x2, y2), (255, 165, 0), 2)
 
                     # Draw centroid
-                    cx, cy = int(blob.centroid_px[0] * downsample), int(blob.centroid_px[1] * downsample)
+                    cx, cy = (
+                        int(blob.centroid_px[0] * downsample),
+                        int(blob.centroid_px[1] * downsample),
+                    )
                     cv2.circle(vis, (cx, cy), 5, (255, 165, 0), -1)
 
                     # Draw area label
                     cv2.putText(
-                        vis, f"{int(blob.area_px2)}", (x1, y1 - 5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1
+                        vis,
+                        f"{int(blob.area_px2)}",
+                        (x1, y1 - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        (255, 165, 0),
+                        1,
                     )
 
                 # Draw tracked detections with AABB and lifetime
@@ -257,44 +314,77 @@ class InteractivePipeline:
                     # Get tracker stage to access lifetime info
                     tracker_stage = self.stages[-1]  # TrackingStage is last
                     lifetime = 0
-                    if hasattr(tracker_stage, 'tracks'):
+                    if hasattr(tracker_stage, "tracks"):
                         for track in tracker_stage.tracks:
                             if track.track_id == det.track_id:
                                 lifetime = track.lifetime_frames
                                 break
 
                     # Draw bounding box (fixed size around position)
-                    cx, cy = int(det.position_px[0] * downsample), int(det.position_px[1] * downsample)
+                    cx, cy = (
+                        int(det.position_px[0] * downsample),
+                        int(det.position_px[1] * downsample),
+                    )
                     box_size = 30
-                    cv2.rectangle(vis, (cx - box_size, cy - box_size), (cx + box_size, cy + box_size), (0, 255, 0), 2)
+                    cv2.rectangle(
+                        vis,
+                        (cx - box_size, cy - box_size),
+                        (cx + box_size, cy + box_size),
+                        (0, 255, 0),
+                        2,
+                    )
 
                     # Draw center point
                     cv2.circle(vis, (cx, cy), 5, (0, 255, 0), -1)
 
                     # Draw ID and lifetime
                     cv2.putText(
-                        vis, f"ID{det.track_id} [{lifetime}f]", (cx - box_size, cy - box_size - 5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2
+                        vis,
+                        f"ID{det.track_id} [{lifetime}f]",
+                        (cx - box_size, cy - box_size - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (0, 255, 0),
+                        2,
                     )
 
             # Overlay info
             cv2.putText(
-                vis, f"Frame {self.current_frame_idx}/{len(self.frames)}  "
-                     f"Blobs:{len(context.blobs)} Tracks:{len(context.detections)}",
-                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2
+                vis,
+                f"Frame {self.current_frame_idx}/{len(self.frames)}  "
+                f"Blobs:{len(context.blobs)} Tracks:{len(context.detections)}",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (0, 255, 255),
+                2,
             )
             cv2.putText(
-                vis, f"{params['mode']} thr={params['threshold']:.0f} ds={params['downsample']}x",
-                (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2
+                vis,
+                f"{params['mode']} thr={params['threshold']:.0f} ds={params['downsample']}x",
+                (10, 60),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 255),
+                2,
             )
 
             # Flow protection warning (if blobs were truncated)
-            if len(context.blobs) == 0 and hasattr(context, 'filtered_mask') and context.filtered_mask is not None:
-                if context.filtered_mask.any():
-                    cv2.putText(
-                        vis, "FLOW PROTECTION: Skipping tracking (occupancy learning...)",
-                        (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2
-                    )
+            if (
+                len(context.blobs) == 0
+                and hasattr(context, "filtered_mask")
+                and context.filtered_mask is not None
+                and context.filtered_mask.any()
+            ):
+                cv2.putText(
+                    vis,
+                    "FLOW PROTECTION: Skipping tracking (occupancy learning...)",
+                    (10, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 165, 255),
+                    2,
+                )
 
             cv2.imshow("Pipeline Tuning", vis)
 
@@ -305,9 +395,9 @@ class InteractivePipeline:
 
             # Handle keyboard
             key = cv2.waitKey(33) & 0xFF  # ~30fps
-            if key == ord('q') or key == 27:  # Q or Esc
+            if key == ord("q") or key == 27:  # Q or Esc
                 break
-            elif key == ord(' '):  # Space
+            elif key == ord(" "):  # Space
                 self.paused = not self.paused
                 cv2.setTrackbarPos("Paused", "Controls", int(self.paused))
 

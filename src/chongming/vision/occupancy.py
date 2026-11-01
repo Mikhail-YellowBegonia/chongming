@@ -33,6 +33,7 @@ class OccupancyFilterStage(Stage):
     def __init__(self, config: OccupancyConfig) -> None:
         self.config = config
         self.score_map: np.ndarray | None = None
+        self.dilation_kernel: np.ndarray | None
         if config.dilate_background_mask:
             self.dilation_kernel = cv2.getStructuringElement(
                 cv2.MORPH_ELLIPSE, (config.dilation_kernel_size, config.dilation_kernel_size)
@@ -67,8 +68,8 @@ class OccupancyFilterStage(Stage):
         # Dilate background mask to catch edges/borders of vegetation
         if self.config.dilate_background_mask and self.dilation_kernel is not None:
             background_mask_uint8 = (background_mask * 255).astype(np.uint8)
-            background_mask_uint8 = cv2.dilate(background_mask_uint8, self.dilation_kernel)
-            background_mask = background_mask_uint8 > 0
+            dilated_mask = cv2.dilate(background_mask_uint8, self.dilation_kernel)
+            background_mask = dilated_mask > 0
 
         # Remove background from motion mask
         filtered_mask = mask.copy()

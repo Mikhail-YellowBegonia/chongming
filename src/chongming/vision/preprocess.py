@@ -14,7 +14,9 @@ from chongming.vision.pipeline import PipelineContext, Stage
 class PreprocessConfig:
     """Configuration for preprocessing stage."""
 
-    downsample_factor: int = 2  # 1 = no downsampling, 2 = half size (2x: acceptable quality, 4x performance boost)
+    downsample_factor: int = (
+        2  # 1 = no downsampling, 2 = half size (2x: acceptable quality, 4x performance boost)
+    )
     adjust_exposure: bool = False
     target_brightness: float = 128.0  # Target mean brightness (0-255)
 

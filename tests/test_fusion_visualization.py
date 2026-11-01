@@ -118,7 +118,7 @@ class VisualizationConversionTests(unittest.TestCase):
     def test_track_with_full_covariance_converts_position_and_velocity_std(self) -> None:
         track = m.TrackEvent(
             center_session_id=m.SessionId("center"),
-            track_id=m.TrackId(1),
+            track_id=m.TrackId("1"),
             clock_domain_id="clock",
             world_frame_id=m.WorldFrameId("enu"),
             event_time_ns=2000,
@@ -159,7 +159,7 @@ class VisualizationConversionTests(unittest.TestCase):
     def test_track_without_covariance_has_none_std_fields(self) -> None:
         track = m.TrackEvent(
             center_session_id=m.SessionId("center"),
-            track_id=m.TrackId(1),
+            track_id=m.TrackId("1"),
             clock_domain_id="clock",
             world_frame_id=m.WorldFrameId("enu"),
             event_time_ns=1000,

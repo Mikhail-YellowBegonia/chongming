@@ -783,9 +783,9 @@ class PreviewRuntime:
                         encoded = future.result()
                         cache[station_id] = encoded
                         del self._pending_encodes[station_id]
-                    except Exception as e:
+                    except Exception:
                         # Encoding failed, fall back to sync
-                        logging.error(f"Async PNG encoding failed: {e}")
+                        logger.exception("Async PNG encoding failed")
                         future = None
 
                 # Check cache
@@ -808,9 +808,11 @@ class PreviewRuntime:
                         with self._encode_queue_lock:
                             if station_id in self._pending_encodes:
                                 del self._pending_encodes[station_id]
-                    except Exception as e:
+                    except Exception as error:
                         # Timeout or error, fall back to sync encoding
-                        logging.warning(f"Async encoding timeout, falling back to sync: {e}")
+                        logger.warning(
+                            "Async encoding timeout, falling back to sync: %s", error, exc_info=True
+                        )
                         began = time.perf_counter()
                         encoded = {"video": _video_payload(step, station_id)}
                         encoded["png_encode_ms"] = round((time.perf_counter() - began) * 1000, 2)
@@ -823,7 +825,7 @@ class PreviewRuntime:
         self, step: ScenarioStep, station_id: str, began: float
     ) -> dict[str, Any]:
         """Encode video payload (runs in thread pool)."""
-        encoded = {"video": _video_payload(step, station_id)}
+        encoded: dict[str, Any] = {"video": _video_payload(step, station_id)}
         encoded["png_encode_ms"] = round((time.perf_counter() - began) * 1000, 2)
         return encoded
 

@@ -80,6 +80,4 @@ class BlobExtractionStage(Stage):
 
         context.blobs = blobs
         context.debug_data["blob_count"] = len(blobs)
-        context.debug_data["dilated_mask"] = (
-            working_mask if self.config.apply_dilation else None
-        )
+        context.debug_data["dilated_mask"] = working_mask if self.config.apply_dilation else None
