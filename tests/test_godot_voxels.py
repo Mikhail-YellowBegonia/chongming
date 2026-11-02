@@ -1,4 +1,4 @@
-"""Sparse-grid replacement, real wireframes and cache-only measurement selection."""
+"""Sparse-grid replacement, solid voxel faces and cache-only measurement selection."""
 
 from __future__ import annotations
 
@@ -164,29 +164,72 @@ class VoxelGraphicsTests(unittest.TestCase):
         )
         return scene, camera
 
-    def test_wireframe_cells_use_raw_corners_score_alpha_and_clipped_edge_cells(self) -> None:
+    def test_sensor_updates_target_position_on_consecutive_requests(self) -> None:
+        scene, camera = self.scene()
+        scene = snapshot(test_scene(s.SphereGeometry(1.0)))
+        moved = snapshot(test_scene(s.SphereGeometry(1.0), (2.0, 0.0, 10.0)))
+        with layers.instrumented_renderer() as renderer:
+            original, _ = renderer.render(scene, camera)
+            shifted, _ = renderer.render(moved, camera)
+            restored, _ = renderer.render(scene, camera)
+        self.assertTrue(shifted != original, "Target motion must reach Godot on every frame")
+        self.assertEqual(restored, original)
+
+    def test_solid_cells_use_raw_corners_score_alpha_and_clipped_edge_cells(self) -> None:
         scene, camera = self.scene()
         with layers.instrumented_renderer() as renderer:
             renderer.editor_update(scene, camera, realtime=False, reopen=True)
             initial = layers.layer_state()
+            space = initial["algorithm_output"]["center_events"]["voxel_space"]
+            space["scored_voxels"][0]["score"] = "2"
+            space["scored_voxels"][0]["supporting_station_count"] = "2"
+            space["scored_voxels"][1]["score"] = "15"
+            space["scored_voxels"][1]["supporting_station_count"] = "15"
+            space["scored_voxels"].append(
+                {"grid_index": ["2", "2", "1"], "score": "1", "supporting_station_count": "1"}
+            )
+            space["max_score"] = "15"
             report = renderer.ui_exchange(initial)[0]
             geometry = report["layers"]["voxels"]["geometry"]
             self.assertEqual(len(geometry["children"]), 2)
-            for score in (1, 2):
+            for score in (2, 15):
                 mesh = layers.named(geometry, f"Score{score}")
-                self.assertEqual(len(mesh["vertices"]), 24, "One wire cube has 12 line segments")
-                self.assertAlmostEqual(mesh["color"][3], 0.3 * score / 2)
+                # Solid cubes: 6 faces × 2 triangles × 3 vertices = 36 vertices
+                self.assertEqual(len(mesh["vertices"]), 36, "One solid cube has 6 faces")
+                expected_alpha = 0.06 + 0.12 * (score - 2) / 13
+                self.assertAlmostEqual(mesh["color"][3], expected_alpha, places=2)
                 self.assertEqual(mesh["layers"], 2)
                 self.assertEqual(mesh["shadow"], 0)
-                self.assertEqual(
-                    set(map(tuple, mesh["vertices"])),
-                    {
-                        (e, u, -n)
-                        for e in ((-3.0, -1.0) if score == 1 else (-1.0, 1.0))
-                        for u in (4.0, 6.0)
-                        for n in (4.0, 6.0)
-                    },
-                )
+                # Every face must consist of two complementary triangles. Vertex counts
+                # alone cannot detect overlapping triangles and holes on the same face.
+                triangles = np.array(mesh["vertices"]).reshape(-1, 3, 3)
+                faces: dict[tuple[int, float], list[set[tuple[float, ...]]]] = {}
+                for triangle in triangles:
+                    constant_axes = np.flatnonzero(np.ptp(triangle, axis=0) == 0)
+                    self.assertEqual(len(constant_axes), 1)
+                    axis = int(constant_axes[0])
+                    faces.setdefault((axis, float(triangle[0, axis])), []).append(
+                        set(map(tuple, triangle))
+                    )
+                self.assertEqual(len(faces), 6)
+                for pair in faces.values():
+                    self.assertEqual(len(pair), 2)
+                    self.assertEqual(len(pair[0] | pair[1]), 4)
+                    self.assertEqual(len(pair[0] & pair[1]), 2)
+                    # The shared edge must be a diagonal, not a face boundary.
+                    shared = list(pair[0] & pair[1])
+                    self.assertEqual(np.count_nonzero(np.subtract(shared[0], shared[1])), 2)
+                # Check that all vertices fall within the expected voxel bounds
+                corners = {
+                    (e, u, -n)
+                    for e in ((-3.0, -1.0) if score == 2 else (-1.0, 1.0))
+                    for u in (4.0, 6.0)
+                    for n in (4.0, 6.0)
+                }
+                for vertex in mesh["vertices"]:
+                    self.assertIn(
+                        tuple(vertex), corners, f"Vertex {vertex} not in expected corners"
+                    )
             unchanged = renderer.ui_exchange(increment(2, transport.TIME + 30))[0]
             self.assertEqual(unchanged["layers"]["voxels"]["geometry"], geometry)
             partial = v.VoxelSpaceVisualization(
@@ -194,20 +237,35 @@ class VoxelGraphicsTests(unittest.TestCase):
                 search_box_max_enu_m=(2.0, 3.0, 3.5),
                 voxel_step_enu_m=(2.0, 2.0, 2.0),
                 scored_voxels=(
-                    v.ScoredVoxel(grid_index=(2, 1, 0), score=1, supporting_station_count=1),
+                    v.ScoredVoxel(grid_index=(2, 1, 0), score=2, supporting_station_count=2),
                 ),
-                max_score=1,
+                max_score=2,
             )
             report = renderer.ui_exchange(
                 increment(3, transport.TIME + 40, windows=1, space=partial)
             )[0]
-            vertices = layers.named(report["layers"]["voxels"]["geometry"], "Score1")["vertices"]
+            vertices = layers.named(report["layers"]["voxels"]["geometry"], "Score2")["vertices"]
             self.assertEqual(
                 set(map(tuple, vertices)),
                 {(e, u, -n) for e in (1.0, 2.0) for u in (2.0, 3.5) for n in (2.0, 3.0)},
             )
+            for update_id, score, alpha in ((4, 8, 0.06 + 0.12 * 6 / 13), (5, 20, 0.18)):
+                scored = replace(
+                    partial,
+                    scored_voxels=(
+                        v.ScoredVoxel(
+                            grid_index=(2, 1, 0), score=score, supporting_station_count=score
+                        ),
+                    ),
+                    max_score=score,
+                )
+                report = renderer.ui_exchange(
+                    increment(update_id, transport.TIME + 50 + update_id, windows=1, space=scored)
+                )[0]
+                mesh = layers.named(report["layers"]["voxels"]["geometry"], f"Score{score}")
+                self.assertAlmostEqual(mesh["color"][3], alpha, places=5)
             cleared = renderer.ui_exchange(
-                increment(4, transport.TIME + 50, windows=1, space=empty_space())
+                increment(6, transport.TIME + 60, windows=1, space=empty_space())
             )[0]
             self.assertEqual(cleared["layers"]["voxels"]["geometry"]["children"], [])
             self.assertIn("0 个非零网格", cleared["voxel_text"])

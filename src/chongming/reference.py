@@ -49,7 +49,8 @@ class FusionEngineAdapter:
 
 
 class ReferenceFusionAlgorithm:
-    def __init__(self) -> None:
+    def __init__(self, *, postintersection: bool = False) -> None:
+        self.postintersection = postintersection
         self.voxel_diagnostics = VoxelDiagnostics()
         self.center: CenterAssembly | None = None
         self._adapter: FusionEngineAdapter | None = None
@@ -65,6 +66,7 @@ class ReferenceFusionAlgorithm:
             policy=registration.policy,
             clock_mapping=registration.clock_mapping,
             voxel_diagnostics=self.voxel_diagnostics,
+            postintersection=self.postintersection,
         )
         try:
             for binding in bindings:
@@ -80,6 +82,8 @@ class ReferenceFusionAlgorithm:
         if self._adapter is None:
             raise RuntimeError("reference algorithm is not running")
         self._now = step.time
+        assert self.center is not None
+        self.center.fusion.stage_timings.clear()
         self.voxel_diagnostics.clear()
         result = self._adapter.process(step)
         last_window = next(
@@ -110,3 +114,8 @@ class ReferenceFusionAlgorithm:
 def create_algorithm() -> ReferenceFusionAlgorithm:
     """Factory for --algorithm chongming.reference:create_algorithm."""
     return ReferenceFusionAlgorithm()
+
+
+def create_postintersection_algorithm() -> ReferenceFusionAlgorithm:
+    """Exhaustive refinement followed by 3 m spatial suppression before tracking."""
+    return ReferenceFusionAlgorithm(postintersection=True)

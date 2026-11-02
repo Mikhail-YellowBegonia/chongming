@@ -28,6 +28,10 @@ def validate_device_policies(
     for policy in policies.values():
         validate_detection_policy(policy.detection)
         validate_tracking_policy(policy.tracking)
+        if isinstance(policy.detection, d.FrameDifferencePolicy) != isinstance(
+            policy.tracking, d.KalmanTrackingPolicy
+        ):
+            raise ValueError("detector and tracker algorithm families must agree")
         calibration = policy.calibration
         if (
             calibration.estimator_id != OPENCV_CALIBRATION_ESTIMATOR_ID

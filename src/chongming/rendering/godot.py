@@ -680,7 +680,6 @@ class GodotRenderer:
         self._socket: socket.socket | None = None
         self._lock = threading.Lock()
         self._resources = _EntityResources()
-        self._static_scene_hash: str | None = None
         deadline = time.monotonic() + startup_timeout
         last_error = ""
         while time.monotonic() < deadline:
@@ -758,32 +757,7 @@ class GodotRenderer:
             entities = _entities(scene, self._resources)
             self._resources.finish()
 
-            # Static scene caching: simplified strategy
-            # Since all entities are static (vegetation, terrain, buildings),
-            # and dynamic objects (aircraft) are NOT in entities,
-            # we send entities only on the first frame.
-            import sys
-
-            if self._static_scene_hash is None:
-                # First frame: send everything
-                print(
-                    f"[CACHE] First frame: sending {len(entities)} static entities",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                request = _request(scene, camera, entities)
-                request["scene_mode"] = "init"
-                self._static_scene_hash = "initialized"  # Mark as initialized
-            else:
-                # Subsequent frames: send empty entities (all cached in Godot)
-                print(
-                    "[CACHE] Update frame: sending 0 entities (all cached)",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                request = _request(scene, camera, [])  # Empty entities!
-                request["scene_mode"] = "update"
-
+            request = _request(scene, camera, entities)
             request["resources"] = self._resources.definitions
             payload = json.dumps(request, separators=(",", ":")).encode()
             if len(payload) >= 2**32 or len(payload) > _MAX_REQUEST:

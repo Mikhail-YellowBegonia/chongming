@@ -48,6 +48,45 @@ class Tracking2DPolicy:
 
 
 @dataclass(frozen=True, kw_only=True)
+class FrameDifferencePolicy:
+    """Workbench foreground pipeline (frame difference or MOG2); processed-pixel units."""
+
+    algorithm_id: str
+    downsample_factor: int
+    mode: str
+    threshold: float
+    morphology_kernel_size: int
+    apply_opening: bool
+    apply_closing: bool
+    score_increment: float
+    score_decay: float
+    mask_threshold: float
+    occupancy_dilation_size: int
+    minimum_component_area_px2: float
+    maximum_component_area_px2: float | None
+    blob_dilation_size: int
+    apply_occupancy: bool = True
+    mog2_history: int | None = None
+    mog2_variance_threshold: float | None = None
+    mog2_learning_rate: float | None = None
+    mog2_detect_shadows: bool | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class KalmanTrackingPolicy:
+    """Workbench tracker parameters; spatial units are downsampled image pixels."""
+
+    algorithm_id: str
+    confirmation_frame_count: int
+    maximum_lost_frame_count: int
+    association_gate_px: float
+    covariance_floor_px: float
+    process_noise_position: float
+    process_noise_velocity: float
+    measurement_noise_px: float
+
+
+@dataclass(frozen=True, kw_only=True)
 class Candidate2D:
     centroid_px: Vec2Px
     centroid_covariance_px2: Matrix2x2 | None
@@ -169,8 +208,8 @@ class RayGenerationPolicy:
 
 @dataclass(frozen=True, kw_only=True)
 class DevicePolicy:
-    detection: DetectionPolicy
-    tracking: Tracking2DPolicy
+    detection: DetectionPolicy | FrameDifferencePolicy
+    tracking: Tracking2DPolicy | KalmanTrackingPolicy
     calibration: CalibrationPolicy
     rays: RayGenerationPolicy
 

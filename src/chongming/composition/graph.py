@@ -42,6 +42,11 @@ from chongming.modules.scene import (
     VirtualObservationModule,
     VisibilityModule,
 )
+from chongming.modules.workbench_device import (
+    WorkbenchMotionModule,
+    WorkbenchTrackingModule,
+    image_modules,
+)
 from chongming.ports.lifecycle import ModuleBinding, ModuleLifecycle
 
 
@@ -49,8 +54,8 @@ from chongming.ports.lifecycle import ModuleBinding, ModuleLifecycle
 class StationAssembly:
     config: StationConfig
     sequencer: EventSequencerModule
-    motion: MotionDetectionModule
-    tracking: Tracking2DModule
+    motion: MotionDetectionModule | WorkbenchMotionModule
+    tracking: Tracking2DModule | WorkbenchTrackingModule
     detection: MainDetectionModule
     references: ReferenceRecognitionModule
     estimation: CalibrationEstimationModule
@@ -129,11 +134,8 @@ def declare_assembly(spec: ScenarioSpec, run: RunSpec) -> ArchitectureAssembly:
             station_session_id=station.sessions.virtual_session_id,
             schema_version=run.schema_version,
         )
-        motion = MotionDetectionModule(policy=policy.detection)
-        tracking = Tracking2DModule(
-            station_id=sid,
-            station_session_id=station.sessions.image_session_id,
-            policy=policy.tracking,
+        motion, tracking = image_modules(
+            policy.detection, policy.tracking, sid, station.sessions.image_session_id
         )
         detection = MainDetectionModule(detector=motion, tracker=tracking)
         references = ReferenceRecognitionModule(policy=policy.calibration)

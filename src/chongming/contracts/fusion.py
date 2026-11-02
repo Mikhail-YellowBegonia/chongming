@@ -541,7 +541,8 @@ class TrackPrediction:
 class AssociatedRayGroup:
     """At most one support ray per station for this target in this window.
 
-    Across selected groups in one batch an EventId is used at most once. Group IDs
+    Exclusive association uses an EventId at most once across selected groups.
+    Exhaustive post-intersection hypotheses may overlap until spatial suppression. Group IDs
     are scoped by window (which includes the center session); truth IDs are absent.
     Without a motion prior, reference time is the midpoint of the earliest/latest
     supporting exposure midpoints, not an assumed position at the window center.
@@ -621,6 +622,14 @@ class GeometryBatch:
 
 
 @dataclass(frozen=True, kw_only=True)
+class SuppressedMeasurement:
+    measurement: FusionMeasurement
+    representative_measurement_id: str
+    distance_m: float
+    reason: str
+
+
+@dataclass(frozen=True, kw_only=True)
 class FusionBatchResult:
     """One ingestion/progress/tick response, including rejection and late evidence.
 
@@ -637,3 +646,5 @@ class FusionBatchResult:
     geometry: tuple[GeometryBatch, ...]
     measurements: tuple[FusionMeasurement, ...]
     tracks: tuple[TrackEvent, ...]
+    suppressed_measurements: tuple[SuppressedMeasurement, ...] = ()
+    tracking_exclusions: tuple[SuppressedMeasurement, ...] = ()

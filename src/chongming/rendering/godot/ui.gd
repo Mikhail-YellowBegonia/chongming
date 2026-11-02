@@ -264,7 +264,7 @@ func show_visualization(measurements: Dictionary, selection: Dictionary, voxels:
 			measurement.supporting_ray_ids.size(),
 			"全部仍在缓存中。" if selection.missing_ray_ids.is_empty() else "部分或全部未接收或已过期，无法显示；不重建。"]
 	_voxel_status.text = "体素：尚无快照（或最后封口窗口未提供原始投票），不保留旧窗口。" if voxels == null else \
-		"体素：更新 #%d · 最后封口窗口\n%d 个非零网格 · 最大站点票数 %d\n仅无先验搜索，透明度不超过 0.3；空快照会清除旧图。" % [
+		"体素：更新 #%d · 最后封口窗口\n%d 个非零网格 · 最大站点票数 %d\n仅无先验搜索，0–1 票不显示；2–15 票 alpha 0.06–0.18；空快照会清除旧图。" % [
 			voxel_update, voxels.scored_voxels.size(), voxels.max_score]
 
 
@@ -290,6 +290,15 @@ func _diagnostics_text(summary: Dictionary) -> String:
 			lines.append("%s：%s" % [metric[1], "不可计算（无匹配样本）" if value == null else
 				String.num(value, 12) + " " + pair[2]])
 	lines.append("\n接收数 = 匹配 + 未匹配 + 无法评估；有效数 = 匹配 + 未匹配。\n匹配使用对应时刻全部真值，可见性不作门控。\n空真值中的输出记未匹配；无有效位置或方向无法定义记无法评估。\n未匹配输出不等同误报；不提供 TP/FP/FN、召回率或综合分数。")
+	if summary.has("performance"):
+		var perf: Dictionary = summary.performance
+		lines.append("\n可视化 CPU 墙钟（最近最多 512 次；非 GPU 时间或帧率）")
+		for key in ["update_ms", "evaluation_ms", "redraw_ms"]:
+			var timing: Dictionary = perf[key]
+			lines.append("%s · n=%d · p50/p95/max ms: %s / %s / %s" % [key,
+				timing.samples, str(timing.p50), str(timing.p95), str(timing.max)])
+		lines.append("缓存：射线 %d · 测量 %d · 轨迹 %d · 体素 %d" % [
+			perf.ray_count, perf.measurement_count, perf.track_count, perf.voxel_count])
 	return "\n".join(lines)
 
 

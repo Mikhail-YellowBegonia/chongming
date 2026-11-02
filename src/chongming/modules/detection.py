@@ -63,7 +63,12 @@ def _positive(value: float) -> bool:
     return not isinstance(value, bool) and math.isfinite(value) and value > 0
 
 
-def validate_detection_policy(policy: d.DetectionPolicy) -> None:
+def validate_detection_policy(policy: d.DetectionPolicy | d.FrameDifferencePolicy) -> None:
+    if isinstance(policy, d.FrameDifferencePolicy):
+        from chongming.modules.workbench_device import validate_workbench_detection
+
+        validate_workbench_detection(policy)
+        return
     if policy.algorithm_id != MOG2_ALGORITHM_ID or policy.score_definition != FILL_RATIO_SCORE:
         raise ValueError("MOG2 requires its algorithm and fill-ratio score definitions")
     if not _positive(policy.minimum_component_area_px2) or (
@@ -95,7 +100,12 @@ def validate_detection_policy(policy: d.DetectionPolicy) -> None:
         raise ValueError("MOG2 background parameters must all be explicitly configured")
 
 
-def validate_tracking_policy(policy: d.Tracking2DPolicy) -> None:
+def validate_tracking_policy(policy: d.Tracking2DPolicy | d.KalmanTrackingPolicy) -> None:
+    if isinstance(policy, d.KalmanTrackingPolicy):
+        from chongming.modules.workbench_device import validate_workbench_tracking
+
+        validate_workbench_tracking(policy)
+        return
     if (
         policy.algorithm_id != TRACKING_ALGORITHM_ID
         or policy.quality_definition != TRACK_QUALITY_SCORE

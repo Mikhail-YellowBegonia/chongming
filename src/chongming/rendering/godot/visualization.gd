@@ -18,6 +18,33 @@ var _voxel_dirty := true
 var update_count := 0
 var error := ""
 var _last_snapshots: Array = []
+# Bounded CPU wall timings. These do not measure GPU completion or UI frame rate.
+const TIMING_CAPACITY := 512
+var _timings := {"update_ms": [], "evaluation_ms": [], "redraw_ms": []}
+
+
+func _record_timing(key: String, started_us: int) -> void:
+	var samples: Array = _timings[key]
+	samples.append(float(Time.get_ticks_usec() - started_us) / 1000.0)
+	if samples.size() > TIMING_CAPACITY:
+		samples.pop_front()
+
+
+func performance_summary() -> Dictionary:
+	var result := {}
+	for key in _timings:
+		var samples: Array = _timings[key].duplicate()
+		samples.sort()
+		result[key] = {"samples": samples.size(),
+			"p50": null if samples.is_empty() else samples[ceili(samples.size() * 0.5) - 1],
+			"p95": null if samples.is_empty() else samples[ceili(samples.size() * 0.95) - 1],
+			"max": null if samples.is_empty() else samples[-1]}
+	result["ray_count"] = rays.size()
+	result["measurement_count"] = measurements.size()
+	result["track_count"] = tracks.size()
+	result["voxel_count"] = 0 if voxel_space == null else voxel_space.scored_voxels.size()
+	return result
+
 
 const RAY_LIFETIME_NS := 1_000_000_000
 const MEASUREMENT_LIFETIME_NS := 3_000_000_000
@@ -29,7 +56,8 @@ const RAY_COLOR := Color("#ffe052")
 const MEASUREMENT_COLOR := Color("#ff424f")
 const SELECTION_COLOR := Color("#66ddff")
 const VOXEL_COLOR := Color("#80b8ff")
-const VOXEL_MAX_ALPHA := 0.3
+const VOXEL_MIN_ALPHA := 0.06
+const VOXEL_MAX_ALPHA := 0.18
 const TRACK_COLORS := {
 	"tentative": Color("#ff9e9e"), "confirmed": Color("#db2638"),
 	"coasting": Color("#ff9d32"), "deleted": Color("#929292"),
@@ -56,6 +84,7 @@ var _selected_ray_materials: Dictionary = {}
 
 
 func receive(state: Dictionary) -> bool:
+	var started_us := Time.get_ticks_usec()
 	error = ""
 	if not state.has("algorithm_output") and not state.has("truth_snapshots"):
 		return true
@@ -85,7 +114,9 @@ func receive(state: Dictionary) -> bool:
 	for index in range(times.size()):
 		truth[times[index]] = snapshots[index]
 	# Evaluate the complete validated increment exactly once, before changing display caches.
+	var evaluation_us := Time.get_ticks_usec()
 	evaluation.process(update, truth)
+	_record_timing("evaluation_ms", evaluation_us)
 	last_update = update
 	display_time_ns = maxi(display_time_ns, update.scenario_time_ns)
 	_last_snapshots = snapshots
@@ -117,6 +148,7 @@ func receive(state: Dictionary) -> bool:
 	_prune()
 	update_count += 1
 	redraw()
+	_record_timing("update_ms", started_us)
 	return true
 
 
@@ -197,6 +229,7 @@ func set_station_origins(markers: Array) -> void:
 func redraw() -> void:
 	if _root == null:
 		return
+	var started_us := Time.get_ticks_usec()
 	for key in layers:
 		if key == "voxels" and not _voxel_dirty:
 			continue
@@ -218,6 +251,7 @@ func redraw() -> void:
 	if _voxel_dirty:
 		_draw_voxels()
 		_voxel_dirty = false
+	_record_timing("redraw_ms", started_us)
 
 
 func select_measurement(id: String) -> bool:
@@ -248,9 +282,15 @@ func selection_summary() -> Dictionary:
 func _draw_voxels() -> void:
 	if voxel_space == null or voxel_space.scored_voxels.is_empty():
 		return
-	# Batch line segments by score, not one node/material per voxel.
+	# Batch solid cubes by score, rendering as triangle faces with transparency.
 	var groups := {}
 	for voxel in voxel_space.scored_voxels:
+		# Zero-score cells are absent from sparse input; never instantiate them.
+		if voxel.score <= 0:
+			continue
+		# One station vote is still invalid support; keep distinct from no votes.
+		if voxel.score == 1:
+			continue
 		if not groups.has(voxel.score):
 			groups[voxel.score] = []
 		var lower: Array = []
@@ -262,16 +302,32 @@ func _draw_voxels() -> void:
 		for index in range(8):
 			corners.append(_enu.call([upper[0] if (index & 1) != 0 else lower[0],
 				upper[1] if (index & 2) != 0 else lower[1], upper[2] if (index & 4) != 0 else lower[2]]))
-		for index in range(8):
-			for bit in [1, 2, 4]:
-				if (index & bit) == 0:
-					groups[voxel.score].append(corners[index])
-					groups[voxel.score].append(corners[index | bit])
+		# Define 6 cube faces as 12 triangles (2 per face).
+		var faces := [
+			# Front face (z+): corners 4,5,6,7
+			[corners[4], corners[5], corners[6]], [corners[5], corners[7], corners[6]],
+			# Back face (z-): corners 0,2,1,3
+			[corners[0], corners[2], corners[1]], [corners[1], corners[2], corners[3]],
+			# Right face (x+): corners 1,3,5,7
+			[corners[1], corners[3], corners[5]], [corners[3], corners[7], corners[5]],
+			# Left face (x-): corners 0,4,2,6
+			[corners[0], corners[4], corners[2]], [corners[2], corners[4], corners[6]],
+			# Top face (y+): corners 2,3,6,7
+			[corners[2], corners[3], corners[6]], [corners[3], corners[7], corners[6]],
+			# Bottom face (y-): corners 0,1,4,5
+			[corners[0], corners[1], corners[4]], [corners[1], corners[5], corners[4]],
+		]
+		for triangle in faces:
+			groups[voxel.score].append(triangle[0])
+			groups[voxel.score].append(triangle[1])
+			groups[voxel.score].append(triangle[2])
 	for score in groups:
 		var points: Array[Vector3] = []
 		points.assign(groups[score])
+		var alpha := lerpf(VOXEL_MIN_ALPHA, VOXEL_MAX_ALPHA, clampf((float(score) - 2.0) / 13.0, 0.0, 1.0))
 		_mesh(layers.voxels, "Score%d" % score, points,
-			Color(VOXEL_COLOR, VOXEL_MAX_ALPHA * float(score) / float(voxel_space.max_score)))
+			Color(VOXEL_COLOR, alpha),
+			Mesh.PRIMITIVE_TRIANGLES)
 
 
 func _anchor(parent: Node3D, id: String, position: Array) -> Node3D:

@@ -21,6 +21,7 @@ from chongming.modules.fusion_ingress import (
     EventWindowModule,
     StationRegistryModule,
 )
+from chongming.modules.fusion_postintersection import ExhaustiveAssociationModule
 from chongming.modules.fusion_tracking import CenterTrackingModule
 from chongming.ports.lifecycle import ModuleBinding, ModuleLifecycle
 from chongming.voxel_diagnostics import VoxelDiagnostics
@@ -37,7 +38,7 @@ class CenterAssembly:
     voxels: VoxelCandidateModule
     direct_candidates: DirectGeometryCandidateModule
     candidates: CandidateGenerationModule
-    association: CrossStationAssociationModule
+    association: CrossStationAssociationModule | ExhaustiveAssociationModule
     weights: CalibrationWeightingModule
     geometry: GeometryRefinementModule
     tracking: CenterTrackingModule
@@ -137,6 +138,7 @@ def declare_center(
     policy: f.FusionPolicy,
     clock_mapping: f.EventClockMappingSpec,
     voxel_diagnostics: VoxelDiagnostics | None = None,
+    postintersection: bool = False,
 ) -> tuple[CenterAssembly, tuple[ModuleBinding, ...]]:
     """Construct every center stage; never read a scenario or start business work."""
     if (
@@ -169,8 +171,12 @@ def declare_center(
     )
     direct = DirectGeometryCandidateModule(search=policy.candidates.search)
     candidates = CandidateGenerationModule(policy=policy.candidates, voxel=voxels, direct=direct)
-    association = CrossStationAssociationModule(
-        policy=policy.association, motion_policy=policy.geometry, weights=weights
+    association = (
+        ExhaustiveAssociationModule(minimum_stations=policy.geometry.minimum_independent_stations)
+        if postintersection
+        else CrossStationAssociationModule(
+            policy=policy.association, motion_policy=policy.geometry, weights=weights
+        )
     )
     geometry = GeometryRefinementModule(
         center_session_id=center_session_id,
@@ -196,6 +202,7 @@ def declare_center(
         geometry=geometry,
         tracker=tracking,
         clock=clock,
+        duplicate_distance_m=3.0 if postintersection else None,
     )
     assembly = CenterAssembly(
         stations=stations,

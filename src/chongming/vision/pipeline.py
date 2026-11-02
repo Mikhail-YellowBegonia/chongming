@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Any
 
 import numpy as np
@@ -48,6 +50,8 @@ class Detection:
     position_px: tuple[float, float]  # (x, y)
     velocity_pxps: tuple[float, float] | None  # (vx, vy) pixels per second
     timestamp: float
+    measurement_px: tuple[float, float]
+    measurement_score: float
 
 
 class Stage(ABC):
@@ -87,3 +91,13 @@ class Pipeline:
         """Reset all stages (e.g., when starting a new video)."""
         for stage in self.stages:
             stage.reset()
+
+
+def process_stages(stages: Sequence[Stage], context: PipelineContext) -> None:
+    """Time only stage computation; decoding, scoring and UI are outside this scope."""
+    timings = {}
+    for stage in stages:
+        began = perf_counter()
+        stage.process(context)
+        timings[type(stage).__name__] = (perf_counter() - began) * 1000
+    context.debug_data["stage_timings_ms"] = timings

@@ -1,0 +1,86 @@
+{
+  "station-west": {
+    "detection": {
+      "algorithm_id": "frame-difference-occupancy-v1",
+      "downsample_factor": 2,
+      "mode": "two_frame",
+      "threshold": 2.0,
+      "morphology_kernel_size": 3,
+      "apply_opening": false,
+      "apply_closing": false,
+      "score_increment": 2.6,
+      "score_decay": 0.1,
+      "mask_threshold": 50.0,
+      "occupancy_dilation_size": 15,
+      "minimum_component_area_px2": 10.0,
+      "maximum_component_area_px2": null,
+      "blob_dilation_size": 5
+    },
+    "tracking": {
+      "algorithm_id": "workbench-kalman-v1",
+      "confirmation_frame_count": 3,
+      "maximum_lost_frame_count": 10,
+      "association_gate_px": 50.0,
+      "covariance_floor_px": 5.0,
+      "process_noise_position": 10.0,
+      "process_noise_velocity": 5.0,
+      "measurement_noise_px": 5.0
+    }
+  },
+  "station-center": {
+    "detection": {
+      "algorithm_id": "frame-difference-occupancy-v1",
+      "downsample_factor": 2,
+      "mode": "two_frame",
+      "threshold": 2.0,
+      "morphology_kernel_size": 3,
+      "apply_opening": false,
+      "apply_closing": false,
+      "score_increment": 2.6,
+      "score_decay": 0.1,
+      "mask_threshold": 50.0,
+      "occupancy_dilation_size": 15,
+      "minimum_component_area_px2": 10.0,
+      "maximum_component_area_px2": null,
+      "blob_dilation_size": 5
+    },
+    "tracking": {
+      "algorithm_id": "workbench-kalman-v1",
+      "confirmation_frame_count": 3,
+      "maximum_lost_frame_count": 10,
+      "association_gate_px": 50.0,
+      "covariance_floor_px": 5.0,
+      "process_noise_position": 10.0,
+      "process_noise_velocity": 5.0,
+      "measurement_noise_px": 5.0
+    }
+  },
+  "station-east": {
+    "detection": {
+      "algorithm_id": "frame-difference-occupancy-v1",
+      "downsample_factor": 2,
+      "mode": "two_frame",
+      "threshold": 2.0,
+      "morphology_kernel_size": 3,
+      "apply_opening": false,
+      "apply_closing": false,
+      "score_increment": 2.6,
+      "score_decay": 0.1,
+      "mask_threshold": 50.0,
+      "occupancy_dilation_size": 15,
+      "minimum_component_area_px2": 10.0,
+      "maximum_component_area_px2": null,
+      "blob_dilation_size": 5
+    },
+    "tracking": {
+      "algorithm_id": "workbench-kalman-v1",
+      "confirmation_frame_count": 3,
+      "maximum_lost_frame_count": 10,
+      "association_gate_px": 50.0,
+      "covariance_floor_px": 5.0,
+      "process_noise_position": 10.0,
+      "process_noise_velocity": 5.0,
+      "measurement_noise_px": 5.0
+    }
+  }
+}

@@ -198,9 +198,10 @@ class VoxelSpaceVisualization:
 
     Only non-zero scored voxels are transmitted to reduce data volume. The search
     box and voxel step define the grid; scored_voxels contain sparse (index, score)
-    pairs. Godot maps integer scores to transparency: score 0 is fully transparent
-    (not sent), higher scores increase opacity. Typical sparsity: 1-5% of total
-    voxel space. max_score provides normalization hint for transparency mapping.
+    pairs. Godot omits scores 0 (not sent) and 1 (insufficient support) from rendering.
+    Scores 2 through 15 map linearly to opacity 0.2 through 0.5, clamped at
+    the display bounds. max_score records the snapshot maximum, not a color scale.
+    Typical sparsity: 1-5% of total voxel space.
     """
 
     search_box_min_enu_m: Vec3

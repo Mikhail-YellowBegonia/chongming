@@ -398,6 +398,23 @@ nix develop --no-update-lock-file .#software --command xvfb-run -a uv run --froz
 
 Godot tests cover actual rendering, update acceptance, integer precision, layer isolation, and diagnostics. Configuration checks and mock tests do not replace them. Report failures and untested paths for the current revision.
 
+### Evaluation and benchmarks
+
+[Algorithm evaluation](algorithm-evaluation.md) documents the native tuning workbench, explicit device policies, saved-input center replay, model-size scoring and operational attribution. Reuse existing recordings and new output directories. The [2026-11-02 benchmark](benchmark-2026-11-02.md) records the selected frame-difference policy and three-station integrated results, including device and center timing. [Visualization monitoring](visualization-monitoring.md) separates rendering and recording costs from algorithm costs.
+
+### Verification of the visualization and evaluation change
+
+The 2026-11-02 delivery passed 211 related device, center, replay, architecture and Godot visualization tests, full Ruff checks, and mypy for all 148 source/test files. All top-level scenario configuration checks passed. These checks do not rerun the recorded quality benchmark.
+
+Full discovery was interrupted while `test_editor_updates_native_view_without_sensor_frames_and_cancel_restores_state` waited on `PreviewRuntime._encode_queue_lock`. Full regression is therefore not reported as passing. Four other failures were reproduced in an isolated copy of upstream revision `855d126`:
+
+- `test_kalman_update_matches_known_scalar_gain_and_joseph_covariance`: existing state expectation differs from the current variance-floor behavior.
+- `test_native_generator_and_worker_cache`: the vegetation fixture calls an uninitialized instancing helper.
+- `test_read_only_package_project_uses_a_separate_working_directory`: package project path expectation differs from the writable project copy.
+- `test_explicit_landscape_and_scenario_paths_survive_a_working_directory_change`: macOS `/tmp` versus resolved `/private/tmp` path mismatch.
+
+These remain unresolved. Assertions and runtime thresholds were not relaxed to hide them.
+
 ### Formatting
 
 `nix fmt` uses treefmt with nixfmt, Ruff, and Prettier. Limit formatting to changed files when possible:

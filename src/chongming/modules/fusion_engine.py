@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from time import perf_counter
 
 from chongming.contracts import fusion as f
 from chongming.contracts import model as m
 from chongming.modules.base import ModuleShell
+from chongming.modules.fusion_postintersection import exclusive_tracking_inputs, suppress_duplicates
 from chongming.ports import fusion as ports
 
 
@@ -24,7 +26,9 @@ class CenterFusionModule(ModuleShell):
     geometry: ports.GeometryRefiner
     tracker: ports.CenterTracker
     clock: ports.EventClockMapping
+    duplicate_distance_m: float | None = None
     _last_window_end_ns: int | None = field(default=None, init=False)
+    stage_timings: list[dict[str, float | int]] = field(default_factory=list, init=False)
 
     def register_station(self, config: m.StationConfig) -> f.RegistryWriteResult:
         return self.stations.register(config)
@@ -82,6 +86,8 @@ class CenterFusionModule(ModuleShell):
         candidates, associations, geometry = [], [], []
         measurements: list[m.FusionMeasurement] = []
         tracks: list[m.TrackEvent] = []
+        suppressed: list[f.SuppressedMeasurement] = []
+        tracking_exclusions: list[f.SuppressedMeasurement] = []
         for window in windows:
             if window.key.center_session_id != self.center_session_id or (
                 self._last_window_end_ns is not None
@@ -89,9 +95,12 @@ class CenterFusionModule(ModuleShell):
             ):
                 raise ValueError("sealed window session/order mismatch or repeated consumption")
             clock = window.key.capture_clock_domain_id
+            began = perf_counter()
             predictions = self.tracker.predict(clock, window.reference_time_ns)
             candidate_batch = self.candidates.generate(window, predictions)
+            proposed_at = perf_counter()
             association_batch = self.association.associate(window, candidate_batch, predictions)
+            associated_at = perf_counter()
             # Motion priors are queried at each group's actual support epoch,
             # not at a nominal center later than all of its observations.
             results: list[f.GeometryResult] = []
@@ -110,6 +119,11 @@ class CenterFusionModule(ModuleShell):
                 else self.geometry.refine(window, association_batch, predictions)
             )
             current = tuple(result.measurement for result in geometry_batch.results)
+            refined_at = perf_counter()
+            if self.duplicate_distance_m is not None:
+                current, removed = suppress_duplicates(current, self.duplicate_distance_m)
+                suppressed.extend(removed)
+            deduplicated_at = perf_counter()
             located = [
                 measurement
                 for measurement in current
@@ -119,7 +133,11 @@ class CenterFusionModule(ModuleShell):
                 (measurement.reference_time_ns for measurement in located),
                 default=window.reference_time_ns,
             )
-            tracks.extend(self.tracker.update(current, clock, event_time))
+            tracking_current = current
+            if self.duplicate_distance_m is not None:
+                tracking_current, excluded = exclusive_tracking_inputs(current)
+                tracking_exclusions.extend(excluded)
+            tracks.extend(self.tracker.update(tracking_current, clock, event_time))
             # Exposure reference may lie on either side of the window center.
             # Neither it nor that center exceeds this consumed sealed window.
             horizon = max(window.reference_time_ns, event_time)
@@ -134,6 +152,19 @@ class CenterFusionModule(ModuleShell):
             associations.append(association_batch)
             geometry.append(geometry_batch)
             measurements.extend(current)
+            ended_at = perf_counter()
+            self.stage_timings.append(
+                {
+                    "window_start_ns": window.key.start_ns,
+                    "candidate_ms": (proposed_at - began) * 1000,
+                    "association_ms": (associated_at - proposed_at) * 1000,
+                    "geometry_ms": (refined_at - associated_at) * 1000,
+                    "deduplication_ms": (deduplicated_at - refined_at) * 1000,
+                    "tracking_ms": (ended_at - deduplicated_at) * 1000,
+                    "window_pipeline_ms": (ended_at - began) * 1000,
+                    "geometry_groups": len(results),
+                }
+            )
             self._last_window_end_ns = window.key.end_ns
         combined = f.WindowUpdate(
             receipts=tuple(receipt for update in updates for receipt in update.receipts),
@@ -150,4 +181,6 @@ class CenterFusionModule(ModuleShell):
             geometry=tuple(geometry),
             measurements=tuple(measurements),
             tracks=tuple(tracks),
+            suppressed_measurements=tuple(suppressed),
+            tracking_exclusions=tuple(tracking_exclusions),
         )

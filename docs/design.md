@@ -100,6 +100,8 @@ The renderer supports distortion-free cameras, square pixels, zero skew, a singl
 
 `Tracking2DModule` uses constant-velocity prediction and distance-ordered greedy one-to-one assignment. Velocity comes from the last two actual detections. Consecutive hits confirm a track; missing frames break the hit streak.
 
+The explicit workbench policy selects `WorkbenchMotionModule` and `WorkbenchTrackingModule` instead. These share frame difference or optional MOG2, occupancy filtering and Kalman tracking with the native tuning workbench. They do not silently replace the legacy device policy. Configuration and scoring are documented in [Algorithm evaluation](algorithm-evaluation.md).
+
 ### Auxiliary calibration
 
 The reference is a landscape A4 checkerboard with 7 by 5 squares and 6 by 4 inner corners. OpenCV detects and refines corners, with an SB detector fallback.
@@ -142,6 +144,8 @@ Exposure midpoints select half-open windows `[start, end)`. Active station progr
 The voxel search clips forward rays to the search box and range. Sparse grid traversal includes boundary-touching cells. Independent uncertainty can expand support. Each cell counts independent stations, not the number of rays from one station. Cells with identical support form a coarse candidate.
 
 Association enumerates station subsets and ray choices. A group uses at most one ray per station. Bounded exclusive search preserves unresolved alternatives. Candidate, hypothesis, or search limits produce truncation diagnostics.
+
+The optional `create_postintersection_algorithm` factory enumerates all supported station subsets before geometry, without exclusive assignment. Its minimum group size follows the geometry policy. After geometry, 3 m complete-link clusters retain quality-ranked original measurements. Suppressed measurements remain in batch diagnostics. Evidence conflicts are removed only from tracking input, with explicit exclusions; fusion scoring still includes those outputs. See [Algorithm evaluation](algorithm-evaluation.md#post-intersection-pipeline).
 
 ### Geometry and uncertainty
 
@@ -190,6 +194,8 @@ Five layers show truth, rays, measurements, tracks, and raw voxels, using a free
 
 Rays remain for 1 s of experiment time, measurements for 3 s, and deleted tracks for 3 s. Track history holds 100 time-ordered points. Raw voxels describe the last exported sealed window, their votes count stations.
 
+Raw voxel scores 0 and 1 create no geometry. Scores 2–15 use solid faces with alpha `0.06 + 0.12 * clamp((score - 2) / 13, 0, 1)`; values above 15 clamp to the same maximum. Vertices share one grouped mesh per score, with edge cells clipped to the search box. View changes use cached data rather than rerunning the algorithm.
+
 ### Error diagnostics
 
 `evaluation.gd` groups rays by station and exposure time, and measurements by reference time. It compares them with independently sampled truth at those times. Matching first maximizes the number of legal pairs, then minimizes total error.
@@ -202,6 +208,8 @@ valid = matched + unmatched
 ```
 
 Mean error, RMSE, and maximum error use matched samples only. No samples produce `null`.
+
+These development display gates are separate from offline model-size scoring. Online update, evaluation and redraw costs are summarized in [Visualization monitoring](visualization-monitoring.md); experiment quality and timing are in the [benchmark](benchmark-2026-11-02.md).
 
 ## Evidence and playback
 

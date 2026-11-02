@@ -112,6 +112,7 @@ class InteractivePipelineLoggingTests(unittest.TestCase):
                 patch.object(workbench, "_get_params", return_value=params),
                 patch.object(workbench, "_rebuild_pipeline"),
                 self.assertLogs("chongming.vision.interactive_tuning", level="ERROR") as captured,
+                self.assertRaisesRegex(ValueError, "invalid motion mask"),
             ):
                 workbench.run()
 

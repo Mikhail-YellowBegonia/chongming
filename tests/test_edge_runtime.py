@@ -152,6 +152,7 @@ class EdgeRuntimeTests(unittest.TestCase):
         self.assertEqual(load_device_policies(path, self.spec.station_configs), self.policies)
         key = self.spec.station_configs[0].station_id
         original = self.policies[key]
+        assert isinstance(original.detection, d.DetectionPolicy)
         for bad in (
             {},
             {**self.policies, m.StationId("extra"): original},

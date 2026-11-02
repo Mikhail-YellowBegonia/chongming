@@ -172,6 +172,7 @@ class ArchitectureStructureTests(unittest.TestCase):
         self.assertIs(modules.CalibrationWeightingModule, type(assembly.center.weights))
         self.assertTrue(assembly.center.weights.business_implemented)
         self.assertIs(assembly.center.voxels.weights, assembly.center.weights)
+        assert isinstance(assembly.center.association, modules.CrossStationAssociationModule)
         self.assertIs(assembly.center.association.weights, assembly.center.weights)
         self.assertIs(assembly.center.geometry.weights, assembly.center.weights)
 

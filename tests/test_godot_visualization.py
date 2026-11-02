@@ -172,6 +172,7 @@ func _initialize() -> void:
             "measurements": receiver.measurements.values().duplicate(true), "tracks": receiver.tracks.values().duplicate(true),
             "track_history": receiver.track_history.duplicate(true), "station_states": receiver.station_states.duplicate(true),
             "truth_times": receiver.truth_by_time.keys(), "truth_snapshots": receiver.truth_by_time.values().duplicate(true),
+            "performance": receiver.performance_summary(),
             "evaluation": receiver.evaluation.summary(), "matches": receiver.evaluation.last_matches.duplicate(true)})
     print("REPORT " + JSON.stringify(reports))
     quit()

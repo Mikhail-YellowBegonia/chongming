@@ -339,7 +339,9 @@ func _ui_exchange(request: Dictionary, trailer: PackedByteArray) -> PackedByteAr
 	_ui_state = state
 	if _ui == null:
 		_open_ui()
-	_ui.show_state(state, _ui_textures, _visualization.station_states, _visualization.evaluation.summary())
+	var diagnostics := _visualization.evaluation.summary()
+	diagnostics["performance"] = _visualization.performance_summary()
+	_ui.show_state(state, _ui_textures, _visualization.station_states, diagnostics)
 	_refresh_visualization_controls()
 	if _visualization.update_count != previous_update_count:
 		_redraw_freeview()

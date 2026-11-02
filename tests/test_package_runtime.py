@@ -224,7 +224,7 @@ class PreviewPathTests(unittest.TestCase):
 
 
 class GodotWorkspaceTests(unittest.TestCase):
-    def test_first_render_initializes_the_static_scene_cache(self) -> None:
+    def test_each_render_sends_current_entities_and_reuses_resource_definitions(self) -> None:
         scene = snapshot(test_scene(SphereGeometry(1.0)))
         camera = scene.cameras[0]
         pixel_count = (
@@ -255,18 +255,16 @@ class GodotWorkspaceTests(unittest.TestCase):
                 connect.return_value.recv.side_effect = [header, pixels, header, pixels]
                 renderer = GodotRenderer()
                 try:
-                    self.assertIsNone(renderer._static_scene_hash)
                     self.assertEqual(renderer.render(scene, camera), (pixels, 1.0))
-                    self.assertEqual(renderer._static_scene_hash, "initialized")
                     self.assertEqual(renderer.render(scene, camera), (pixels, 1.0))
                     calls = connect.return_value.sendall.call_args_list
                     self.assertEqual(len(calls), 2)
                     first = json.loads(calls[0].args[0][4:])
                     second = json.loads(calls[1].args[0][4:])
-                    self.assertEqual(first["scene_mode"], "init")
                     self.assertTrue(first["entities"])
-                    self.assertEqual(second["scene_mode"], "update")
-                    self.assertEqual(second["entities"], [])
+                    self.assertEqual(second["entities"], first["entities"])
+                    self.assertTrue(first["resources"])
+                    self.assertEqual(second["resources"], [])
                 finally:
                     renderer.close()
 

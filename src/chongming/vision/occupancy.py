@@ -14,6 +14,7 @@ from chongming.vision.pipeline import PipelineContext, Stage
 class OccupancyConfig:
     """Configuration for occupancy-ratio filtering."""
 
+    enabled: bool = True
     score_increment: float = 3.0  # Score added when pixel is marked as motion (very aggressive)
     score_decay: float = 0.1  # Score decayed per frame (subtraction, not multiplication)
     mask_threshold: float = 50.0  # Score above which pixel is masked as background
@@ -44,6 +45,11 @@ class OccupancyFilterStage(Stage):
     def process(self, context: PipelineContext) -> None:
         if context.motion_mask is None:
             raise ValueError("OccupancyFilterStage requires motion_mask from previous stage")
+
+        if not self.config.enabled:
+            context.filtered_mask = context.motion_mask.copy()
+            context.debug_data["filtered_mask"] = context.filtered_mask
+            return
 
         mask = context.motion_mask
 

@@ -104,10 +104,11 @@ class Track:
     track_id: int
     kalman: KalmanFilter2D
     lifecycle: Literal["tentative", "confirmed", "coasting"]
-    tentative_hits: int = 0  # Consecutive hits while tentative
+    consecutive_hits: int = 0  # Current uninterrupted observation streak
     frames_since_update: int = 0  # Frames since last measurement
     last_measurement_time: float = 0.0
     lifetime_frames: int = 0  # Total frames this track has existed
+    measurement: Blob | None = None
 
 
 class TrackingStage(Stage):
@@ -121,13 +122,21 @@ class TrackingStage(Stage):
         self.config = config
         self.tracks: list[Track] = []
         self.next_id = 1
+        self.last_timestamp: float | None = None
 
     def process(self, context: PipelineContext) -> None:
         blobs = context.blobs
         timestamp = context.timestamp
 
+        if self.last_timestamp is not None and timestamp <= self.last_timestamp:
+            raise ValueError("Tracking timestamps must increase strictly")
+        dt = 1.0 / 30.0 if self.last_timestamp is None else timestamp - self.last_timestamp
+        self.last_timestamp = timestamp
         # Predict all tracks and increment lifetime
         for track in self.tracks:
+            track.measurement = None
+            track.kalman.F[0, 2] = dt
+            track.kalman.F[1, 3] = dt
             track.kalman.predict()
             track.frames_since_update += 1
             track.lifetime_frames += 1
@@ -139,12 +148,16 @@ class TrackingStage(Stage):
         for track in self.tracks:
             if track.frames_since_update == 0:  # Was matched this frame
                 track.last_measurement_time = timestamp
+                track.consecutive_hits += 1
                 if track.lifecycle == "tentative":
-                    track.tentative_hits += 1
-                    if track.tentative_hits >= self.config.confirm_frames:
+                    if track.consecutive_hits >= self.config.confirm_frames:
                         track.lifecycle = "confirmed"
                 elif track.lifecycle == "coasting":
                     track.lifecycle = "confirmed"
+
+        for track in self.tracks:
+            if track.frames_since_update > 0:
+                track.consecutive_hits = 0
 
         # Handle coasting tracks
         for track in self.tracks:
@@ -161,11 +174,12 @@ class TrackingStage(Stage):
             new_track = Track(
                 track_id=self.next_id,
                 kalman=KalmanFilter2D(blob.centroid_px, self.config),
-                lifecycle="tentative",
-                tentative_hits=1,
+                lifecycle="confirmed" if self.config.confirm_frames == 1 else "tentative",
+                consecutive_hits=1,
                 frames_since_update=0,
                 last_measurement_time=timestamp,
                 lifetime_frames=1,
+                measurement=blob,
             )
             self.tracks.append(new_track)
             self.next_id += 1
@@ -173,7 +187,7 @@ class TrackingStage(Stage):
         # Output only confirmed tracks
         detections = []
         for track in self.tracks:
-            if track.lifecycle == "confirmed":
+            if track.lifecycle == "confirmed" and track.measurement is not None:
                 pos = track.kalman.get_position()
                 vel = track.kalman.get_velocity()
                 detections.append(
@@ -182,6 +196,15 @@ class TrackingStage(Stage):
                         position_px=pos,
                         velocity_pxps=vel,
                         timestamp=timestamp,
+                        measurement_px=track.measurement.centroid_px,
+                        measurement_score=min(
+                            1.0,
+                            track.measurement.area_px2
+                            / (
+                                track.measurement.bounding_box[2]
+                                * track.measurement.bounding_box[3]
+                            ),
+                        ),
                     )
                 )
 
@@ -198,42 +221,24 @@ class TrackingStage(Stage):
         if not blobs or not tracks:
             return (blobs, tracks)
 
-        # Build distance matrix
-        distances = np.zeros((len(blobs), len(tracks)), dtype=np.float32)
-        for i, blob in enumerate(blobs):
-            for j, track in enumerate(tracks):
-                predicted_pos = track.kalman.get_position()
-                dist = np.linalg.norm(np.array(blob.centroid_px) - np.array(predicted_pos))
-                distances[i, j] = dist
-
-        # Greedy nearest-neighbor matching within gate
-        matched_blobs = set()
-        matched_tracks = set()
-
+        # Same row-major greedy minimum as the workbench, without Python cubic loops.
+        positions = np.asarray([b.centroid_px for b in blobs], dtype=np.float32)
+        predictions = np.asarray([t.kalman.get_position() for t in tracks], dtype=np.float32)
+        distances = np.linalg.norm(positions[:, None, :] - predictions[None, :, :], axis=2)
+        matched_blobs: set[int] = set()
+        matched_tracks: set[int] = set()
         while True:
-            min_dist = np.inf
-            min_i, min_j = -1, -1
-
-            for i in range(len(blobs)):
-                if i in matched_blobs:
-                    continue
-                for j in range(len(tracks)):
-                    if j in matched_tracks:
-                        continue
-                    if distances[i, j] < min_dist:
-                        min_dist = distances[i, j]
-                        min_i, min_j = i, j
-
-            if min_dist > self.config.association_gate_px:
+            min_i, min_j = np.unravel_index(np.argmin(distances), distances.shape)
+            if distances[min_i, min_j] > self.config.association_gate_px:
                 break
-
-            # Match found
-            matched_blobs.add(min_i)
-            matched_tracks.add(min_j)
-
-            # Update track with measurement
-            tracks[min_j].kalman.update(blobs[min_i].centroid_px)
-            tracks[min_j].frames_since_update = 0
+            i, j = int(min_i), int(min_j)
+            matched_blobs.add(i)
+            matched_tracks.add(j)
+            tracks[j].kalman.update(blobs[i].centroid_px)
+            tracks[j].frames_since_update = 0
+            tracks[j].measurement = blobs[i]
+            distances[i, :] = np.inf
+            distances[:, j] = np.inf
 
         unmatched_blobs = [b for i, b in enumerate(blobs) if i not in matched_blobs]
         unmatched_tracks = [t for j, t in enumerate(tracks) if j not in matched_tracks]
@@ -244,3 +249,4 @@ class TrackingStage(Stage):
         """Clear all tracks."""
         self.tracks.clear()
         self.next_id = 1
+        self.last_timestamp = None
