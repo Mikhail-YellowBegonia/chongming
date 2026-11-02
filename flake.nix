@@ -50,7 +50,7 @@
 
       # Test-scene assets that are not in Git. Each archive is produced by
       # scripts/pack_local_asset.py and attached to a GitHub prerelease; Nix
-      # pins the bytes. See docs/user-guide.md#测例资产.
+      # pins the bytes. See docs/development.md#fixed-test-assets.
       localAssetsFor =
         system:
         let

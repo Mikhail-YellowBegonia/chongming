@@ -84,6 +84,20 @@ chongming-center = "chongming.development:main"
         write_bundle(self.paths["bundle"], self.root, bundle_contents(self.sources, self.paths))
         self.paths["checksums"].write_text(checksum_text(self.paths))
 
+    def test_required_documentation_exists_in_the_repository(self) -> None:
+        source_root = Path(__file__).resolve().parents[1]
+        documents = {
+            "README.md",
+            "AGENTS.md",
+            "docs/introduction.md",
+            "docs/design.md",
+            "docs/development.md",
+        }
+        self.assertEqual({name for name in REQUIRED_SOURCE if name.endswith(".md")}, documents)
+        for name in documents:
+            with self.subTest(document=name):
+                self.assertTrue((source_root / name).is_file())
+
     def test_complete_release_preserves_documentation_and_asset_bytes(self) -> None:
         self.write_release()
         self.assertEqual(check_contents(self.directory, self.version), self.sources)
@@ -92,7 +106,7 @@ chongming-center = "chongming.development:main"
             "README.md",
             "AGENTS.md",
             "COPYING",
-            "docs/user-guide.md",
+            "docs/introduction.md",
             "docs/development.md",
             "docs/design.md",
             "scenarios/assets/grid.json",
@@ -145,7 +159,7 @@ chongming-center = "chongming.development:main"
     def test_missing_required_document_is_rejected(self) -> None:
         for name in (
             "AGENTS.md",
-            "docs/user-guide.md",
+            "docs/introduction.md",
             "docs/development.md",
             "docs/design.md",
         ):
