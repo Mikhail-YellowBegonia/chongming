@@ -29,7 +29,7 @@ REQUIRED_SOURCE = {
     "README.md",
     "AGENTS.md",
     "COPYING",
-    "docs/user-guide.md",
+    "docs/introduction.md",
     "docs/development.md",
     "docs/design.md",
     "scripts/distribute.py",

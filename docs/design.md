@@ -1,289 +1,220 @@
-# 设计说明
+# Design
 
-## 实现范围
+## Scope
 
-项目以固定摄像站、白天可见光和本地 PC 为系统边界。虚拟场景提供图像、普通虚拟射线与独立真值，模式 2–4 已接通设备、中心及集成测试；当前实现是合成场景研究基线，不是外场部署系统。
+Chongming is a research system for small airborne targets in daylight. Fixed camera stations send observations to a local center algorithm. Synthetic scenes supply images, virtual observations, and separate truth data.
 
-| 部分         | 当前实现                                                                                        |
-| ------------ | ----------------------------------------------------------------------------------------------- |
-| 虚拟场景     | JSON 编译、统一实验时间、轨迹、投影、可选遮挡、主辅成像、普通事件、真值及证据输出               |
-| 地景与渲染   | 本地 OSM/HGT 导入、Godot Compatibility 渲染、卡片植被、摄影近似、预览及编辑；可挂载本地外部场景 |
-| 设备算法     | MOG2 连通域检测、站内关联、OpenCV 棋盘校准、历史与状态机、世界射线及误差传播                    |
-| 开发运行     | `CenterSession` 同步执行模式 2–4，支持 CLI 分步、算法插件、Godot 显示及失败留证                 |
-| 参考中心算法 | 事件准入、曝光窗口、体素候选、多目标关联、加权定位、已有轨迹异步对齐与三维跟踪                  |
-| Godot 诊断   | 五类图层、原始体素、支持射线高亮、准确时刻匹配和累计误差                                        |
-| 未实现业务   | 直接几何候选、通用传输／证据／系统编排，以及架构中的通用评估与监视桩                            |
-
-`ModuleShell` 的控制生命周期与业务能力分开。未实现模块报告 `algorithm_unimplemented`，相关业务方法使用 `NotImplementedError`，不能以初始化成功说明算法可用。`CenterSession` 是当前可运行的中心开发入口，不是通用 `SystemRunner` 的完整实现。
-
-## 模块与数据所有权
+## Runtime and ownership
 
 ```text
-场景配置 -> Python 场景逻辑与实验时钟
-              |-> 语义快照 -> Godot -> 主辅图像 -> 设备算法端口
-              |-> 普通虚拟事件 -> 中心算法端口
-              `-> 受保护真值 -> 评估与监视
+Authoring JSON and local assets
+  -> Python scene state and experiment clock
+       -> Godot sensor images -> device algorithms -> center algorithm
+       -> virtual ray events -----------------------> center algorithm
+       -> truth ------------------------------------> display and evaluation
+
+Algorithm inputs and outputs -> evidence files
+Algorithm results + time-matched truth -> Godot diagnostics
 ```
 
-`contracts/` 定义不可变数据，`ports/` 定义行为边界，`modules/` 实现模块或声明未实现业务，`composition/` 负责构造注入。构造装配本身不启动进程、线程或窗口。视觉后端对象不进入在线契约。
+Python owns experiment time, scene state, algorithm state, and evidence. Godot renders images and displays results. A persistent Godot process communicates with Python over a serialized local TCP connection. Device and center algorithms run in the Python process.
 
-`ScenarioStep` 分为视频、普通事件、真值三个出口。设备算法接收 `CameraFrame`，中心算法接收在线站点配置、校准解、事件与完成进度。真实目标 ID、正确跨站对应、实际相机参数和扰动标签仅用于生成、评估与监视，不进入在线算法。
+| Mode               | Driver           | Algorithm input                                             |
+| ------------------ | ---------------- | ----------------------------------------------------------- |
+| 1: preview         | `PreviewRuntime` | No center algorithm; auxiliary calibration can be inspected |
+| 2: device test     | `CenterSession`  | Rendered main and auxiliary images                          |
+| 3: center test     | `CenterSession`  | Virtual ray events                                          |
+| 4: integrated test | `CenterSession`  | Rendered images, then actual device events                  |
 
-生成参数 `SceneDefinition` 与在线估计配置 `StationConfig` 分开。位置偏移或抖动改变真实相机状态，不同步修改安装配置；否则同一错误会在投影与反投影中抵消。联合校准评估先使用普通辅助图像求解，再以真值计算误差。
+Modes 2 and 4 require explicit device policies. They render every scheduled sensor frame even when display and recording are off. Missing images fail the run.
 
-主检测、辅助校准和中心融合通过独立端口接收输入，不以其他算法先取得成功结果为启动条件。模式 2／4 始终生成应采样的全部图像；关闭传感器显示或录像不关闭算法成像。缺图直接失败，检测或校准失败保留实际诊断，不生成虚拟替代事件。
+`CenterSession` is the working experiment driver. The general `SystemRunnerModule` is a stub. The reference plugin builds its own active center through `declare_center()`.
 
-### 交互与运行隔离
+One step processes one exposure group. It records raw inputs and results before adapting them for display. With a UI, it waits for Godot to accept the update before taking the next step. Reset creates a new session and output directory. Shutdown closes the algorithm, source, files, socket, and renderer.
 
-模式和命令见[算法运行](user-guide.md#算法运行)。模式 1 由 `PreviewRuntime` 持有播放状态与编辑草稿，Godot 提交输入，不持有权威场景状态；浏览器工作台仍可使用。模式 2–4 由 `CenterSession` 持有算法和实验时间，`CenterRunUi` 发布结果；窗口只保留站点选择、自由视角、图层、测量选择与退出，禁用编辑、播放控制和时间跳转。界面不提供热切换模式。
+## Source layout
 
-每轮运行创建新的 session 和 Godot worker。有限结束、退出或异常后关闭算法、源、socket 和渲染资源；切换模式或重新运行须先结束旧会话，不能复用旧轨迹、更新序号、选择或诊断统计。CLI `reset` 同样创建新会话及输出目录。
+All paths below are under `src/chongming/`.
 
-### 同步更新
+| Path                                       | Responsibility                                               |
+| ------------------------------------------ | ------------------------------------------------------------ |
+| `contracts/`                               | Immutable records, policies, units, and states               |
+| `ports/`                                   | Typed behavior interfaces using `Protocol`                   |
+| `modules/`                                 | Algorithms and explicit business stubs                       |
+| `composition/`                             | Dependency construction and lifecycle bindings               |
+| `scenarios/`                               | Authoring, assets, OSM import, export, and playback          |
+| `rendering/`                               | Geometry, occlusion index, Python adapter, and Godot project |
+| `development.py`, `edge_runtime.py`        | Synchronous experiment and device execution                  |
+| `calibration.py`                           | Reference recognition, pose estimation, history, and state   |
+| `reference.py`                             | Reference center plugin and engine adapter                   |
+| `preview.py`, `center_ui.py`               | Preview editing and algorithm display control                |
+| `visualization.py`, `voxel_diagnostics.py` | Read-only display conversion and raw voxel capture           |
+| `vision/`                                  | Separate frame-difference experiments and tuning tools       |
 
-模式 2–4 按以下顺序执行：
+Construction does not start business work. `ModuleShell` separates lifecycle state from implementation status. An unimplemented module can enter `RUNNING` with reason `algorithm_unimplemented`; its business methods raise `NotImplementedError`.
+
+## Data contracts
+
+The online records are in [contracts/model.py](../src/chongming/contracts/model.py). They use frozen dataclasses, tuples, typed identifiers, and enums. Images use bytes or memory views with explicit dimensions, pixel format, and row stride.
+
+### Coordinates and time
+
+- World coordinates are right-handed ENU: east, north, up, in meters.
+- Camera axes are right, down, forward. Pixel `(0, 0)` is the top-left pixel center.
+- `R_A_from_B` maps a vector from frame B to frame A. Ray directions are unit vectors.
+- Godot receives ENU as `(east, up, -north)`.
+- `CaptureTime` stores an exposure interval. The event time is its integer midpoint.
+- `ProcessingTime` describes processing or arrival. Cross-domain comparisons require an explicit clock mapping.
+
+Main and auxiliary cameras have independent sample schedules. Frames with the same exposure midpoint form a group.
+
+### Identity and truth
+
+An event ID is `(station_id, station_session_id, sequence_no)`. All device event types share one sequence per image session. Virtual events use a different session and sequence. New runs use fresh session IDs, even with the same random seed.
+
+Local track IDs, center track IDs, and truth target IDs have different scopes. They cannot be used as interchangeable associations.
+
+`ScenarioStep` has three outputs: `video`, `packets`, and `truth`. Online ports exclude scene truth types. `SceneDefinition` stores generation parameters; `StationConfig` stores the estimates available to algorithms.
+
+This separation is an interface rule, not a security sandbox. Plugins are trusted Python code in the same process.
+
+## Scene generation
+
+`compile_authoring()` converts `scenario-authoring-v2` JSON into `ScenarioSpec`. The compiler uses demo defaults for omitted fields. Configuration checks reject unknown fields and unsupported features.
+
+`ScenarioModule` schedules exposures, advances the clock, samples geometry, requests images, and emits online events and truth separately. Motion, wind, clouds, and jitter use experiment time and fixed seeds. The behavior registry provides versioned constant-velocity and orbit motion without importing code from JSON.
+
+Known visibility tests the finite segment from the optical center to the target reference point. Objects behind the target do not block that segment. `OcclusionIndex` uses a CPU bounding-volume hierarchy to filter static blockers before exact proxy tests.
+
+With `occlusion_mode: "unknown"`, the scene checks the field of view but does not determine occlusion. This mode cannot supply occlusion-corrected detection scores.
+
+The renderer supports distortion-free cameras, square pixels, zero skew, a single exposure sample, and global shutter. Configured rain, transport faults, rolling shutter, sensor noise, and continuous pose drift are rejected.
+
+## Device processing
+
+`EdgeRun` processes auxiliary frames before main frames within the same exposure group. It journals actual results and input pixel hashes.
+
+### Detection and local tracking
+
+`MotionDetectionModule` converts images to grayscale and applies MOG2. Only mask value 255 is foreground. Eight-connected components pass inclusive area limits; their centroids become candidates.
+
+`Tracking2DModule` uses constant-velocity prediction and distance-ordered greedy one-to-one assignment. Velocity comes from the last two actual detections. Consecutive hits confirm a track; missing frames break the hit streak.
+
+### Auxiliary calibration
+
+The reference is a landscape A4 checkerboard with 7 by 5 squares and 6 by 4 inner corners. OpenCV detects and refines corners, with an SB detector fallback.
+
+When the full main-to-auxiliary rigid transform is available, the estimator fixes the main optical center and fits rotation. Otherwise it uses planar IPPE candidates. Positive depth, reprojection error, and an installation rotation prior filter the candidates.
 
 ```text
-场景曝光组 → 设备／中心算法 → 原始结果落盘 → 可视化适配
-           → 准确时刻真值 → UI 发送与确认 → 下一曝光组
+R_enu_from_main = R_enu_from_aux * R_aux_from_main
 ```
 
-每次调用（含空输出和有限结束）产生一个 `update_id`。空闲心跳约 20 Hz，只递增界面 `state.version`；算法增量不走模式 1 的 latest-frame 覆盖路径。慢接收降低墙钟吞吐，不跳步或补赶。命令在当前步骤确认后处理；断连终止运行并保留已写证据，不重连、补发或续传。
+The relative rotation stays fixed.
 
-## 坐标、时间与标识
+`CalibrationHistoryStore` returns only solutions and states known at the main exposure time. Trusted solutions are immutable. Failed recognition retains the last solution in `FROZEN`; timeout makes it `STALE`. Recovery requires the configured number of successful observations.
 
-### 坐标与观测
+### World rays
 
-- 世界坐标使用同一右手 ENU，东／北／上，距离单位米。地理锚点显式记录基准、历元及椭球高；OSM 投影使用 WGS84，经 ECEF 转为 ENU。
-- 相机坐标为右／下／前，左上像素中心为 `(0, 0)`。`R_A_from_B` 将 B 系向量变到 A 系，世界射线方向必须单位化。
-- 主辅固定外参是完整坐标关系，不是单一夹角。安装位置是相机光心，不等同于定位天线位置。
-- 已知遮挡场景的逻辑捕捉条件为目标中心参考点在视场内，且从光心到该点的有限线段未受地形、地物、植被代理或其他目标阻挡。目标后方的物体不构成遮挡。
-- 外部 Godot 场景可将 `occlusion_mode` 设为 `unknown`。此时系统只判断目标中心是否在视场内，不推断遮挡、不报错，也不把未知结果伪装成遮挡真值。该模式用于固定录像内的相对排名，不提供排除遮挡后的绝对准确率。
+`RayGenerationModule` inverts the main intrinsics, removes distortion, normalizes the camera direction, and rotates it into ENU. It uses the inverse projection Jacobian and normalization derivative to propagate pixel covariance into a two-dimensional tangent plane.
 
-### 实验时钟
+Each ray separates independent angular and origin covariance from shared installation and calibration references. The fixed-center model has zero independent translation covariance.
 
-Python 拥有实验时间。`CaptureTime` 保存曝光区间，权威观测时刻为曝光中点；`ProcessingTime` 表示处理或到达时间，两者只有在声明的时钟映射下才能比较。当前渲染支持全局快门，不支持滚动快门。
+Missing centroid covariance can use an explicit policy fallback. Unknown required residual errors stop ray generation. Nonzero jitter or flex terms require a stated independence basis. Every legal main exposure reports completion.
 
-主辅相机按独立采样计划生成曝光，并按共同曝光中点分组。未采样角色为 `None`，不制造空图像。轨迹、风、云和抖动从实验时刻与固定种子 42 求值，不依赖墙钟或绘制顺序。
+## Center fusion
 
-墙钟控制运行节拍，不追赶并丢弃实验步。中心工具一次单步完成一个曝光组及算法调用；预览单步推进到下一可显示帧，无视频时推进一个逻辑组。暂停、浏览器轮询和自由视角操作不推进实验时间或重发事件。
-
-### 会话与数据契约
-
-在线事件与结果位于 `contracts/model.py`，融合策略与阶段批次位于 `contracts/fusion.py`，插件接入位于 `contracts/development.py`。
-
-| 类型                              | 语义                                                                 |
-| --------------------------------- | -------------------------------------------------------------------- |
-| `EventEnvelope`                   | 站点、站点会话、唯一序号、schema 与配置摘要                          |
-| `FrameRef`                        | 站点、会话、相机角色及帧 ID                                          |
-| `StationConfig`                   | 内参、畸变、安装光心与姿态、主辅外参、参照配置及安装不确定度         |
-| `CalibrationSolution`             | 不可变可信解、来源曝光、接受时间、有效区间与质量                     |
-| `CalibrationState`                | 初始化、有效、冻结、过期、恢复或无效状态，与可信解分开               |
-| `RayEvent`                        | 曝光时间、起点、单位方向、校准引用及使用状态、独立误差与共享误差引用 |
-| `DiagnosticEvent`                 | 无有效射线时的原因及相关引用，不以零方向代替失败                     |
-| `FusionMeasurement`、`TrackEvent` | 中心会话内的测量／轨迹、支持证据、参考时刻、条件协方差及状态         |
-
-事件 ID 由站点、会话及序号共同确定。图像路线与虚拟射线路线使用不同会话和序号空间，每次运行重新分配会话；随机种子固定不意味着复用会话 ID。站内轨迹 ID、真值目标 ID 与中心轨迹 ID 不互换。
-
-射线方向与切平面基底满足 `u × v = direction`。独立角度/光心误差与共享安装/校准误差分开表达，分数不等同于概率或几何精度。
-
-虚拟射线按曝光标识和语义随机流采样独立噪声，同一实验的新会话不改变噪声序列。持有的校准解无法跟踪主相机抖动时，射线报告冻结使用状态并保留共享误差界，不将抖动当成可由多条射线平均消除的独立噪声。
-
-## 设备检测与射线
-
-`modules/detection.py` 接受带行步长的 GRAY8、RGB8、BGR8，转灰度后运行 MOG2，只将 mask 值 255 作为前景，以八连通域和含边界面积门限筛选质心。前 N 个成功帧只训练；预热、正常空检测与处理失败分别诊断。检测分数是连通域面积／包围盒面积（`foreground-component-fill-ratio-v1`），不是概率；连通域形状矩不当作质心误差，观测像素协方差保持未知。
-
-站内跟踪使用匀速预测与距离排序的门限内贪心一对一关联。速度来自最近两次真实候选，连续命中确认，漏检或失败打断命中计数；距最后真实曝光严格超过 `maximum_missing_duration_ns` 才删除。质量分数为 `min(consecutive_hits / confirmation_frame_count, 1)`，不是概率。预测、`coasting` 和删除只更新状态，只有当前实际候选生成 `Observation2D` 和后续射线；局部 ID 按站点／会话隔离，不承诺离开后重识别。
-
-`modules/device.py` 直接复用辅助校准，在主帧曝光中点查询历史，不等待未来辅助帧。当前限定固定主光心、全局快门、同一曝光／处理时钟；不隐式建立时钟映射。主辅曝光分别严格递增，处理时刻不回退。元数据错误在图像处理前拒绝；合法曝光的坏像素仍消费该帧并报告完成，不能伪造成功检测。MOG2 内部异常后不静默重建模型。
-
-`modules/rays.py` 反解主内参、去畸变并旋转到 ENU。使用正向 OpenCV 投影 Jacobian 的逆及单位化导数传播像素误差，不设有限差分步长或隐藏噪声地板。切平面 u 为相机 right 的投影，v 为 `direction × u`。
-
-像素协方差优先取观测，仅缺失时采用显式 fallback；已知非法值不能被 fallback 掩盖。独立角协方差叠加显式抖动／柔性残差，非零项要求与彼此及像素误差独立的依据，并写入质量标记。`None` 表示未知，不补零。独立光心协方差为零仅是固定光心条件模型；共享安装／校准误差保留引用，不重复计入每条射线。光心不符、未来校准、未知必要误差或不支持的几何模型均返回诊断。
-
-射线、校准状态与诊断共用图像会话序号。每个合法主帧在全部事件发出后报告完成，零射线也不例外；有限结束退休全部站点，零主帧保留 `completed_capture_time=None`。无曝光的控制诊断原样保存，模式 4 原样交中心；UI 仅在日志注明状态观测时刻（`not an exposure`），不补曝光或计入射线误差。
-
-## 中心融合与三维跟踪
-
-`chongming.reference:create_algorithm` 使用 `composition/center.py` 的在线装配；`reference_policy()` 提供实验阈值。中心算法本身不检测图像或执行辅助校准：模式 3 消费普通虚拟事件，模式 4 消费设备实际发出的事件、解与完成进度。默认值见[用户指南](user-guide.md#算法运行)，插件接口见[开发指南](development.md#中心算法接入)。
+`ReferenceFusionAlgorithm` registers online configurations and calibration solutions. `CenterFusionModule` runs these stages for sealed observation windows:
 
 ```text
-注册配置与校准解 -> 事件准入 -> 曝光时间窗口 -> 体素候选
-                 -> 跨站关联 -> 连续三维估计 -> 多目标跟踪
+Admission -> exposure window -> voxel candidates -> cross-station association
+          -> continuous position estimate -> track update
 ```
 
-### 准入与窗口
+### Admission and windows
 
-注册表按配置摘要和完整校准引用保留不可变快照；重复注册不能覆盖冲突内容。准入检查事件身份、坐标／时钟域、曝光、校准引用和不确定度，并审计接受、隔离、拒绝与重复。待引用的配置或校准证据补齐后可以重试隔离事件，但保留原到达时间。
+Registries retain immutable snapshots. Admission checks identity, configuration, coordinate frame, exposure, calibration evidence, and uncertainty. Missing references can quarantine an event for retry; its original arrival time remains unchanged.
 
-曝光中点决定所属半开窗口 `[start_ns, end_ns)`。活跃站的事件进度推进水位；处理时间只通过显式时钟映射参与超时判断。`StationEventTimeProgress` 表示主相机批次已经处理完成，即使没有检测也能推进窗口，不能用“没有射线”代替完成进度。
+Exposure midpoints select half-open windows `[start, end)`. Active station progress controls the watermark, which determines when a window can close. Explicit frame completion lets empty detections advance it. Idle and offline rules prevent a silent station from blocking all work.
 
-封口后的窗口和已发布结果不再修改。迟到证据报告 `late_after_seal`；站点超时可退出水位计算，恢复后先进入 `RECOVERING`，证据达到首个未封口窗口后才恢复参与。所有站点静默时，可按策略通过映射后的事件时钟封口空窗口，驱动轨迹失联状态；单纯处理 tick 不得越过尚未消费的开放证据。
+### Candidates and association
 
-有限流结束时，仅封口到最后完成曝光或已缓存射线所属窗口；零采样不制造窗口，结束后不凭空延长实验时间以删除所有轨迹。
+The voxel search clips forward rays to the search box and range. Sparse grid traversal includes boundary-touching cells. Independent uncertainty can expand support. Each cell counts independent stations, not the number of rays from one station. Cells with identical support form a coarse candidate.
 
-### 候选与跨站关联
+Association enumerates station subsets and ray choices. A group uses at most one ray per station. Bounded exclusive search preserves unresolved alternatives. Candidate, hypothesis, or search limits produce truncation diagnostics.
 
-粗体素搜索覆盖前向射线与搜索盒、距离范围的交集，可按独立误差扩展候选支持区域。扩展系数不是体素占据概率。体素只筛选可能的射线组，最终位置不取体素中心；`no_candidate_in_volume` 只描述给定搜索范围。
+### Geometry and uncertainty
 
-每个候选保留各站的可选射线。关联枚举站点子集和射线组合，以独立站对支持数、轨迹先验匹配数、归一化残差依次排序，进行有预算的排他分配。每组选用的射线每站最多一条，同一批选中组之间不能复用事件证据；检测分数、站内标签和先验都不增加独立站数。
-
-无先验的新目标搜索始终独立保留，已有轨迹只提供额外门控。竞争方案在歧义范围内时保留冲突，不按输入顺序选择。候选扩展、假设枚举或冲突搜索达到预算时报告截断，不能把部分搜索解释为唯一关联；独立且已解决的冲突分量可以继续输出。
-
-### 连续估计与不确定度
-
-几何阶段联合拟合原始射线，使用 `tangent_gaussian_v1` 的二维切平面残差模型。令 `T` 为原始切平面基底、`depth` 为沿射线的深度，独立残差协方差为：
+Position estimation fits the original rays in their tangent planes. For depth `d` and tangent basis `T`, independent transverse covariance is:
 
 ```text
-C_perp = depth² C_angle + T C_origin T.T
+C_perp = d^2 C_angle + T C_origin T.T
 ```
 
-可行广义最小二乘迭代深度相关协方差；可选 `huber` 在白化后的二维残差范数上迭代降权，其尺度为无量纲标准差单位。校准使用策略的正权重乘独立精度，零权重或非接受策略排除几何证据。正权重不改变零方差方向的精确约束，奇异协方差不以隐藏噪声下限正则化。
+The solver iterates depth-dependent generalized least squares. Optional Huber weighting acts on whitened residual norms. Zero covariance directions are exact constraints in this geometry solver.
 
-定位要求足够独立站、有效交会角、可接受条件数、前向深度及逐射线米制残差；关联还检查搜索盒与距离边界。交会角门限检查最强锐角站对，输出仍记录最小交会角。精确约束冲突、数值失败、未收敛或质量门限失败时不发布位置／协方差；Huber 降权不豁免残差门限。
+Acceptance requires enough stations, a useful intersection angle, acceptable conditioning, forward depth, and bounded residuals. Failed convergence or inconsistent exact constraints do not produce a valid position.
 
-共享安装和校准误差保留引用，不重复加入每条射线的独立协方差。`conditional_*` 只描述给定配置、校准和最终权重模型下的局部传播，不是绝对位姿误差，也不证明稳健估计器的统计覆盖率。精确干净射线可以得到零条件协方差，不能据此声称零绝对误差。
+Calibration usage changes independent precision weights, shared errors stay referenced. Reported covariance is conditional on the configuration, calibration, and final weighting model.
 
-### 异步对齐与跟踪
+### Motion and tracking
 
-未知速度的新目标只能使用曝光中点跨度足够窄的独立多站观测，不将未知速度当作零速度；无先验参考时刻为最早／最晚支持曝光中点的中点。已有轨迹具备未过期速度先验及协方差时，可将异步射线对齐到最早支持曝光中点。原始射线、封口窗口和其他目标的参考时刻不变，时间及几何门限仍适用。
+A new target without velocity information needs observations close enough in exposure time. A valid track prior can align asynchronous rays to the earliest supporting exposure.
 
-`MotionAlignmentEvidence` 保留依赖轨迹、速度、加权估计器的速度投影矩阵 `B` 和独立位置协方差。发布位置协方差包含速度传播项；跟踪更新恢复相关观测模型，避免将同一个先验算作新信息：
+Aligned measurements retain their dependency on that prior. The tracker uses the correlated observation model below instead of treating prior velocity as new independent evidence:
 
 ```text
 z + B v_prior observes [I B] x
 ```
 
-该测量只更新其依赖的已初始化轨迹，不为无关目标生成新种子。
+Tracking uses state `[E, N, U, vE, vN, vU]`. One measurement creates a seed with unknown velocity. A later exposure initializes velocity and covariance. One-to-one assignment handles confirmation, coasting, and deletion.
 
-跟踪使用状态 `[E,N,U,vE,vN,vU]` 的恒速 Kalman 模型。首个位置生成未知速度的暂定轨迹，后续不同曝光才初始化速度及位置／速度相关协方差。全局一对一分配保留歧义，不重复消费测量或射线，不因竞争未决创建重复种子；各轨迹分别确认、预测保持（`coasting`）和删除，暂定轨迹超过确认间隔可直接过期。每条测量保留自身曝光时刻，空封口窗口推进失联生命周期，读出远期预测本身不修改轨迹。
-
-过程噪声使用预测区间内常加速度协方差，单位为 `m²/s⁴`，不是连续时间谱密度：
+Process noise models constant acceleration over the prediction interval:
 
 ```text
-G = [dt²/2 I; dt I]
+G = [dt^2 / 2 I; dt I]
 Q = G Cov(a) G.T
 ```
 
-`direct_geometry` 候选和 `conservative_speed_bound` 对齐尚未实现；未知损失或不确定度模型不静默回退。多目标交叉、漏检、异步和噪声测试仅验证指定合成条件，不能保证任意遮挡或歧义下的身份恢复。
+The current tracker also clamps position variances to at least `25 m^2` in prediction and after filter updates. This hard-coded floor affects gates and reported uncertainty.
 
-## 辅助视觉校准
+## Rendering and display
 
-`calibration.py` 实现参照识别、姿态估计、历史查询和状态管理；`joint_calibration.py` 提供独立评估。在线接口使用普通 Python 数据结构，不暴露 NumPy/OpenCV 对象。
+`GodotRenderer` copies package resources into a writable temporary project. A lock serializes requests. Length-prefixed JSON describes a scene or UI state; raw RGB8 bytes carry images. The process uses the Compatibility backend and a graphics context.
 
-### 输入与估计
+Preview keeps the latest display state and owns an edit draft. Editing acquires a token, compiles the draft, checks the file's byte hash, and atomically saves it. Algorithm modes disable editing and time jumps.
 
-参照为横向 A4 棋盘，7×5 方格、6×4 内角点。安装配置保存按左上、右上、右下、左下排列的四个外角世界坐标；内角点通过双线性插值得到。识别器接受带行步长的 GRAY8、RGB8、BGR8，先使用 `findChessboardCorners` 与 `cornerSubPix`，失败后尝试 `findChessboardCornersSB`。
+`CenterRunUi` sends one acknowledged increment per algorithm call. Integer fields in visualization records use decimal strings on the wire to preserve signed 64-bit values through Godot JSON parsing. The receiver validates a private copy before changing caches.
 
-完整辅助刚体外参可用时，估计器固定主相机光心，以刚性杆臂约束辅助光心，拟合三自由度旋转；没有该光心先验时使用平面 IPPE 位姿候选。候选按有限性、正深度、重投影误差与安装旋转先验筛选，默认旋转先验为 1°。棋盘方向歧义按安装先验及重投影误差判定。
+Five layers show truth, rays, measurements, tracks, and raw voxels, using a free-view-only render layer. Measurement selection highlights cached supporting rays.
 
-主相机姿态由辅助姿态与固定外参得到：
+Rays remain for 1 s of experiment time, measurements for 3 s, and deleted tracks for 3 s. Track history holds 100 time-ordered points. Raw voxels describe the last exported sealed window, their votes count stations.
 
-```text
-R_enu_from_main(t) = R_enu_from_aux(t) · R_aux_from_main(0)
-```
+### Error diagnostics
 
-主辅相对旋转不在线重估，主相机光心保持安装值。纯旋转估计不能补偿整机平移或相机间形变；近距离参照的平移视差由质量字段及可选门限表达。拟合残差小不等于主相机绝对指向准确。
+`evaluation.gd` groups rays by station and exposure time, and measurements by reference time. It compares them with independently sampled truth at those times. Matching first maximizes the number of legal pairs, then minimizes total error.
 
-### 历史与状态
-
-`CalibrationHistoryStore.snapshot_at()` 只返回来源曝光、接受时间、状态观测时间及有效区间与主帧曝光兼容的记录。后到辅助结果不改写较早主帧的语义，同一解 ID 的内容不可变。
-
-识别失败时，状态机保留最后可信解并进入 `FROZEN`，超过 `stale_after_ns` 后进入 `STALE`；恢复需满足 `recovery_success_count`。没有可信解时只产生诊断。健康变化可继续引用原解，不制造新的有效解版本。
-
-`AuxiliaryCalibrationPipeline` 按曝光时间和 `update_period_ns` 节流。联合评估工具对实际生成的辅助帧逐帧评估，独立记录识别、拟合、状态机及总耗时，不等同于部署端更新频率。当前校准只覆盖上述棋盘与姿态模型，不提供真实安装精度保证。
-
-## Godot 可视化与误差诊断
-
-### 数据与接收
-
-[可视化契约](../src/chongming/contracts/visualization.py) 是独立只读视图。`visualization.py` 只适配顶层测量／轨迹，批次用于阶段计数，不重复展开。`center_ui.py` 从当前实验时刻、射线曝光中点和测量参考时刻推导去重排序的真值时刻；只读采样不推进时钟，空目标快照保留时间槽。历史定位不与当前场景位置比较。
-
-同一 `ui` socket 承载 `algorithm_output` 与配对的 `truth_snapshots`。线上封装将整数编码为规范十进制字符串，Godot 恢复 64 位有符号整数，避免纳秒和事件序号经 JSON 浮点丢失精度；数据类不变。`visualization.gd` 深复制并完整校验更新后，依次去重、诊断、更新缓存和绘图，最后通过现有 `accepted` 确认。相同重复幂等，冲突重复、序号回退或非法内容拒绝，不先修改统计或缓存。
-
-### 图形口径
-
-五个图层均只进入自由视角专用渲染层，不投影阴影，不进入主辅传感器图像。操作方法见[图层与诊断面板](user-guide.md#图层与诊断面板)。
-
-| 图层 | 当前绘制                                                                                                  |
-| ---- | --------------------------------------------------------------------------------------------------------- |
-| 真值 | 当前实验时刻的绿色包围圆，半径为目标中心参考点的包围半径；速度箭头为 1 s 位移；只给主视场内目标画站点连线 |
-| 射线 | 黄色；VALID 实线、FROZEN 虚线、STALE 点线；延伸至自由相机远裁面，当前为 5000 m                            |
-| 测量 | 有效位置为红色标记；条件位置标准差圆的直径为 `max(σE, σN, σU)`                                            |
-| 轨迹 | tentative 浅红、confirmed 深红、coasting 橙、deleted 灰；最近 100 个时间排序历史点，同时间替换            |
-| 体素 | 无先验原始非零格线框，边缘格裁剪到搜索盒；按票数分组网格，alpha 为 `0.3 × score / max_score`              |
-
-射线圆锥半角是独立角协方差最大特征值平方根，末端半径为 `far × tan(σ)`；未知、零或 `σ ≥ π/2` 不画圆锥。测量／轨迹标准差来自条件协方差对角线，圆只是尺寸示意，不是完整置信椭球；共享误差不包含在这些尺寸中。
-
-按实验时间保留射线 1 s、测量 3 s；deleted 轨迹从删除事件起保留 3 s，其他轨迹由算法生命周期控制。严格超过期限才淘汰，暂停不因墙钟过期。选择测量后，以青色高亮该测量及缓存中尚存的支持射线／圆锥，保留校准线型；缺失或过期仅提示，不重建证据。
-
-站点面板的实际／校准相对配置姿态差分别为 `Log(R_configured.T @ R_actual)`、`Log(R_configured.T @ R_calibrated)`，在配置主相机右／下／前轴表示，单位 rad。矩阵均把相机向量变到 ENU；这些差不是欧拉角相减，也不是独立相机姿态精度。
-
-### 原始体素
-
-`VoxelDiagnostics` 默认关闭，仅为参考中心的图形运行启用，不反馈业务算法。`VoxelCandidateModule` 在无先验搜索合并候选前捕获全部非零格，包括候选门限以下格；票数和支持数均为独立站点数，同站多射线不重复投票。不能从合并候选包围盒恢复投票，也不以先验引导网格替代。
-
-一次调用只导出最后一个封口窗口的快照，其他窗口结果照常处理。收集器每次调用清空；显示端在无封口且无新快照时保留上一图，有封口但无导出、`null` 或空格集时清旧图，不跨窗口累加。无新快照时，心跳、重复更新与图层开关不重建体素网格；自定义中心插件没有通用体素导出协议。
-
-### 匹配与统计
-
-`evaluation.gd` 在每次更新内将射线按站点／曝光中点分组，测量按参考时刻分组，与对应时刻的全部真值做门限内一对一匹配。先最大化合法匹配数，再最小化总误差；不使用生成时的正确对应，也不以视场或 `capture_eligible` 门控。开发门限为 `0.01 rad` 和 `10 m`，未经部署适用性验证。
-
-射线指向偏差为 `angle(direction, normalize(truth_position - origin))`，从报告起点计算，不等同于纯相机姿态误差。定位误差为测量与参考时刻真值的欧氏距离。非 located／无位置或不可定义方向记无法评估；已知空真值中的有效输出记未匹配。
+The development gates are `0.01 rad` for pointing and `10 m` for position. Statistics obey:
 
 ```text
 outputs = matched + unmatched + unevaluable
-valid   = matched + unmatched
+valid = matched + unmatched
 ```
 
-均值、RMSE、最大误差仅统计门限内匹配样本；无样本为 `null`，不显示零。未匹配不等同误报；本实现不提供完整 TP／FP／FN、召回率、轨迹连续性评分或综合分数。累计只留计数与累积量，明细仅留最新更新；重复、缓存淘汰、选择、重绘和图层开关不改变统计。
+Mean error, RMSE, and maximum error use matched samples only. No samples produce `null`.
 
-## 场景、渲染与资源
+## Evidence and playback
 
-Python 维护几何状态、投影与已知场景的简化遮挡，Godot 维护视觉场景、材质、程序几何及资源缓存。建筑与 DEM 来自同一规范化资产；植被使用随包分发的卡片网格和远景贴图，不反向定义逻辑圆柱遮挡真值。外部场景可以关闭遮挡真值，见[用户指南](user-guide.md#场景配置)。LOD 与风摆范围见[用户指南](user-guide.md#摄影与植被)。
+`SceneEvidenceWriter` separates ordinary inputs from privileged truth. It stores unchanged scene fields in `truth-static.json` and references them by digest. If those fields change, a record stores them inline. The reader checks references and restores a full snapshot.
 
-`OcclusionIndex` 使用保守包围盒筛选静态世界与植被候选，再执行精确代理求交；动态目标不改变静态地景索引。Godot 按稳定资源令牌复用网格与材质，Python 不逐帧传输植被顶点。
+Input frame hashes identify pixels but cannot recover them. Output files and interpretation are listed in [Development](development.md#evidence-and-playback).
 
-Godot 随场景模块启动，通过本地 socket 接收不可变快照并返回 RGB8。传感器只按请求绘制；模式 1／3 关闭视频可停止像素请求，模式 2／4 保留算法成像。曝光由 Godot shader 的亮度计量自动调整，直接输出 sRGB 编码的 RGB8；传感器噪声和强度范围配置不再支持。
+Recorded preview restores images and selected truth records, still needs Godot. At recording end it can switch to a live scene source. It is not a complete algorithm replay system.
 
-同一 socket 上的 `ui` 请求推送界面状态与最终传感器 RGB8：长度前缀 JSON 声明 `state.version`、图像清单与 `binary_length`，其后为按清单顺序拼接的原始像素。Godot 回复 `accepted`（收到的版本与图像键）及期间排队的用户命令，Python 核对 `accepted` 与所发一致。
+## Technical references
 
-首个 `ui` 请求恢复窗口并开启界面渲染循环。传感器使用独立 SubViewport；自由视角嵌入标签页并随面板调整尺寸。`preview.py::GodotUiChannel` 共用封装与同步确认，模式 1 的 `GodotUiSession` 和模式 2–4 的 `CenterRunUi` 分别持有运行状态。图像与算法增量独立发送；异步主辅显示各自最近图像及其曝光真值，不借用其他帧时刻。日志面板保留最近 200 条 `chongming` 日志及异常栈；非法界面命令记警告，其他异常或断连终止运行。
+- [OpenCV PnP](https://docs.opencv.org/4.x/d5/d1f/calib3d_solvePnP.html) describes the pose-estimation APIs.
+- [godot-openstreetmap](https://github.com/RodZill4/godot-openstreetmap/tree/a3a9ca5c46ddcc956a7d4798ee835d749d711e42) is an MIT-licensed implementation reference, not a runtime dependency.
+- [Pixeltovoxelprojector](https://github.com/ConsistentlyInconsistentYT/Pixeltovoxelprojector) is a conceptual reference. Its [pinned license](https://github.com/ConsistentlyInconsistentYT/Pixeltovoxelprojector/blob/011722ac4e7403de4dbf764b6877a6561a0cf45c/LICENSE) has extra restrictions; do not treat it as standard Apache-2.0 code.
 
-包内 Web/Godot 资源通过 `importlib.resources` 定位，不搜索调用者工作目录。Godot 使用独立可写临时目录，资源可从只读安装位置访问；退出和启动失败路径释放进程、socket 与临时资源。
-
-太阳、大气透视、非体积云、曝光压制与光束均为视觉近似，不是辐射标定或真实天气模型。它们改变像素，不以图像质量删除普通几何射线。高级传感器效应、雨、气象雾、通信扰动、相机姿态连续漂移等未支持配置由 `validate_supported_features()` 拒绝。
-
-### 证据回放
-
-预览复用 `ports.scene.ScenarioSource.generate(spec)`；录制源另提供 `get_spec()` 读取场景配置。`scenarios/playback.py` 顺序配对在线、真值和耗时记录，通过 FFmpeg 将 H.264 解码为 RGB8，保留帧标识、会话及曝光时间。带类型标识的场景快照、帧真值和阶段耗时可以恢复；限速控制相邻步骤的墙钟间隔，不恢复原录制节拍，也不丢步追赶。
-
-回放未恢复普通事件和事件到目标的对应，扰动仍为原始 JSON，不能作为完整中心输入或真值评估回放。预览仍初始化 Godot，录制结束后会转入实时场景源而不是循环原录像；它不是隔离于渲染器的完整回放系统。
-
-## 配置与资产边界
-
-场景作者编辑 `scenario-authoring-v2`，编译器产生 `ScenarioSpec`；运行图序列化用于诊断，不作为人工配置格式。未知字段和不支持值在运行前报告。配置不包含可执行代码。
-
-JSON 资产只有一种内容身份规则，见[用户指南](user-guide.md#json-资产)。加载过程为本地路径解析、单次读取、严格解析、内容摘要校验和领域解码；编译场景加载时重新核对外部资产。原始 XML/HGT 溯源、包完整性与编辑并发检测使用字节摘要，各自用途不混淆。
-
-OSM 准备是离线步骤。固定源文件、选择范围、锚点、高度策略及导入器版本决定地景，运行时不请求地图服务。支持范围与数据许可见[用户指南](user-guide.md#osm-地景)。场景植被策略属于场景配置，不修改地景资产身份。
-
-编辑器只在显式场景路径上执行事务：取得独占 token、编译草稿、比较磁盘字节摘要、原子提交。固定 Hannover 选项还要求显式资产路径和匹配内容摘要，不扫描输出目录寻找资源。
-
-## 验证与能力边界
-
-几何、时间、事件身份和真值隔离使用确定性测试；渲染测试检查行为关系及容差，不要求不同 GPU 输出逐像素相同。有限运行保存输入、普通输出、真值、耗时和来源记录；从场景重新运行仍依赖固定配置与资产。
-
-manifest 标明实际模式、输入来源、算法与成像策略。`algorithms_complete: false` 保留全系统未完成声明，不因模式 4 可运行或插件加载而改变；`complete` 只表示本次有限执行结束。原始证据和特权真值分开，Godot 误差面板不是完整评估报告。
-
-稳定背景合成实验、真实软件渲染与隔离 wheel 安装检查已覆盖模式 2–4，模式 1 控制与编辑也有回归。测试策略、显式像素误差和零残差假设不是部署配置。动态植被曾引出大量候选及 `association_search_truncated`；站点曝光不同步且无初始运动先验时可保留 `motion_alignment_unavailable`，不能通过虚拟事件、放宽门限或补零速度制造定位。
-
-真实场景检测效果、部署参数、真实 GPU 性能与目标帧率、桌面人工交互尚未验收；软件渲染截图不替代这些验证。缺中文字体的软件环境曾显示方框，中文面板可读性仍需在具备相应字体的桌面确认。当前也不提供目标类别识别、在线地图或任意大区域流式加载；硬件和通信部署能力未由接口名称确定。
-
-## 参考与许可
-
-- [OpenCV PnP](https://docs.opencv.org/4.x/d5/d1f/calib3d_solvePnP.html)：三维参照点到图像的位姿估计接口；工具能力不等于本项目部署精度。
-- [godot-openstreetmap](https://github.com/RodZill4/godot-openstreetmap/tree/a3a9ca5c46ddcc956a7d4798ee835d749d711e42)：OSM 分类与多边形挤出的实现参考，适用其 [MIT License](https://github.com/RodZill4/godot-openstreetmap/blob/a3a9ca5c46ddcc956a7d4798ee835d749d711e42/LICENSE)，不是本项目运行时依赖。
-- [Pixeltovoxelprojector](https://github.com/ConsistentlyInconsistentYT/Pixeltovoxelprojector)：射线与体素路线的概念参考。其[固定版本许可证](https://github.com/ConsistentlyInconsistentYT/Pixeltovoxelprojector/blob/011722ac4e7403de4dbf764b6877a6561a0cf45c/LICENSE)含额外限制，不按标准 Apache-2.0 代码直接复制。
-
-外部参考不构成本项目的运行验证或性能证据。软件许可见 [COPYING](../COPYING)，地景来源与署名见[数据许可](user-guide.md#数据许可)。
+These references do not validate this project's accuracy or performance.

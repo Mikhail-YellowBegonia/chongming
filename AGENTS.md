@@ -1,30 +1,47 @@
-# Agent 工作约定
+# Agent instructions
 
-## 信息入口
+## Read by task
 
-按任务阅读相关章节，不必遍历全部文档。
+Read the relevant sections before changing files. Do not read every document for every task.
 
-| 任务                         | 文档                                                                                                      |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------- |
-| 项目用途与实现范围           | [README](README.md)                                                                                       |
-| 开发环境与依赖管理           | [开发指南：环境与依赖](docs/development.md#环境与依赖)                                                    |
-| 测试与格式化                 | [开发指南：检查](docs/development.md#检查)                                                                |
-| 构建与发行验证               | [开发指南：本地发行](docs/development.md#本地发行)                                                        |
-| 模块职责、数据契约与设计限制 | [设计说明](docs/design.md)                                                                                |
-| 命令、场景配置与资产         | [用户指南](docs/user-guide.md)                                                                            |
-| 模式、设备策略与图层操作     | [用户指南：算法运行](docs/user-guide.md#算法运行)                                                         |
-| 可视化契约与诊断口径         | [可视化契约](src/chongming/contracts/visualization.py)、[设计说明](docs/design.md#godot-可视化与误差诊断) |
-| 授权、数据来源与署名         | [许可声明](README.md#许可与使用责任)、[数据许可](docs/user-guide.md#数据许可)                             |
+| Task                                    | Source                                                                                                                                                          |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Project purpose and limits              | [README](README.md), [Introduction](docs/introduction.md)                                                                                                       |
+| Architecture, ownership, and data rules | [Design](docs/design.md)                                                                                                                                        |
+| Environment and dependencies            | [Development: environment](docs/development.md#environment)                                                                                                     |
+| Commands, scenes, and device policies   | [Development: commands](docs/development.md#commands-and-modes), [scenarios](docs/development.md#scenarios), [device policy](docs/development.md#device-policy) |
+| Tests and formatting                    | [Development: checks](docs/development.md#checks)                                                                                                               |
+| Builds and release validation           | [Development: local release](docs/development.md#local-release)                                                                                                 |
+| Visualization and error metrics         | [Design: rendering and display](docs/design.md#rendering-and-display), [visualization contracts](src/chongming/contracts/visualization.py)                      |
+| Asset sources and permissions           | [README: license](README.md#license-and-use), [asset terms](docs/development.md#third-party-assets-and-licenses)                                                |
 
-## 实现与协作
+## Before editing
 
-- 使用仓库提供的 Nix 环境和 uv 工作流。遵守锁文件，不向系统环境安装依赖；未经明确授权，不新增或升级依赖、不刷新锁文件、不替换工具链。
-- 优先完成当前明确需求。使用简单、直接的实现，保持代码简洁、易读，沿用现有模块边界。
-- 不为尚未出现的问题增加通用框架、配置层、兼容层、重试或兜底。只在实际边界校验外部输入和数据完整性，避免内部重复校验；不吞异常、不以默认值掩盖错误。
-- 修改前检查工作区状态。仅处理任务相关内容，保留用户改动；范围或设计决策不明确且影响实现时，先确认。
-- 不伪造未实现功能的成功结果。实现状态、实验结果和后续需求分别表述。
-- 为行为变化补充必要测试，执行相关检查。不得通过弱化断言或放宽阈值掩盖失败；交付时说明已验证内容、失败及未验证项。
-- 用户可见行为或契约改变时更新对应指南；技术细节只在一处维护，`AGENTS.md` 保留导航与约束。
-- 文档使用专业、简洁的技术表述，删除重复解释、宣传性结论和与任务无关的内容。代码标识符及注释使用英文。
-- 不覆盖或删除已有实验结果，不将本地提供的资源、生成输出或秘密加入版本控制及发行包。
-- 未经明确授权，不暂存、提交、推送或发布。提交准备完成后报告修改与验证结果，暂停等待维护者处理。
+- Check the branch and working tree. Preserve user changes and unrelated files.
+- Confirm scope or design choices when they affect implementation.
+- Use the repository's Nix environment and uv workflow. Respect both lock files.
+- Do not install into the system environment. Do not add or upgrade dependencies, refresh locks, or replace tools without explicit approval.
+
+## Implementation
+
+- Solve the current requirement with simple code and existing module boundaries.
+- Do not add general frameworks, configuration layers, compatibility layers, retries, or fallbacks for hypothetical needs.
+- Validate external input and data integrity at boundaries. Avoid repeated internal checks. Do not swallow exceptions or hide invalid data with defaults.
+- Keep generation truth out of online algorithm interfaces. Do not replace failed image processing with virtual observations.
+- Report unimplemented work as unimplemented. Initialization is not proof that an algorithm works.
+- Keep code, identifiers, and comments in English.
+
+## Verification
+
+- Add tests for behavior changes. Run relevant checks; use full regression for shared contracts, runtime, or packaging changes.
+- Do not weaken assertions, relax thresholds, or fabricate output to make tests pass.
+- Report what ran, what failed, and what remains untested. Separate current results from historical evidence.
+- Preserve existing experiment results. Use separate output directories for new runs.
+
+## Documentation and delivery
+
+- Use simple technical English in documentation. Prefer short sentences and consistent terms. Remove repetition, promotional claims, and unrelated material.
+- Update the relevant guide when user-visible behavior or a contract changes. Maintain each technical rule in one main location; keep this file for navigation and constraints.
+- Separate implemented behavior, measured results, and proposed work. Give performance claims a reproducible test context.
+- Keep local assets, generated output, and secrets out of version control and release archives unless their inclusion has explicit approval and valid permissions. Never expose secrets.
+- Do not stage, commit, push, or publish without explicit authorization. Report changes and verification, then wait for the maintainer.
