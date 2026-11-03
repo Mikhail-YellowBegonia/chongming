@@ -100,6 +100,7 @@ class CenterSession:
         mode: int = 3,
         device_policies: dict[StationId, DevicePolicy] | None = None,
         warmup_hold_ns: int = WARMUP_HOLD_NS,
+        minimum_stations: int | None = None,
     ) -> None:
         if type(mode) is not int or mode not in (2, 3, 4):
             raise ValueError("mode must be 2, 3 or 4")
@@ -125,6 +126,25 @@ class CenterSession:
                     for station in self.run_spec.stations
                 ),
             )
+        if minimum_stations is not None:
+            if minimum_stations < 2:
+                raise ValueError("minimum_stations must be at least two")
+            policy = self.run_spec.fusion_policy
+            self.run_spec = replace(
+                self.run_spec,
+                fusion_policy=replace(
+                    policy,
+                    candidates=replace(
+                        policy.candidates,
+                        minimum_independent_stations=minimum_stations,
+                        minimum_candidate_score=float(minimum_stations),
+                    ),
+                    geometry=replace(
+                        policy.geometry,
+                        minimum_independent_stations=minimum_stations,
+                    ),
+                ),
+            )
         self._warmup_hold_ns = warmup_hold_ns
         self.assembly = declare_assembly(
             self.spec, self.run_spec, warmup_hold_ns=warmup_hold_ns
@@ -133,9 +153,9 @@ class CenterSession:
         self.source.video_enabled = video_enabled or mode != 3
         self.source.virtual_enabled = mode == 3
         if algorithm is None and mode == 4:
-            from chongming.reference import create_algorithm
+            from chongming.reference import create_postintersection_algorithm
 
-            algorithm = create_algorithm()
+            algorithm = create_postintersection_algorithm()
         self.algorithm: CenterAlgorithm | None = (
             None if mode == 2 else algorithm if algorithm is not None else InputInspector()
         )
@@ -515,6 +535,12 @@ def main() -> None:
     )
     parser.add_argument("--tick-hz", type=float, default=10)
     parser.add_argument(
+        "--minimum-stations",
+        type=int,
+        default=3,
+        help="中心端候选/几何最少独立站数；模式 4 默认 3",
+    )
+    parser.add_argument(
         "--warmup-hold-ns",
         type=int,
         default=WARMUP_HOLD_NS,
@@ -548,11 +574,13 @@ def main() -> None:
         parser.error("--tick-hz must be in (0, 240]")
     if args.warmup_hold_ns < 0:
         parser.error("--warmup-hold-ns must be nonnegative")
+    if args.minimum_stations < 2:
+        parser.error("--minimum-stations must be at least two")
     factory: Any = InputInspector
     if args.mode == 4 or (args.mode == 3 and args.ui):
-        from chongming.reference import create_algorithm
+        from chongming.reference import create_postintersection_algorithm
 
-        factory = create_algorithm
+        factory = create_postintersection_algorithm
     if args.algorithm:
         module, sep, name = args.algorithm.partition(":")
         if not sep:
@@ -566,6 +594,7 @@ def main() -> None:
         mode=args.mode,
         device_policies=policies,
         warmup_hold_ns=args.warmup_hold_ns,
+        minimum_stations=args.minimum_stations,
     )
     try:
         if args.ui:
@@ -597,6 +626,7 @@ def main() -> None:
                     mode=args.mode,
                     device_policies=policies,
                     warmup_hold_ns=args.warmup_hold_ns,
+                    minimum_stations=args.minimum_stations,
                 )
             elif parts[0] == "run":
                 if len(parts) > 2 or (
