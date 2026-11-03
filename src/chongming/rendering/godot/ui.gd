@@ -215,7 +215,7 @@ func _visualization_tab() -> ScrollContainer:
 		_visualization_layers[key] = check
 		box.add_child(check)
 	var legend := Label.new()
-	legend.text = "仅自由视角，不写入传感器像素。\n射线：VALID 实线 / FROZEN 虚线 / STALE 点线\n轨迹：暂定浅红 / 确认深红 / 滑行橙 / 删除灰\n射线保留 1 s，测量及删除轨迹保留 3 s（实验时间）。\n轨迹保留最近 100 点；速度箭头为 1 s 位移。\n测量圆直径 = max(σE, σN, σU)，仅尺寸示意。\n未知 σ 不绘制；角度 σ ≥ π/2 无法绘制圆锥。\n\n站点姿态差：配置相机坐标系（右 / 下 / 前），单位 rad。"
+	legend.text = "仅自由视角，不写入传感器像素。\n射线：VALID 实线 / FROZEN 虚线 / STALE 点线\n轨迹：暂定浅红 / 确认深红 / 滑行橙 / 删除灰\n射线保留 1 s，测量及删除轨迹保留 3 s（实验时间）。\n轨迹保留最近 100 点；速度箭头为 1 s 位移。\n测量圆直径 = max(σE, σN, σU)，仅尺寸示意。\n未知 σ 不绘制；角度 σ ≥ π/2 无法绘制圆锥。\n诊断缓存上限：射线 600 / 量测 200 / 航迹 300，超出时丢最旧。\n\n站点姿态差：配置相机坐标系（右 / 下 / 前），单位 rad。"
 	legend.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(legend)
 	_voxel_status = Label.new()

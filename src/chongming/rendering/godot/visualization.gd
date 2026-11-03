@@ -50,6 +50,10 @@ const RAY_LIFETIME_NS := 1_000_000_000
 const MEASUREMENT_LIFETIME_NS := 3_000_000_000
 const DELETED_TRACK_LIFETIME_NS := 3_000_000_000
 const HISTORY_LIMIT := 100
+# Display-only cache bounds; algorithm output and evidence are unchanged.
+const RAY_CACHE_LIMIT := 600
+const MEASUREMENT_CACHE_LIMIT := 200
+const TRACK_CACHE_LIMIT := 300
 const MIN_TIME_NS := -9223372036854775807 - 1
 const TRUTH_COLOR := Color("#52e888")
 const RAY_COLOR := Color("#ffe052")
@@ -146,6 +150,9 @@ func receive(state: Dictionary) -> bool:
 		for station in update.station_states:
 			station_states[station.station_id] = station
 	_prune()
+	_cap_cache(rays, RAY_CACHE_LIMIT)
+	_cap_cache(measurements, MEASUREMENT_CACHE_LIMIT)
+	_cap_track_cache()
 	update_count += 1
 	redraw()
 	_record_timing("update_ms", started_us)
@@ -184,6 +191,25 @@ func _prune() -> void:
 		if tracks[key].lifecycle == "deleted" and _expired(tracks[key].event_time_ns, DELETED_TRACK_LIFETIME_NS):
 			tracks.erase(key)
 			track_history.erase(key)
+
+
+func _cap_cache(cache: Dictionary, limit: int) -> void:
+	# Keep the newest insertions; insertion order is the update order.
+	if cache.size() <= limit:
+		return
+	var keys := cache.keys()
+	for index in range(cache.size() - limit):
+		cache.erase(keys[index])
+
+
+func _cap_track_cache() -> void:
+	if tracks.size() <= TRACK_CACHE_LIMIT:
+		return
+	var keys := tracks.keys()
+	for index in range(tracks.size() - TRACK_CACHE_LIMIT):
+		var key = keys[index]
+		tracks.erase(key)
+		track_history.erase(key)
 
 
 func attach(parent: Node3D, camera: Camera3D, enu: Callable) -> void:

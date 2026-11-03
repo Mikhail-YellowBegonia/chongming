@@ -12,6 +12,8 @@ Godot's error-diagnostics page shows median, P95, maximum and sample count for u
 
 Times use Godot's monotonic clock in milliseconds. Rejected/repeated updates and ordinary UI heartbeats do not add update/evaluation samples. No redraw sample is added without a drawing root. Windows roll independently; sample indices do not pair them. Cache counts also show rays, measurements, tracks and raw nonzero voxels.
 
+The diagnostic cache is bounded: at most 600 rays, 200 measurements and 300 tracks. When an update would exceed a bound, the oldest cached entries are dropped first. Counts in the diagnostics page are cached counts, not total algorithm output. The bound is display-only; it does not change algorithm results or evidence.
+
 These are CPU wall times, without waiting for GPU completion. They exclude Python encoding, socket transfer, image upload and window composition. Their inverse is not free-view FPS, and nested intervals must not be added.
 
 ## Existing recording evidence
