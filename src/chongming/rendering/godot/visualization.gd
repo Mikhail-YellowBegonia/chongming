@@ -240,6 +240,11 @@ func attach(parent: Node3D, camera: Camera3D, enu: Callable) -> void:
 
 func set_layer_visible(key: String, enabled: bool) -> void:
 	layers[key].visible = enabled
+	# Hidden layers are not rebuilt on every update; rebuild once when shown.
+	if enabled:
+		if key == "voxels":
+			_voxel_dirty = true
+		redraw()
 
 
 func set_station_origins(markers: Array) -> void:
@@ -261,20 +266,23 @@ func redraw() -> void:
 			continue
 		for child in layers[key].get_children():
 			child.free()
-	if not last_update.is_empty():
+	if layers["truth"].visible and not last_update.is_empty():
 		for target in truth_by_time[last_update.scenario_time_ns].targets:
 			_draw_truth(target)
-	for ray in rays.values():
-		_draw_ray(ray)
-	for measurement in measurements.values():
-		if measurement.position_enu_m != null:
-			var anchor := _anchor(layers.measurements, measurement.measurement_id, measurement.position_enu_m)
-			var color := SELECTION_COLOR if measurement.measurement_id == selected_measurement_id else MEASUREMENT_COLOR
-			_marker(anchor, color)
-			_uncertainty(anchor, measurement.position_std_enu_m, color)
-	for track in tracks.values():
-		_draw_track(track)
-	if _voxel_dirty:
+	if layers["rays"].visible:
+		for ray in rays.values():
+			_draw_ray(ray)
+	if layers["measurements"].visible:
+		for measurement in measurements.values():
+			if measurement.position_enu_m != null:
+				var anchor := _anchor(layers.measurements, measurement.measurement_id, measurement.position_enu_m)
+				var color := SELECTION_COLOR if measurement.measurement_id == selected_measurement_id else MEASUREMENT_COLOR
+				_marker(anchor, color)
+				_uncertainty(anchor, measurement.position_std_enu_m, color)
+	if layers["tracks"].visible:
+		for track in tracks.values():
+			_draw_track(track)
+	if layers["voxels"].visible and _voxel_dirty:
 		_draw_voxels()
 		_voxel_dirty = false
 	_record_timing("redraw_ms", started_us)
