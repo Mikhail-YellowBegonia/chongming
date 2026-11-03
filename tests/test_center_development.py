@@ -481,8 +481,10 @@ class CenterDevelopmentTests(unittest.TestCase):
         original = ModuleShell.start_module
         bindings: list[ModuleBinding] = []
 
-        def assembly(spec: s.ScenarioSpec, run: RunSpec) -> ArchitectureAssembly:
-            result = declare_assembly(spec, run)
+        def assembly(
+            spec: s.ScenarioSpec, run: RunSpec, **kwargs: object
+        ) -> ArchitectureAssembly:
+            result = declare_assembly(spec, run, **kwargs)
             bindings.extend(result.bindings)
             return result
 

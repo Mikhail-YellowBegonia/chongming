@@ -24,6 +24,7 @@ from chongming.modules.device import (
     RayGenerationModule,
     ReferenceRecognitionModule,
     Tracking2DModule,
+    WARMUP_HOLD_NS,
 )
 from chongming.modules.runtime import (
     EventTransportModule,
@@ -93,7 +94,9 @@ class ArchitectureAssembly:
     runner: SystemRunnerModule
 
 
-def declare_assembly(spec: ScenarioSpec, run: RunSpec) -> ArchitectureAssembly:
+def declare_assembly(
+    spec: ScenarioSpec, run: RunSpec, *, warmup_hold_ns: int = WARMUP_HOLD_NS
+) -> ArchitectureAssembly:
     """Bind shells and inspectable dependencies; do not initialize or run them.
 
     Stage 3 must validate unique station IDs, matching scenario/run station sets,
@@ -165,6 +168,7 @@ def declare_assembly(spec: ScenarioSpec, run: RunSpec) -> ArchitectureAssembly:
             history=history,
             ray_builder=rays,
             sequencer=sequencer,
+            warmup_hold_ns=warmup_hold_ns,
         )
         station_assemblies.append(
             StationAssembly(

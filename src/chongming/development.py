@@ -19,6 +19,7 @@ from typing import Any
 from chongming.center_ui import CenterRunUi
 from chongming.composition.development import development_run
 from chongming.composition.graph import declare_assembly
+from chongming.modules.device import WARMUP_HOLD_NS
 from chongming.contracts.development import (
     CenterAlgorithmResult,
     CenterInputStep,
@@ -98,6 +99,7 @@ class CenterSession:
         video_enabled: bool = False,
         mode: int = 3,
         device_policies: dict[StationId, DevicePolicy] | None = None,
+        warmup_hold_ns: int = WARMUP_HOLD_NS,
     ) -> None:
         if type(mode) is not int or mode not in (2, 3, 4):
             raise ValueError("mode must be 2, 3 or 4")
@@ -123,7 +125,10 @@ class CenterSession:
                     for station in self.run_spec.stations
                 ),
             )
-        self.assembly = declare_assembly(self.spec, self.run_spec)
+        self._warmup_hold_ns = warmup_hold_ns
+        self.assembly = declare_assembly(
+            self.spec, self.run_spec, warmup_hold_ns=warmup_hold_ns
+        )
         self.source = self.assembly.scene.scenario
         self.source.video_enabled = video_enabled or mode != 3
         self.source.virtual_enabled = mode == 3
@@ -509,6 +514,12 @@ def main() -> None:
         "--device-policy", type=Path, help="模式 2／4 必填：按站点 ID 提供完整 DevicePolicy 的 JSON"
     )
     parser.add_argument("--tick-hz", type=float, default=10)
+    parser.add_argument(
+        "--warmup-hold-ns",
+        type=int,
+        default=WARMUP_HOLD_NS,
+        help="端侧预热期不出射线的时长（ns）；0 关闭",
+    )
     parser.add_argument("--algorithm", help="受信任的 Python module:factory；JSON 不加载代码")
     args = parser.parse_args()
     spec = load_scenario(args.scenario)
@@ -535,6 +546,8 @@ def main() -> None:
         parser.error("--output is required unless --check")
     if not math.isfinite(args.tick_hz) or not 0 < args.tick_hz <= 240:
         parser.error("--tick-hz must be in (0, 240]")
+    if args.warmup_hold_ns < 0:
+        parser.error("--warmup-hold-ns must be nonnegative")
     factory: Any = InputInspector
     if args.mode == 4 or (args.mode == 3 and args.ui):
         from chongming.reference import create_algorithm
@@ -552,6 +565,7 @@ def main() -> None:
         video_enabled=args.video,
         mode=args.mode,
         device_policies=policies,
+        warmup_hold_ns=args.warmup_hold_ns,
     )
     try:
         if args.ui:
@@ -582,6 +596,7 @@ def main() -> None:
                     video_enabled=args.video,
                     mode=args.mode,
                     device_policies=policies,
+                    warmup_hold_ns=args.warmup_hold_ns,
                 )
             elif parts[0] == "run":
                 if len(parts) > 2 or (

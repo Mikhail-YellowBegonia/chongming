@@ -642,6 +642,7 @@ class EdgeGodotTests(unittest.TestCase):
                     mode=mode,
                     video_enabled=mode == 4 and known_pixels,
                     device_policies=policies(spec.station_configs, known_pixels=known_pixels),
+                    warmup_hold_ns=0,
                 )
                 with patch.object(
                     session.source.virtual_generator,

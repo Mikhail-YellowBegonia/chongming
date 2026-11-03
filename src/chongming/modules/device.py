@@ -56,9 +56,8 @@ OPENCV_CALIBRATION_ESTIMATOR_ID = "opencv-checkerboard-v1"
 # it learns. Detections remain available for device scoring and evidence, but
 # rays are withheld until the candidate count has stayed below the limit for a
 # stable interval. The integrator withholds warmup rays from the center anyway.
-WARMUP_MIN_NS = 10_000_000_000
-WARMUP_STABLE_FRAMES = 30
-WARMUP_OBSERVATION_LIMIT = 30
+WARMUP_HOLD_NS = 10_000_000_000
+WARMUP_OBSERVATION_LIMIT = 10
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -153,6 +152,8 @@ class DeviceModule(ModuleShell):
         history: CalibrationHistory,
         ray_builder: RayBuilder,
         sequencer: EventSequencer,
+        warmup_hold_ns: int = WARMUP_HOLD_NS,
+        warmup_observation_limit: int = WARMUP_OBSERVATION_LIMIT,
     ) -> None:
         self.config = config
         self.station_session_id = station_session_id
@@ -165,8 +166,8 @@ class DeviceModule(ModuleShell):
         self._last_processing_ns: int | None = None
         self._last_exposure_ns: dict[m.CameraRole, int] = {}
         self._first_main_capture_ns: int | None = None
-        self._warmup_stable_frames = 0
-        self._warmup_complete = False
+        self._warmup_hold_ns = warmup_hold_ns
+        self._warmup_observation_limit = warmup_observation_limit
 
     def _diagnostic(
         self,
@@ -259,19 +260,17 @@ class DeviceModule(ModuleShell):
             self._first_main_capture_ns = capture_ns
         elapsed_ns = capture_ns - self._first_main_capture_ns
         suppress_warmup_rays = False
-        if not self._warmup_complete:
-            if elapsed_ns < WARMUP_MIN_NS:
-                self._warmup_stable_frames = 0
-                suppress_warmup_rays = (
-                    len(detections.observations) > WARMUP_OBSERVATION_LIMIT
-                )
-            elif len(detections.observations) > WARMUP_OBSERVATION_LIMIT:
-                self._warmup_stable_frames = 0
-                suppress_warmup_rays = True
-            else:
-                self._warmup_stable_frames += 1
-                if self._warmup_stable_frames >= WARMUP_STABLE_FRAMES:
-                    self._warmup_complete = True
+        suppress_reason = ""
+        if elapsed_ns < self._warmup_hold_ns:
+            # Hard start hold: the occupancy filter has not settled, so the
+            # center receives no rays at all during this period.
+            suppress_warmup_rays = bool(detections.observations)
+            suppress_reason = "warmup_hold"
+        elif len(detections.observations) > self._warmup_observation_limit:
+            # Permanent edge rate limit: never forward a frame with more than
+            # this many independent candidates to the center.
+            suppress_warmup_rays = True
+            suppress_reason = "too_many_observations"
         events: list[m.StationEvent] = []
         if detections.processing_status is m.ProcessingStatus.FAILED:
             events.append(
@@ -285,7 +284,7 @@ class DeviceModule(ModuleShell):
                         self._diagnostic(
                             frame,
                             "warmup_target_limit",
-                            "too_many_observations",
+                            suppress_reason,
                         )
                     )
                 else:

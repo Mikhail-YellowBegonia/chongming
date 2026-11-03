@@ -144,6 +144,7 @@ def device(
             sequencer=sequencer,
         ),
         sequencer=sequencer,
+        warmup_hold_ns=0,
     )
 
 
@@ -557,11 +558,61 @@ class WarmupRayGuardTests(unittest.TestCase):
             history=base.history,
             ray_builder=ray_builder,
             sequencer=base.sequencer,
+            warmup_hold_ns=0,
+            warmup_observation_limit=30,
         )
         result = guarded.process_main(frame(config, 4, target=True), now(4))
         self.assertEqual(ray_builder.calls, 0)
         self.assertEqual(categories(result), {"warmup_target_limit"})
+        reasons = {
+            reason
+            for event in result.events
+            if isinstance(event, m.DiagnosticEvent)
+            for reason in event.reason_codes
+        }
+        self.assertIn("too_many_observations", reasons)
         self.assertEqual(len(result.detections.observations), 31)
+
+    def test_warmup_hold_suppresses_even_a_single_observation(self) -> None:
+        class BaseDetector:
+            def __init__(self, base: d.MainDetectionResult) -> None:
+                self.base = base
+
+            def process(self, frame: m.CameraFrame) -> d.MainDetectionResult:
+                return self.base
+
+        class FailingRayBuilder:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def build(self, observation, config, calibration):
+                self.calls += 1
+                raise AssertionError("warmup hold did not suppress rays")
+
+        base = device()
+        config = base.config
+        base.process_main(frame(config, 3), now(3))
+        base_result = base.detector.process(frame(config, 4, target=True))
+        ray_builder = FailingRayBuilder()
+        guarded = DeviceModule(
+            config=config,
+            station_session_id=base.station_session_id,
+            detector=BaseDetector(base_result),
+            calibrator=base.calibrator,
+            history=base.history,
+            ray_builder=ray_builder,
+            sequencer=base.sequencer,
+        )
+        result = guarded.process_main(frame(config, 4, target=True), now(4))
+        self.assertEqual(ray_builder.calls, 0)
+        reasons = {
+            reason
+            for event in result.events
+            if isinstance(event, m.DiagnosticEvent)
+            for reason in event.reason_codes
+        }
+        self.assertIn("warmup_hold", reasons)
+        self.assertEqual(len(result.detections.observations), 1)
 
 
 if __name__ == "__main__":
