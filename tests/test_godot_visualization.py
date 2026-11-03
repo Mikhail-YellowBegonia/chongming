@@ -325,6 +325,27 @@ class VisualizationReceiverTests(unittest.TestCase):
             json.loads(json.dumps(asdict(voxels))),
         )
 
+
+    def test_rays_are_deduplicated_by_station_and_local_track(self) -> None:
+        output = fixed_update()
+        assert output.edge_events is not None
+        source = output.edge_events[0].rays[0]
+        first = replace(source, local_track_id="track-a")
+        second = replace(
+            source,
+            event_id=(source.event_id[0], source.event_id[1], source.event_id[2] + 1),
+            capture_time_ns=TIME,
+            local_track_id="track-a",
+        )
+        output = replace(
+            output,
+            edge_events=(replace(output.edge_events[0], rays=(first, second)),),
+        )
+        payload = visualization_ui_state(output, fixed_truth())
+        report = self.receive({"version": 1, **payload})[0]
+        self.assertTrue(report["accepted"], report)
+        self.assertEqual(len(report["rays"]), 1)
+        self.assertEqual(report["rays"][0]["event_id"][2], second.event_id[2])
     def test_duplicate_and_heartbeat_do_not_append_and_new_worker_starts_empty(self) -> None:
         reports = self.receive(state(), state(), {"version": 3}, state(2))
         self.assertTrue(all(report["accepted"] for report in reports))

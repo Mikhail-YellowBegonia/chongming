@@ -6,6 +6,9 @@ var evaluation := Evaluation.new()
 var last_update: Dictionary = {}
 var truth_by_time: Dictionary = {}
 var rays: Dictionary = {}
+# Display-only index: one current ray per station/local-track pair.
+var ray_by_track: Dictionary = {}
+var ray_track_keys: Dictionary = {}
 var measurements: Dictionary = {}
 var tracks: Dictionary = {}
 var track_history: Dictionary = {}
@@ -129,7 +132,16 @@ func receive(state: Dictionary) -> bool:
 	if update.edge_events != null:
 		for station in update.edge_events:
 			for ray in station.rays:
-				rays[JSON.stringify(ray.event_id)] = ray
+				var key := JSON.stringify(ray.event_id)
+				var track_key := ""
+				if ray.get("local_track_id") != null:
+					track_key = "%s|%s" % [str(station.station_id), str(ray.local_track_id)]
+				if track_key != "" and ray_by_track.has(track_key):
+					rays.erase(ray_by_track[track_key])
+				rays[key] = ray
+				if track_key != "":
+					ray_by_track[track_key] = key
+					ray_track_keys[key] = track_key
 			edge_diagnostics.append({"station_id": station.station_id,
 				"station_session_id": station.station_session_id, "diagnostics": station.diagnostics})
 	if update.center_events != null:
@@ -153,6 +165,7 @@ func receive(state: Dictionary) -> bool:
 	_cap_cache(rays, RAY_CACHE_LIMIT)
 	_cap_cache(measurements, MEASUREMENT_CACHE_LIMIT)
 	_cap_track_cache()
+	_rebuild_ray_index()
 	update_count += 1
 	redraw()
 	_record_timing("update_ms", started_us)
@@ -191,6 +204,18 @@ func _prune() -> void:
 		if tracks[key].lifecycle == "deleted" and _expired(tracks[key].event_time_ns, DELETED_TRACK_LIFETIME_NS):
 			tracks.erase(key)
 			track_history.erase(key)
+
+
+func _rebuild_ray_index() -> void:
+	ray_by_track.clear()
+	ray_track_keys.clear()
+	for key in rays.keys():
+		var ray: Dictionary = rays[key]
+		if ray.get("local_track_id") == null:
+			continue
+		var track_key := "%s|%s" % [str(ray.event_id[0]), str(ray.local_track_id)]
+		ray_by_track[track_key] = key
+		ray_track_keys[key] = track_key
 
 
 func _cap_cache(cache: Dictionary, limit: int) -> void:
@@ -322,8 +347,9 @@ func _draw_voxels() -> void:
 		# Zero-score cells are absent from sparse input; never instantiate them.
 		if voxel.score <= 0:
 			continue
-		# One station vote is still invalid support; keep distinct from no votes.
-		if voxel.score == 1:
+		# Two-station support is not a three-station candidate; do not clutter
+		# the three-station diagnostic with lower-vote cells.
+		if voxel.score <= 2:
 			continue
 		if not groups.has(voxel.score):
 			groups[voxel.score] = []
@@ -358,7 +384,7 @@ func _draw_voxels() -> void:
 	for score in groups:
 		var points: Array[Vector3] = []
 		points.assign(groups[score])
-		var alpha := lerpf(VOXEL_MIN_ALPHA, VOXEL_MAX_ALPHA, clampf((float(score) - 2.0) / 13.0, 0.0, 1.0))
+		var alpha := lerpf(VOXEL_MIN_ALPHA, VOXEL_MAX_ALPHA, clampf((float(score) - 3.0) / 12.0, 0.0, 1.0))
 		_mesh(layers.voxels, "Score%d" % score, points,
 			Color(VOXEL_COLOR, alpha),
 			Mesh.PRIMITIVE_TRIANGLES)
@@ -571,13 +597,15 @@ func _event_id(value: Variant) -> bool:
 
 func _ray(ray: Variant, station: Dictionary) -> bool:
 	if not _record(ray, ["event_id", "capture_time_ns", "origin_enu_m", "direction_enu_unit",
-			"calibration_usage", "detection_score", "angular_std_rad"]):
+			"calibration_usage", "detection_score", "angular_std_rad", "local_track_id"]):
 		return false
 	if not _event_id(ray.event_id) or ray.event_id[0] != station.station_id \
 			or ray.event_id[1] != station.station_session_id:
 		return false
 	if not _integers(ray, ["capture_time_ns"], true) or not _vector(ray.origin_enu_m) \
 			or not _vector(ray.direction_enu_unit):
+		return false
+	if ray.get("local_track_id") != null and not _text(ray.local_track_id):
 		return false
 	var direction: Array = ray.direction_enu_unit
 	return is_equal_approx(Vector3(direction[0], direction[1], direction[2]).length_squared(), 1.0) \

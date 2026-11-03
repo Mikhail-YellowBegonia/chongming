@@ -215,7 +215,7 @@ func _visualization_tab() -> ScrollContainer:
 		_visualization_layers[key] = check
 		box.add_child(check)
 	var legend := Label.new()
-	legend.text = "仅自由视角，不写入传感器像素。\n射线：VALID 实线 / FROZEN 虚线 / STALE 点线\n轨迹：暂定浅红 / 确认深红 / 滑行橙 / 删除灰\n射线保留 1 s，测量及删除轨迹保留 3 s（实验时间）。\n轨迹保留最近 100 点；速度箭头为 1 s 位移。\n测量圆直径 = max(σE, σN, σU)，仅尺寸示意。\n未知 σ 不绘制；角度 σ ≥ π/2 无法绘制圆锥。\n诊断缓存上限：射线 600 / 量测 200 / 航迹 300，超出时丢最旧。\n\n站点姿态差：配置相机坐标系（右 / 下 / 前），单位 rad。"
+	legend.text = "仅自由视角，不写入传感器像素。\n射线：VALID 实线 / FROZEN 虚线 / STALE 点线\n轨迹：暂定浅红 / 确认深红 / 滑行橙 / 删除灰\n射线保留 1 s，测量及删除轨迹保留 3 s（实验时间）。\n射线按站点+轨迹仅保留最新一条；轨迹保留最近 100 点；速度箭头为 1 s 位移。\n测量圆直径 = max(σE, σN, σU)，仅尺寸示意。\n未知 σ 不绘制；角度 σ ≥ π/2 无法绘制圆锥。\n诊断缓存上限：射线 600 / 量测 200 / 航迹 300，超出时丢最旧。\n\n站点姿态差：配置相机坐标系（右 / 下 / 前），单位 rad。"
 	legend.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(legend)
 	_voxel_status = Label.new()
@@ -264,7 +264,7 @@ func show_visualization(measurements: Dictionary, selection: Dictionary, voxels:
 			measurement.supporting_ray_ids.size(),
 			"全部仍在缓存中。" if selection.missing_ray_ids.is_empty() else "部分或全部未接收或已过期，无法显示；不重建。"]
 	_voxel_status.text = "体素：尚无快照（或最后封口窗口未提供原始投票），不保留旧窗口。" if voxels == null else \
-		"体素：更新 #%d · 最后封口窗口\n%d 个非零网格 · 最大站点票数 %d\n仅无先验搜索，0–1 票不显示；2–15 票 alpha 0.06–0.18；空快照会清除旧图。" % [
+		"体素：更新 #%d · 最后封口窗口\n%d 个非零网格 · 最大站点票数 %d\n仅无先验搜索，0–2 票不显示；3–15 票 alpha 0.06–0.18；空快照会清除旧图。" % [
 			voxel_update, voxels.scored_voxels.size(), voxels.max_score]
 
 

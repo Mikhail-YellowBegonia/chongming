@@ -70,6 +70,7 @@ def ray_visualization(ray: RayEvent) -> RayVisualization:
         calibration_usage=ray.calibration_usage,
         detection_score=ray.detection_score,
         angular_std_rad=float(np.linalg.norm(factor, ord=2)),
+        local_track_id=None if ray.local_track_id is None else str(ray.local_track_id),
     )
 
 

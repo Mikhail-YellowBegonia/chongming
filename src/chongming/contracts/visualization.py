@@ -80,6 +80,8 @@ class RayVisualization:
     calibration_usage: CalibrationUsage
     detection_score: float
     angular_std_rad: float | None
+    # Display-only track key; lets the UI keep one current ray per local track.
+    local_track_id: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
