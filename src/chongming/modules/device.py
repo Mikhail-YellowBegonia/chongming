@@ -52,6 +52,15 @@ __all__ = [
 OPENCV_CALIBRATION_ESTIMATOR_ID = "opencv-checkerboard-v1"
 
 
+# Warmup ray guard: the occupancy filter emits many vegetation candidates while
+# it learns. Detections remain available for device scoring and evidence, but
+# rays are withheld until the candidate count has stayed below the limit for a
+# stable interval. The integrator withholds warmup rays from the center anyway.
+WARMUP_MIN_NS = 10_000_000_000
+WARMUP_STABLE_FRAMES = 30
+WARMUP_OBSERVATION_LIMIT = 30
+
+
 @dataclass(frozen=True, kw_only=True)
 class EventSequencerModule(ModuleShell):
     business_implemented = True
@@ -155,6 +164,9 @@ class DeviceModule(ModuleShell):
         self._clock: str | None = None
         self._last_processing_ns: int | None = None
         self._last_exposure_ns: dict[m.CameraRole, int] = {}
+        self._first_main_capture_ns: int | None = None
+        self._warmup_stable_frames = 0
+        self._warmup_complete = False
 
     def _diagnostic(
         self,
@@ -242,6 +254,24 @@ class DeviceModule(ModuleShell):
         self._accept_frame(frame, m.CameraRole.MAIN, now)
         result = self.detector.process(frame)
         detections = result.detections
+        capture_ns = _midpoint(frame.capture_time)
+        if self._first_main_capture_ns is None:
+            self._first_main_capture_ns = capture_ns
+        elapsed_ns = capture_ns - self._first_main_capture_ns
+        suppress_warmup_rays = False
+        if not self._warmup_complete:
+            if elapsed_ns < WARMUP_MIN_NS:
+                self._warmup_stable_frames = 0
+                suppress_warmup_rays = (
+                    len(detections.observations) > WARMUP_OBSERVATION_LIMIT
+                )
+            elif len(detections.observations) > WARMUP_OBSERVATION_LIMIT:
+                self._warmup_stable_frames = 0
+                suppress_warmup_rays = True
+            else:
+                self._warmup_stable_frames += 1
+                if self._warmup_stable_frames >= WARMUP_STABLE_FRAMES:
+                    self._warmup_complete = True
         events: list[m.StationEvent] = []
         if detections.processing_status is m.ProcessingStatus.FAILED:
             events.append(
@@ -250,10 +280,19 @@ class DeviceModule(ModuleShell):
         else:
             calibration = self.history.snapshot_at(frame.capture_time)
             if detections.observations:
-                events.extend(
-                    self.ray_builder.build(observation, self.config, calibration)
-                    for observation in detections.observations
-                )
+                if suppress_warmup_rays:
+                    events.append(
+                        self._diagnostic(
+                            frame,
+                            "warmup_target_limit",
+                            "too_many_observations",
+                        )
+                    )
+                else:
+                    events.extend(
+                        self.ray_builder.build(observation, self.config, calibration)
+                        for observation in detections.observations
+                    )
             else:
                 category = (
                     "background_warmup"

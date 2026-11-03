@@ -518,5 +518,51 @@ class DevicePipelineTests(unittest.TestCase):
             estimator.estimate(_references(config, np.asarray(IDENTITY)), config, now(10))
 
 
+
+class WarmupRayGuardTests(unittest.TestCase):
+    def test_warmup_observation_limit_withholds_rays_but_keeps_detections(self) -> None:
+        class ManyObservationsDetector:
+            def __init__(self, base: d.MainDetectionResult) -> None:
+                self.base = base
+
+            def process(self, frame: m.CameraFrame) -> d.MainDetectionResult:
+                source = self.base.detections.observations[0]
+                observations = tuple(
+                    replace(source, centroid_px=(float(index), 1.0)) for index in range(31)
+                )
+                return replace(
+                    self.base,
+                    detections=replace(self.base.detections, observations=observations),
+                )
+
+        class FailingRayBuilder:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def build(self, observation, config, calibration):
+                self.calls += 1
+                raise AssertionError("warmup guard did not suppress rays")
+
+        base = device()
+        config = base.config
+        base.process_main(frame(config, 3), now(3))
+        base_result = base.detector.process(frame(config, 4, target=True))
+        self.assertEqual(len(base_result.detections.observations), 1)
+        ray_builder = FailingRayBuilder()
+        guarded = DeviceModule(
+            config=config,
+            station_session_id=base.station_session_id,
+            detector=ManyObservationsDetector(base_result),
+            calibrator=base.calibrator,
+            history=base.history,
+            ray_builder=ray_builder,
+            sequencer=base.sequencer,
+        )
+        result = guarded.process_main(frame(config, 4, target=True), now(4))
+        self.assertEqual(ray_builder.calls, 0)
+        self.assertEqual(categories(result), {"warmup_target_limit"})
+        self.assertEqual(len(result.detections.observations), 31)
+
+
 if __name__ == "__main__":
     unittest.main()
