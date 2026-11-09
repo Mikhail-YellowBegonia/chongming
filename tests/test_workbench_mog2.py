@@ -56,6 +56,7 @@ class WorkbenchMOG2Tests(unittest.TestCase):
             mog2_learning_rate=-1.0,
             mog2_detect_shadows=False,
             apply_occupancy=False,
+            apply_erosion=True,
         )
         detector = WorkbenchMotionModule(policy=policy)
         self.assertIsInstance(detector.stages[1], MOG2Stage)
@@ -94,6 +95,7 @@ class WorkbenchMOG2Tests(unittest.TestCase):
             mog2_learning_rate=0.0,
             mog2_detect_shadows=False,
             apply_occupancy=False,
+            apply_erosion=True,
         )
         detector = WorkbenchMotionModule(policy=policy)
         workbench = InteractivePipeline.__new__(InteractivePipeline)
@@ -109,6 +111,7 @@ class WorkbenchMOG2Tests(unittest.TestCase):
             params = workbench._get_params()
         self.assertEqual(params["mode"], "mog2")
         self.assertFalse(params["apply_occupancy"])
+        self.assertTrue(params["apply_erosion"])
         workbench._rebuild_pipeline(params)
         for index in range(4):
             bgr = np.zeros((64, 64, 3), dtype=np.uint8)

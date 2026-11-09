@@ -16,6 +16,7 @@ class MorphologicalConfig:
     kernel_size: int = 3  # Size of structuring element
     apply_opening: bool = False  # Remove small noise (erosion + dilation) - can erode small targets
     apply_closing: bool = False  # Fill small gaps (dilation + erosion)
+    apply_erosion: bool = False  # One independent erosion before opening/closing
 
 
 class MorphologicalFilterStage(Stage):
@@ -36,6 +37,10 @@ class MorphologicalFilterStage(Stage):
             raise ValueError("MorphologicalFilterStage requires motion_mask from previous stage")
 
         mask = context.motion_mask
+        context.debug_data["foreground_pixels_before_morphology"] = int(cv2.countNonZero(mask))
+
+        if self.config.apply_erosion:
+            mask = cv2.erode(mask, self.kernel, iterations=1)
 
         # Opening: remove small noise (like vegetation)
         if self.config.apply_opening:

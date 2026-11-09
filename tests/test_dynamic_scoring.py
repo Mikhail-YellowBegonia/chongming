@@ -113,6 +113,7 @@ class WorkbenchExportTests(unittest.TestCase):
                     "downsample": 2,
                     "morph_kernel": 3,
                     "apply_opening": False,
+                    "apply_erosion": True,
                     "score_inc": 4,
                     "score_decay": 0.1,
                     "occ_threshold": 50,
@@ -131,5 +132,6 @@ class WorkbenchExportTests(unittest.TestCase):
             exported = json.loads(first.read_text())
             self.assertEqual(exported["station-east"], document["station-east"])
             self.assertEqual(exported["station-west"]["detection"]["mode"], "three_frame")
+            self.assertTrue(exported["station-west"]["detection"]["apply_erosion"])
             self.assertEqual(exported["station-west"]["tracking"]["confirmation_frame_count"], 4)
             self.assertEqual(json.loads(source.read_text()), document)

@@ -402,6 +402,8 @@ Godot tests cover actual rendering, update acceptance, integer precision, layer 
 
 [Algorithm evaluation](algorithm-evaluation.md) documents the native tuning workbench, explicit device policies, saved-input center replay, model-size scoring and operational attribution. Reuse existing recordings and new output directories. The [2026-11-02 benchmark](benchmark-2026-11-02.md) records the selected frame-difference policy and three-station integrated results, including device and center timing. [Visualization monitoring](visualization-monitoring.md) separates rendering and recording costs from algorithm costs.
 
+The [2026-11-08 occupancy benchmark](benchmark-2026-11-08.md) and [2026-11-09 erosion follow-up](benchmark-2026-11-09.md) retain bounded device comparisons, full-input quality and resource-limit failures on the same recording. Their reports distinguish current verification from historical results.
+
 ### Verification of the visualization and evaluation change
 
 The 2026-11-02 delivery passed 211 related device, center, replay, architecture and Godot visualization tests, full Ruff checks, and mypy for all 148 source/test files. All top-level scenario configuration checks passed. These checks do not rerun the recorded quality benchmark.

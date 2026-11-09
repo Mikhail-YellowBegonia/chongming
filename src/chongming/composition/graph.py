@@ -13,6 +13,7 @@ from chongming.contracts.model import StationConfig, StationId
 from chongming.contracts.runtime import ModuleNode, RunSpec, StartupPlan
 from chongming.contracts.scene import ScenarioSpec
 from chongming.modules.device import (
+    WARMUP_HOLD_NS,
     AuxiliaryCalibrationModule,
     CalibrationEstimationModule,
     CalibrationHistoryModule,
@@ -24,7 +25,6 @@ from chongming.modules.device import (
     RayGenerationModule,
     ReferenceRecognitionModule,
     Tracking2DModule,
-    WARMUP_HOLD_NS,
 )
 from chongming.modules.runtime import (
     EventTransportModule,

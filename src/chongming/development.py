@@ -19,7 +19,6 @@ from typing import Any
 from chongming.center_ui import CenterRunUi
 from chongming.composition.development import development_run
 from chongming.composition.graph import declare_assembly
-from chongming.modules.device import WARMUP_HOLD_NS
 from chongming.contracts.development import (
     CenterAlgorithmResult,
     CenterInputStep,
@@ -45,6 +44,7 @@ from chongming.edge_runtime import (
     load_device_policies,
     validate_device_policies,
 )
+from chongming.modules.device import WARMUP_HOLD_NS
 from chongming.ports.development import CenterAlgorithm
 from chongming.rendering.godot import default_renderer
 from chongming.scenarios.run import SceneEvidenceWriter, _json, _provenance
@@ -146,9 +146,7 @@ class CenterSession:
                 ),
             )
         self._warmup_hold_ns = warmup_hold_ns
-        self.assembly = declare_assembly(
-            self.spec, self.run_spec, warmup_hold_ns=warmup_hold_ns
-        )
+        self.assembly = declare_assembly(self.spec, self.run_spec, warmup_hold_ns=warmup_hold_ns)
         self.source = self.assembly.scene.scenario
         self.source.video_enabled = video_enabled or mode != 3
         self.source.virtual_enabled = mode == 3

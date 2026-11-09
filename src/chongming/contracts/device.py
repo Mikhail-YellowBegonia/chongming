@@ -70,6 +70,7 @@ class FrameDifferencePolicy:
     mog2_variance_threshold: float | None = None
     mog2_learning_rate: float | None = None
     mog2_detect_shadows: bool | None = None
+    apply_erosion: bool = False
 
 
 @dataclass(frozen=True, kw_only=True)

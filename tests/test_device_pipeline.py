@@ -519,7 +519,6 @@ class DevicePipelineTests(unittest.TestCase):
             estimator.estimate(_references(config, np.asarray(IDENTITY)), config, now(10))
 
 
-
 class WarmupRayGuardTests(unittest.TestCase):
     def test_warmup_observation_limit_withholds_rays_but_keeps_detections(self) -> None:
         class ManyObservationsDetector:
@@ -540,7 +539,12 @@ class WarmupRayGuardTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.calls = 0
 
-            def build(self, observation, config, calibration):
+            def build(
+                self,
+                observation: m.Observation2D,
+                config: m.StationConfig,
+                calibration: m.CalibrationSnapshot,
+            ) -> m.RayEvent | m.DiagnosticEvent:
                 self.calls += 1
                 raise AssertionError("warmup guard did not suppress rays")
 
@@ -585,7 +589,12 @@ class WarmupRayGuardTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.calls = 0
 
-            def build(self, observation, config, calibration):
+            def build(
+                self,
+                observation: m.Observation2D,
+                config: m.StationConfig,
+                calibration: m.CalibrationSnapshot,
+            ) -> m.RayEvent | m.DiagnosticEvent:
                 self.calls += 1
                 raise AssertionError("warmup hold did not suppress rays")
 

@@ -18,6 +18,12 @@ import cv2
 from chongming.contracts import device as d
 from chongming.contracts import model as m
 from chongming.evaluation import DetectionMetrics, target_pixel_gates
+from chongming.evaluation_attempt import (
+    EvaluationAttempt,
+    EvaluationBudget,
+    EvaluationLimit,
+    write_json,
+)
 from chongming.modules.detection import validate_detection_policy, validate_tracking_policy
 from chongming.modules.workbench_device import WorkbenchMotionModule, image_modules
 from chongming.performance import distribution
@@ -42,11 +48,17 @@ def evaluate(
     warmup_s: float = 15.0,
     size_k: float | None = None,
     observation_sink: Callable[[m.CameraFrame, tuple[m.Observation2D, ...]], None] | None = None,
+    budget: EvaluationBudget | None = None,
+    max_frames_per_station: int | None = None,
 ) -> dict[str, Any]:
     if not 0 <= warmup_s < float("inf"):
         raise ValueError("warmup_s must be finite and nonnegative")
     DetectionMetrics(gate_px, "px")
     target_pixel_gates([], gate_px, size_k)
+    if max_frames_per_station is not None and (
+        type(max_frames_per_station) is not int or max_frames_per_station < 1
+    ):
+        raise ValueError("max_frames_per_station must be a positive integer")
     policies: dict[str, ImagePolicy] = _decode(
         parse_json(policy_file.read_bytes()), dict[str, ImagePolicy]
     )
@@ -80,12 +92,15 @@ def evaluate(
         validate_tracking_policy(policy.tracking)
         image_modules(policy.detection, policy.tracking, m.StationId(station), m.SessionId("check"))
     output.mkdir(parents=True, exist_ok=False)
+    attempt = EvaluationAttempt(output, budget, list(policies)) if budget is not None else None
     summary: dict[str, Any] = {"format": "device-evaluation-v1", "status": "running"}
+    write_json(output / "summary.json", summary)
     try:
         with (
             (recording / "online.jsonl").open() as online,
             (recording / "truth.jsonl").open() as truth,
-            (output / "frames.jsonl").open("x") as evidence,
+            (output / "frames.jsonl").open("x", buffering=1) as evidence,
+            (output / "candidates.jsonl").open("x", buffering=1) as candidate_evidence,
         ):
             for online_line, truth_line in zip_longest(online, truth):
                 if online_line is None or truth_line is None:
@@ -98,6 +113,18 @@ def evaluate(
                     station = metadata["station_id"]
                     if metadata["camera_role"] != "main" or station not in policies:
                         continue
+                    if (
+                        max_frames_per_station is not None
+                        and processed[station] >= max_frames_per_station
+                    ):
+                        continue
+                    if attempt is not None:
+                        attempt.state["current_frame"] = {
+                            "station_id": station,
+                            "frame_id": metadata["frame_id"],
+                            "frame_index": metadata["frame_index"],
+                        }
+                        attempt.phase("decode")
                     frame_truth = truths[metadata["frame_id"]]
                     if (
                         frame_truth["station_id"] != station
@@ -160,33 +187,86 @@ def evaluate(
                         ),
                     )
                     convert_ms = (time.perf_counter() - convert_began) * 1000
+                    if attempt is not None:
+                        attempt.state["current_frame"]["time_ns"] = ns
+                        attempt.phase("detect")
                     cpu, began = time.process_time(), time.perf_counter()
                     candidates = detectors[station].detect(frame)
                     detected = time.perf_counter()
-                    result = trackers[station].update(candidates)
-                    ended = time.perf_counter()
-                    timing = {
-                        "detect_ms": (detected - began) * 1000,
-                        "track_ms": (ended - detected) * 1000,
-                        "pipeline_ms": (ended - began) * 1000,
-                        "cpu_ms": (time.process_time() - cpu) * 1000,
-                        "decode_ms": decode_ms,
-                        "convert_ms": convert_ms,
-                    }
-                    if observation_sink is not None:
-                        observation_sink(frame, result.observations)
-                    for key, value in timing.items():
-                        samples[station][key].append(value)
+                    detect_cpu = time.process_time() - cpu
+                    if candidates.processing_status != m.ProcessingStatus.PROCESSED:
+                        raise RuntimeError("recorded frame failed device processing")
                     detector = detectors[station]
                     stages = (
                         detector.stage_timings_ms
                         if isinstance(detector, WorkbenchMotionModule)
                         else {}
                     )
+                    counts = (
+                        detector.frame_counts
+                        if isinstance(detector, WorkbenchMotionModule)
+                        else {"accepted_candidates": len(candidates.candidates)}
+                    )
+                    candidate_evidence.write(
+                        json.dumps(
+                            {
+                                "station_id": station,
+                                "frame_id": metadata["frame_id"],
+                                "frame_index": metadata["frame_index"],
+                                "time_ns": ns,
+                                "counts": counts,
+                                "stage_timings_ms": stages,
+                                "detect_ms": (detected - began) * 1000,
+                            },
+                            allow_nan=False,
+                        )
+                        + "\n"
+                    )
+                    suppress_overload = False
+                    if attempt is not None:
+                        attempt.state["detected_frames"][station] += 1
+                        attempt.state["last_detected_frame"] = attempt.state["current_frame"].copy()
+                        attempt.state["candidate_peak"] = max(
+                            attempt.state["candidate_peak"], len(candidates.candidates)
+                        )
+                        attempt.state["last_counts"] = counts
+                        attempt.checkpoint()
+                        attempt.check_phase((detected - began) * 1000)
+                        suppress_overload = attempt.budget.skip_tracking(
+                            len(candidates.candidates), ns - origins[station]
+                        )
+                        if suppress_overload:
+                            attempt.state["overload_suppressed_frames"][station] += 1
+                        attempt.phase("tracking_skipped" if suppress_overload else "track")
+                    track_began = time.perf_counter()
+                    track_cpu = time.process_time()
+                    observations = (
+                        ()
+                        if suppress_overload
+                        else trackers[station].update(candidates).observations
+                    )
+                    ended = time.perf_counter()
+                    track_cpu = time.process_time() - track_cpu
+                    timing = {
+                        "detect_ms": (detected - began) * 1000,
+                        "track_ms": 0.0 if suppress_overload else (ended - track_began) * 1000,
+                        "pipeline_ms": (
+                            detected - began + (0 if suppress_overload else ended - track_began)
+                        )
+                        * 1000,
+                        "cpu_ms": (detect_cpu + (0 if suppress_overload else track_cpu)) * 1000,
+                        "decode_ms": decode_ms,
+                        "convert_ms": convert_ms,
+                    }
+                    if attempt is not None:
+                        attempt.check_phase(timing["track_ms"])
+                        attempt.phase("score")
+                    if observation_sink is not None:
+                        observation_sink(frame, observations)
+                    for key, value in timing.items():
+                        samples[station][key].append(value)
                     for key, value in stages.items():
                         stage_samples[station].setdefault(key, []).append(value)
-                    if candidates.processing_status != m.ProcessingStatus.PROCESSED:
-                        raise RuntimeError("recorded frame failed device processing")
                     processed[station] += 1
                     excluded = ns - origins[station] < round(warmup_s * 1e9)
                     record: dict[str, Any] = {
@@ -196,7 +276,11 @@ def evaluate(
                         "warmup_excluded": excluded,
                         "timing_ms": timing,
                         "stage_timings_ms": stages,
-                        "predictions_px": [list(o.centroid_px) for o in result.observations],
+                        "counts": counts,
+                        "tracking_suppressed": suppress_overload,
+                        "suppression_reason": "warmup_overload" if suppress_overload else None,
+                        "observation_count": len(observations),
+                        "predictions_px": [list(o.centroid_px) for o in observations],
                     }
                     if excluded:
                         skipped[station] += 1
@@ -208,7 +292,7 @@ def evaluate(
                             for item in frame_truth["targets"]
                             if item["projection"]["center_in_field_of_view"]
                         }
-                        predictions = [tuple(o.centroid_px) for o in result.observations]
+                        predictions = [tuple(o.centroid_px) for o in observations]
                         gates = target_pixel_gates(frame_truth["targets"], gate_px, size_k)
                         record["eligible_targets_px"] = targets
                         record["target_gates_px"] = gates
@@ -217,10 +301,22 @@ def evaluate(
                         )
                         aggregate.add(predictions, targets, target_gates=gates)
                     evidence.write(json.dumps(record, allow_nan=False) + "\n")
+                    if attempt is not None:
+                        attempt.state["processed_frames"][station] = processed[station]
+                        attempt.state["scored_frames"][station] = (
+                            processed[station] - skipped[station]
+                        )
+                        attempt.state["last_valid_frame"] = attempt.state["current_frame"].copy()
+                        attempt.phase("metadata")
             if any(count == 0 for count in processed.values()):
                 raise ValueError("selected station has no recorded main frames")
             for path, reader in readers.items():
-                if next_index[path] != videos[path]["frame_count"] or reader.read()[0]:
+                expected = videos[path]["frame_count"]
+                if max_frames_per_station is not None:
+                    expected = min(expected, max_frames_per_station)
+                if next_index[path] != expected or (
+                    max_frames_per_station is None and reader.read()[0]
+                ):
                     raise ValueError("video frame count differs from metadata")
         summary = {
             "format": "device-evaluation-v1",
@@ -266,13 +362,54 @@ def evaluate(
                 for station in policies
             },
         }
+        if max_frames_per_station is not None:
+            summary["status"] = "probe_complete"
+            summary["partial_quality_diagnostic"] = summary.pop("aggregate")
+            summary["aggregate"] = None
+            for station_summary in summary["stations"].values():
+                station_summary["partial_metrics_diagnostic"] = station_summary.pop("metrics")
+                station_summary["metrics"] = None
+    except EvaluationLimit as error:
+        summary = {
+            "format": "device-evaluation-v1",
+            "status": "resource_limit",
+            "stop_reason": str(error),
+            "aggregate": None,
+            "partial_quality_diagnostic": aggregate.summary(),
+        }
     except Exception as error:
-        summary = {"format": "device-evaluation-v1", "status": "failed", "error": str(error)}
+        summary = {
+            "format": "device-evaluation-v1",
+            "status": "failed",
+            "error": str(error),
+            "aggregate": None,
+            "partial_quality_diagnostic": aggregate.summary(),
+        }
         raise
     finally:
         for reader in readers.values():
             reader.release()
-        (output / "summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False) + "\n")
+        run_context: dict[str, Any] = {
+            "recording": str(recording.resolve()),
+            "policy_sha256": hashlib.sha256(policy_file.read_bytes()).hexdigest(),
+            "policies": parse_json(policy_file.read_bytes()),
+            "environment": {
+                "platform": platform.platform(),
+                "python": platform.python_version(),
+                "opencv": cv2.__version__,
+                "opencv_threads": cv2.getNumThreads(),
+            },
+            "warmup_s": warmup_s,
+            "gate_px": gate_px,
+            "size_k": size_k,
+        }
+        summary.update(run_context)
+        if attempt is not None:
+            attempt.checkpoint()
+            summary["attempt"] = attempt.state
+            summary["stop_stage"] = attempt.state["phase"]
+        summary["max_frames_per_station"] = max_frames_per_station
+        write_json(output / "summary.json", summary)
     return summary
 
 
@@ -287,6 +424,10 @@ def main() -> None:
     )
     parser.add_argument("--size-k", type=float, help="Projected-envelope diagonal multiplier")
     parser.add_argument("--warmup-s", default=15.0, type=float)
+    parser.add_argument("--candidate-limit", type=int)
+    parser.add_argument("--overload-hold-s", type=float, default=10.0)
+    parser.add_argument("--phase-limit-s", type=float, default=2.0)
+    parser.add_argument("--max-frames-per-station", type=int)
     args = parser.parse_args()
     if args.opencv_threads is not None:
         if args.opencv_threads < 1:
@@ -299,6 +440,10 @@ def main() -> None:
         gate_px=args.gate_px,
         warmup_s=args.warmup_s,
         size_k=args.size_k,
+        budget=None
+        if args.candidate_limit is None
+        else EvaluationBudget(args.candidate_limit, args.overload_hold_s, args.phase_limit_s),
+        max_frames_per_station=args.max_frames_per_station,
     )
     print(json.dumps(result["aggregate"], indent=2))
 

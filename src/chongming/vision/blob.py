@@ -56,6 +56,7 @@ class BlobExtractionStage(Stage):
         num_labels, _labels, stats, centroids = cv2.connectedComponentsWithStats(
             working_mask, connectivity=8
         )
+        context.debug_data["component_count"] = num_labels - 1
 
         blobs = []
         # Skip label 0 (background)

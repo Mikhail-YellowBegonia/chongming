@@ -74,6 +74,53 @@ Algorithm throughput excludes decode, conversion, scoring, UI and disk. CPU time
 
 See [device performance and embedded interpretation](benchmark-2026-11-02.md#device-timing-and-embedded-interpretation) for phase costs and the difference between offline decoding and direct camera input.
 
+## Bounded occupancy benchmark
+
+The [2026-11-08 occupancy report](benchmark-2026-11-08.md) records the new completed scores and resource-limit failures separately from the historical benchmark.
+The [2026-11-09 erosion follow-up](benchmark-2026-11-09.md) records the fixed independent-erosion attempts and their per-target tradeoffs.
+
+The issue #51 benchmark reuses the same three-station Hannover recording. It does not render new images. Start with a bounded probe in a new directory:
+
+```sh
+nix develop --no-update-lock-file --command uv run --frozen python -m chongming.benchmark_occupancy \
+  results/hannover_vegetation_test_30s --probe --output results/occupancy-probe-NEW
+```
+
+The probe feeds the first 360 frames at each station, about 12 seconds. It includes training from frame zero and extends beyond the initial 10-second hold. A probe has no full-recording quality score. Inspect its failure and suppression records before running the full input in another new directory. Omit `--probe` for the full 900 frames per station. Use `--arms difference-on mog2-on mog2-tuned` to select arms that passed the probe; this selection is an example, not a measured feasibility result.
+
+The four primary arms are frame difference and MOG2, each with occupancy enabled or disabled. Their starting policies use blob dilation 5. A fifth, separately named `mog2-tuned` arm preserves the historical practical policy with blob dilation 3. Opening and closing remain disabled. The maintainer permits method-specific blob dilation 3 or 5; log the actual value rather than treating it as a required single-variable constraint. Occupancy-mask dilation remains 15 when enabled. The area filter, downsampling, tracker and scoring gates remain fixed.
+
+The supplemental arms `difference-off-dilate3` and `mog2-off-dilate3` change only blob dilation from 5 to 3 in their respective occupancy-disabled policies. They are not run by default. Select them explicitly in a new output directory to check whether the starting dilation caused a resource-limit failure:
+
+```sh
+nix develop --no-update-lock-file --command uv run --frozen python -m chongming.benchmark_occupancy \
+  results/hannover_vegetation_test_30s --probe \
+  --arms difference-off-dilate3 mog2-off-dilate3 --output results/occupancy-probe-dilate3-NEW
+```
+
+The further supplemental arms `difference-off-erode3-dilate3` and `mog2-off-erode3-dilate3` retain blob dilation 3 and enable `detection.apply_erosion`. This optional policy field defaults to false. When enabled, the morphology stage applies one erosion with the existing elliptical `morphology_kernel_size` kernel, before any opening/closing, occupancy filtering or blob dilation. These two arms fix that kernel to 3 and leave opening/closing disabled. At downsampling 2, the kernel operates on the downsampled image, not original-image pixels. The native workbench's `Apply Erosion` control reads, applies and exports the same policy field. Evaluate candidate suppression together with per-target recall; erosion can remove small true signals as well as noise.
+
+The declared budgets apply equally to every arm:
+
+| Limit                               | Value                 |
+| ----------------------------------- | --------------------- |
+| OpenCV threads                      | 10                    |
+| Probe wall time                     | 300 s                 |
+| Full-input wall time                | 1800 s                |
+| Worker resident memory              | 4 GiB                 |
+| Detection or tracking phase         | 2 s                   |
+| Accepted candidates before tracking | 100 per station-frame |
+
+All warmup images still train the detector. During the first 10 seconds from a station's first exposure, a frame with more than 100 accepted candidates skips tracking and emits no observations. Lower-count frames continue tracking. At or after 10 seconds, more than 100 candidates terminates the arm before tracking. Counts equal to 100 are allowed. These are evaluation limits, separate from the live device's existing ray admission guard. Formal scoring still excludes the first 15 seconds; suppression never removes responsible target-times from a scored denominator.
+
+The supervisor runs arms sequentially in separate processes. It samples worker RSS and phase checkpoints at approximately 100 ms intervals and kills an arm that exceeds a budget. RSS covers the worker, decoder and native threads; it is not a precise instantaneous allocation limit or a hardware energy measurement. Phase times are also checked after each completed detection and tracking call. `pipeline_ms` includes only detection plus actual tracking; checkpoint and evidence writes remain outside that duration. Supervised wall time includes worker startup, input checks, decoding, scoring and writes.
+
+Each output contains `freeze.json` with input and source hashes, `history.json` with archived evidence and missing history fields, and a `manifest.json` listing planned arms, budgets, policies and outcomes. Each attempted arm keeps its command, `worker.log`, supervisor `summary.json`, and an `evaluation/` directory. Candidate evidence is flushed before expensive tracking. Atomic `progress.json` checkpoints retain the current and last valid frame, detected/processed/scored counts, suppression counts, candidate peaks and worker peak RSS. A killed worker can leave a partial JSONL tail; its supervisor summary remains the termination record.
+
+`candidates.jsonl` records foreground pixels before and after morphology and after occupancy, connected components before area filtering, accepted candidates and detection stage times. With erosion, opening and closing all disabled, the pre-occupancy foreground is the foreground operator output. `frames.jsonl` adds actual observations, suppression flags, pipeline times and scoring evidence. Component counts are after blob dilation; record that dilation separately from occupancy-mask dilation. Earlier runs did not record the pre-morphology pixel count; their preserved records have not been rewritten.
+
+Only a completed full-input arm has an aggregate quality score. Probe and failed arms use `aggregate: null`; any partial diagnostic explicitly describes only its processed/scored frames. A failure is evidence of exceeding the declared budget, not zero precision. ViBe remains a reported historical attempt until its original implementation and configuration are recovered. The benchmark does not replace it with a new implementation or establish new center or integrated quality results.
+
 ## Center scoring
 
 Center tests replay ordinary ideal virtual rays and known calibration. This isolates fusion from actual image detection; it is not an integrated quality score.

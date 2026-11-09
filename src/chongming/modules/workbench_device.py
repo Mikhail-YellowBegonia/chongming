@@ -85,7 +85,10 @@ def validate_workbench_detection(policy: d.FrameDifferencePolicy) -> None:
             raise ValueError("kernel sizes must be nonnegative integers")
     if policy.morphology_kernel_size < 1 or policy.morphology_kernel_size % 2 == 0:
         raise ValueError("morphology kernel must be positive and odd")
-    if type(policy.apply_opening) is not bool or type(policy.apply_closing) is not bool:
+    if any(
+        type(value) is not bool
+        for value in (policy.apply_opening, policy.apply_closing, policy.apply_erosion)
+    ):
         raise ValueError("morphology switches must be boolean")
     for value in (
         policy.threshold,
@@ -159,6 +162,7 @@ class WorkbenchMotionModule(ModuleShell):
                     kernel_size=policy.morphology_kernel_size,
                     apply_opening=policy.apply_opening,
                     apply_closing=policy.apply_closing,
+                    apply_erosion=policy.apply_erosion,
                 )
             ),
             OccupancyFilterStage(
@@ -181,6 +185,7 @@ class WorkbenchMotionModule(ModuleShell):
             ),
         ]
         self.stage_timings_ms: dict[str, float] = {}
+        self.frame_counts: dict[str, int] = {}
         self._stream: tuple[object, ...] | None = None
         self._last_ns: int | None = None
 
@@ -218,6 +223,16 @@ class WorkbenchMotionModule(ModuleShell):
         context = PipelineContext(frame=bgr, timestamp=time_ns / 1e9)
         process_stages(self.stages, context)
         self.stage_timings_ms = context.debug_data["stage_timings_ms"]
+        assert context.motion_mask is not None and context.filtered_mask is not None
+        self.frame_counts = {
+            "foreground_pixels_before_morphology": context.debug_data[
+                "foreground_pixels_before_morphology"
+            ],
+            "foreground_pixels_after_morphology": int(cv2.countNonZero(context.motion_mask)),
+            "foreground_pixels_after_occupancy": int(cv2.countNonZero(context.filtered_mask)),
+            "components_before_area_filter": context.debug_data["component_count"],
+            "accepted_candidates": len(context.blobs),
+        }
         scale = self.policy.downsample_factor
         candidates = tuple(
             d.Candidate2D(

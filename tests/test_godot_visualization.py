@@ -325,7 +325,6 @@ class VisualizationReceiverTests(unittest.TestCase):
             json.loads(json.dumps(asdict(voxels))),
         )
 
-
     def test_rays_are_deduplicated_by_station_and_local_track(self) -> None:
         output = fixed_update()
         assert output.edge_events is not None
@@ -346,6 +345,7 @@ class VisualizationReceiverTests(unittest.TestCase):
         self.assertTrue(report["accepted"], report)
         self.assertEqual(len(report["rays"]), 1)
         self.assertEqual(report["rays"][0]["event_id"][2], second.event_id[2])
+
     def test_duplicate_and_heartbeat_do_not_append_and_new_worker_starts_empty(self) -> None:
         reports = self.receive(state(), state(), {"version": 3}, state(2))
         self.assertTrue(all(report["accepted"] for report in reports))

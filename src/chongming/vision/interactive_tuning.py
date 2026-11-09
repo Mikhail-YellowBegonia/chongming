@@ -30,6 +30,7 @@ class TuningParameters(TypedDict):
     downsample: int
     morph_kernel: int
     apply_opening: bool
+    apply_erosion: bool
     apply_occupancy: bool
     mog2_history: int
     mog2_variance_threshold: float
@@ -112,6 +113,7 @@ class InteractivePipeline:
         # Morphology
         cv2.createTrackbar("Morph Kernel", "Controls", 3, 15, lambda x: None)
         cv2.createTrackbar("Apply Opening", "Controls", 1, 1, lambda x: None)
+        cv2.createTrackbar("Apply Erosion", "Controls", 0, 1, lambda x: None)
 
         # Occupancy
         cv2.createTrackbar("Score Inc", "Controls", 10, 50, lambda x: None)  # /10
@@ -167,6 +169,7 @@ class InteractivePipeline:
             "downsample": downsample,
             "morph_kernel": cv2.getTrackbarPos("Morph Kernel", "Controls") | 1,  # Force odd
             "apply_opening": bool(cv2.getTrackbarPos("Apply Opening", "Controls")),
+            "apply_erosion": bool(cv2.getTrackbarPos("Apply Erosion", "Controls")),
             "score_inc": cv2.getTrackbarPos("Score Inc", "Controls") / 10.0,
             "score_decay": cv2.getTrackbarPos("Score Decay", "Controls") / 10.0,
             "occ_threshold": float(cv2.getTrackbarPos("Occ Threshold", "Controls")),
@@ -201,6 +204,7 @@ class InteractivePipeline:
                 MorphologicalConfig(
                     kernel_size=params["morph_kernel"],
                     apply_opening=params["apply_opening"],
+                    apply_erosion=params["apply_erosion"],
                     apply_closing=self.apply_closing,
                 )
             ),
@@ -251,6 +255,7 @@ class InteractivePipeline:
             "Downsample": (detection.downsample_factor, 4),
             "Morph Kernel": (detection.morphology_kernel_size, 15),
             "Apply Opening": (int(detection.apply_opening), 1),
+            "Apply Erosion": (int(detection.apply_erosion), 1),
             "Score Inc": (detection.score_increment * 10, 50),
             "Score Decay": (detection.score_decay * 10, 50),
             "Occ Threshold": (detection.mask_threshold, 200),
@@ -339,6 +344,7 @@ class InteractivePipeline:
             "downsample_factor": "downsample",
             "morphology_kernel_size": "morph_kernel",
             "apply_opening": "apply_opening",
+            "apply_erosion": "apply_erosion",
             "score_increment": "score_inc",
             "score_decay": "score_decay",
             "mask_threshold": "occ_threshold",

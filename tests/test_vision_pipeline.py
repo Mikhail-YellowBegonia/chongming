@@ -9,6 +9,7 @@ from unittest.mock import patch
 import numpy as np
 
 from chongming.vision.interactive_tuning import InteractivePipeline, TuningParameters
+from chongming.vision.morphology import MorphologicalConfig, MorphologicalFilterStage
 from chongming.vision.motion import FrameDifferenceStage
 from chongming.vision.occupancy import OccupancyConfig, OccupancyFilterStage
 from chongming.vision.pipeline import PipelineContext
@@ -73,6 +74,31 @@ class OccupancyFilterTests(unittest.TestCase):
             stage.process(context)
 
 
+class ErosionTests(unittest.TestCase):
+    def test_one_ellipse_erosion_removes_isolated_noise_and_small_signal(self) -> None:
+        mask = np.zeros((12, 16), dtype=np.uint8)
+        mask[2:7, 2:7] = 255
+        mask[8:10, 4:6] = 255
+        mask[9, 12] = 255
+        context = PipelineContext(np.zeros((12, 16, 3), dtype=np.uint8), 0, motion_mask=mask)
+        stage = MorphologicalFilterStage(MorphologicalConfig(kernel_size=3, apply_erosion=True))
+        stage.process(context)
+        expected = np.zeros_like(mask)
+        expected[3:6, 3:6] = 255
+        np.testing.assert_array_equal(context.motion_mask, expected)
+        self.assertEqual(context.debug_data["foreground_pixels_before_morphology"], 30)
+        self.assertEqual(np.count_nonzero(mask), 30)
+        self.assertFalse(stage.config.apply_opening)
+        self.assertFalse(stage.config.apply_closing)
+
+    def test_default_erosion_is_disabled(self) -> None:
+        mask = np.zeros((5, 5), dtype=np.uint8)
+        mask[2, 2] = 255
+        context = PipelineContext(np.zeros((5, 5, 3), dtype=np.uint8), 0, motion_mask=mask)
+        MorphologicalFilterStage(MorphologicalConfig()).process(context)
+        np.testing.assert_array_equal(context.motion_mask, mask)
+
+
 class InteractiveTuningTests(unittest.TestCase):
     def test_trackbar_values_build_the_expected_stage_configuration(self) -> None:
         trackbars = {
@@ -81,6 +107,7 @@ class InteractiveTuningTests(unittest.TestCase):
             "Downsample": 2,
             "Morph Kernel": 2,
             "Apply Opening": 1,
+            "Apply Erosion": 0,
             "Score Inc": 10,
             "Score Decay": 5,
             "Occ Threshold": 50,
@@ -108,6 +135,7 @@ class InteractiveTuningTests(unittest.TestCase):
             "downsample": 2,
             "morph_kernel": 3,
             "apply_opening": True,
+            "apply_erosion": False,
             "score_inc": 1.0,
             "score_decay": 0.5,
             "occ_threshold": 50.0,
