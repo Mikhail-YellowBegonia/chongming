@@ -150,7 +150,34 @@ def supervise(
     progress: dict[str, Any] = {}
     stop_reason = None
     with (output / "worker.log").open("x") as log:
-        worker = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
+        try:
+            worker = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
+        except OSError as error:
+            report = {
+                "status": "failed",
+                "stop_reason": "worker_launch_error",
+                "stop_stage": "startup",
+                "aggregate": None,
+                "error": {
+                    "type": type(error).__name__,
+                    "errno": error.errno,
+                    "message": str(error),
+                },
+                "attempt": {"processed_frames": 0, "scored_frames": 0, "current_frame": None},
+                "supervision": {
+                    "command": command,
+                    "exit_code": None,
+                    "wall_s": time.monotonic() - started,
+                    "rss_peak_bytes": 0,
+                    "limits": {
+                        "wall_s": wall_limit_s,
+                        "memory_bytes": memory_limit_bytes,
+                        "phase_s": phase_limit_s,
+                    },
+                },
+            }
+            write_json(output / "summary.json", report)
+            return report
         try:
             while worker.poll() is None:
                 now = time.monotonic()

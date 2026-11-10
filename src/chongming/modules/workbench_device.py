@@ -26,9 +26,11 @@ from chongming.vision.occupancy import OccupancyConfig, OccupancyFilterStage
 from chongming.vision.pipeline import Blob, PipelineContext, process_stages
 from chongming.vision.preprocess import PreprocessConfig, PreprocessStage
 from chongming.vision.tracking import TrackingConfig, TrackingStage
+from chongming.vision.vibe import VibeConfig, VibeStage
 
 DETECTION_ID = "frame-difference-occupancy-v1"
 MOG2_ID = "mog2-workbench-v1"
+VIBE_ID = "vibe-workbench-v1"
 TRACKING_ID = "workbench-kalman-v1"
 
 
@@ -62,18 +64,23 @@ def _image_to_bgr(image: m.ImagePlane) -> np.ndarray:
 
 def validate_workbench_detection(policy: d.FrameDifferencePolicy) -> None:
     if (
-        policy.algorithm_id != (MOG2_ID if policy.mode == "mog2" else DETECTION_ID)
+        policy.algorithm_id != {"mog2": MOG2_ID, "vibe": VIBE_ID}.get(policy.mode, DETECTION_ID)
     ) or policy.mode not in (
         "two_frame",
         "three_frame",
         "five_frame",
         "mog2",
+        "vibe",
     ):
         raise ValueError("unsupported workbench detector")
     if type(policy.apply_occupancy) is not bool:
         raise ValueError("apply_occupancy must be boolean")
     if policy.mode == "mog2":
         mog2_config(policy)
+    if policy.mode == "vibe":
+        vibe_config(policy)
+        if type(policy.vibe_seed) is not int or not 0 <= policy.vibe_seed < 2**32:
+            raise ValueError("ViBe seed must be uint32")
     if type(policy.downsample_factor) is not int or policy.downsample_factor not in (1, 2, 4):
         raise ValueError("downsample_factor must be 1, 2 or 4")
     for size in (
@@ -104,6 +111,12 @@ def validate_workbench_detection(policy: d.FrameDifferencePolicy) -> None:
         or policy.maximum_component_area_px2 < policy.minimum_component_area_px2
     ):
         raise ValueError("invalid maximum component area")
+
+
+def vibe_config(policy: d.FrameDifferencePolicy) -> VibeConfig:
+    if policy.vibe_library_path is None or policy.vibe_library_sha256 is None:
+        raise ValueError("ViBe requires an explicit shared-library path and SHA-256")
+    return VibeConfig(policy.vibe_library_path, policy.vibe_library_sha256)
 
 
 def mog2_config(policy: d.FrameDifferencePolicy) -> MOG2Config:
@@ -152,7 +165,9 @@ class WorkbenchMotionModule(ModuleShell):
         self.policy = policy
         self.stages = [
             PreprocessStage(PreprocessConfig(downsample_factor=policy.downsample_factor)),
-            MOG2Stage(mog2_config(policy))
+            VibeStage(vibe_config(policy))
+            if policy.mode == "vibe"
+            else MOG2Stage(mog2_config(policy))
             if policy.mode == "mog2"
             else FrameDifferenceStage(
                 FrameDiffConfig(mode=policy.mode, threshold=policy.threshold)

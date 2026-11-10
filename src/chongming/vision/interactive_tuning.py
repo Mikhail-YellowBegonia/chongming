@@ -22,6 +22,7 @@ from chongming.vision.pipeline import PipelineContext, Stage, process_stages
 from chongming.vision.preprocess import PreprocessConfig, PreprocessStage
 from chongming.vision.scoring import WorkbenchScoring
 from chongming.vision.tracking import TrackingConfig, TrackingStage
+from chongming.vision.vibe import VibeConfig, VibeStage, seed_native
 
 
 class TuningParameters(TypedDict):
@@ -83,6 +84,8 @@ class InteractivePipeline:
         self.tracking_config = TrackingConfig()
         self.maximum_area: float | None = None
         self.apply_closing = False
+        self.vibe_config: VibeConfig | None = None
+        self.vibe_seed = 42
         self.current_frame_idx = 0
         self.paused = False
 
@@ -97,8 +100,8 @@ class InteractivePipeline:
 
         # Motion detection
         cv2.createTrackbar(
-            "Mode", "Controls", 1, 3, lambda x: None
-        )  # 0=two, 1=three, 2=five, 3=MOG2
+            "Mode", "Controls", 1, 4, lambda x: None
+        )  # 0=two, 1=three, 2=five, 3=MOG2, 4=ViBe with a pinned policy
         cv2.createTrackbar("Threshold", "Controls", 20, 100, lambda x: None)
         cv2.createTrackbar("Downsample", "Controls", 1, 4, lambda x: None)  # 1-4x
 
@@ -150,7 +153,7 @@ class InteractivePipeline:
     def _get_params(self) -> TuningParameters:
         """Read current parameters from trackbars."""
         mode_idx = cv2.getTrackbarPos("Mode", "Controls")
-        mode = ["two_frame", "three_frame", "five_frame", "mog2"][mode_idx]
+        mode = ["two_frame", "three_frame", "five_frame", "mog2", "vibe"][mode_idx]
 
         raw_downsample = cv2.getTrackbarPos("Downsample", "Controls")
         downsample = 1 if raw_downsample <= 1 else 2 if raw_downsample == 2 else 4
@@ -184,9 +187,15 @@ class InteractivePipeline:
 
     def _rebuild_pipeline(self, params: Mapping[str, Any]) -> None:
         """Rebuild pipeline stages with new parameters."""
+        if params["mode"] == "vibe":
+            if self.vibe_config is None:
+                raise ValueError("ViBe workbench mode requires an explicit pinned-library policy")
+            seed_native(self.vibe_seed)
         self.stages = [
             PreprocessStage(PreprocessConfig(downsample_factor=params["downsample"])),
-            MOG2Stage(
+            VibeStage(self.vibe_config)
+            if params["mode"] == "vibe" and self.vibe_config is not None
+            else MOG2Stage(
                 MOG2Config(
                     params["mog2_history"],
                     params["mog2_variance_threshold"],
@@ -242,6 +251,14 @@ class InteractivePipeline:
         """Apply an explicit offline/device profile to the same interactive stages."""
         self.maximum_area = detection.maximum_component_area_px2
         self.apply_closing = detection.apply_closing
+        self.vibe_seed = detection.vibe_seed
+        self.vibe_config = None
+        if detection.mode == "vibe":
+            if detection.vibe_library_path is None or detection.vibe_library_sha256 is None:
+                raise ValueError("ViBe requires a pinned shared-library policy")
+            self.vibe_config = VibeConfig(
+                detection.vibe_library_path, detection.vibe_library_sha256
+            )
         self.tracking_config = TrackingConfig(
             covariance_floor=tracking.covariance_floor_px,
             process_noise_pos=tracking.process_noise_position,
@@ -249,7 +266,10 @@ class InteractivePipeline:
             measurement_noise=tracking.measurement_noise_px,
         )
         controls = {
-            "Mode": (["two_frame", "three_frame", "five_frame", "mog2"].index(detection.mode), 3),
+            "Mode": (
+                ["two_frame", "three_frame", "five_frame", "mog2", "vibe"].index(detection.mode),
+                4,
+            ),
             "Use Occupancy": (int(detection.apply_occupancy), 1),
             "Threshold": (detection.threshold, 100),
             "Downsample": (detection.downsample_factor, 4),
@@ -353,8 +373,8 @@ class InteractivePipeline:
             "blob_dilation_size": "blob_dilation",
         }.items():
             detection[field] = params[control]
-        detection["algorithm_id"] = (
-            "mog2-workbench-v1" if params["mode"] == "mog2" else "frame-difference-occupancy-v1"
+        detection["algorithm_id"] = {"mog2": "mog2-workbench-v1", "vibe": "vibe-workbench-v1"}.get(
+            str(params["mode"]), "frame-difference-occupancy-v1"
         )
         for field in (
             "mog2_history",

@@ -403,6 +403,7 @@ Godot tests cover actual rendering, update acceptance, integer precision, layer 
 [Algorithm evaluation](algorithm-evaluation.md) documents the native tuning workbench, explicit device policies, saved-input center replay, model-size scoring and operational attribution. Reuse existing recordings and new output directories. The [2026-11-02 benchmark](benchmark-2026-11-02.md) records the selected frame-difference policy and three-station integrated results, including device and center timing. [Visualization monitoring](visualization-monitoring.md) separates rendering and recording costs from algorithm costs.
 
 The [2026-11-08 occupancy benchmark](benchmark-2026-11-08.md) and [2026-11-09 erosion follow-up](benchmark-2026-11-09.md) retain bounded device comparisons, full-input quality and resource-limit failures on the same recording. Their reports distinguish current verification from historical results.
+The [2026-11-10 attribution report](benchmark-2026-11-10.md) covers B1/B2/B3 and C1/C2/C3. Its [ViBe and physical-difficulty follow-up](benchmark-vibe-2026-11-10.md) records the optional official baseline and complete regression results, including failures.
 
 ### Verification of the visualization and evaluation change
 
@@ -465,6 +466,27 @@ Do not include local assets, experiment output, caches, or secrets in a release.
 ## Third-party assets and licenses
 
 Code licensing is stated in the [README](../README.md#license-and-use). Dependency and asset licenses are separate. Keep source URLs, versions or dates, byte hashes, conversion commands, and license terms with external inputs. Check permission before distribution.
+
+### Optional official ViBe library
+
+The optional baseline uses the [author's official repository](https://github.com/vandroogenbroeckmarc/vibe), pinned at `da0c197d36272125589180e20fdd32b6fe3ba548`. The repository grants Apache-2.0 use in its current `LICENSE`; retain that file with the sources. Source, binaries and generated results stay under ignored local directories and are not bundled in releases. No Python dependency or lock-file change is required.
+
+Download `C/vibe-background-sequential.c`, `C/vibe-background-sequential.h` and `LICENSE` from that revision into an ignored directory, preserving their paths. For example:
+
+```sh
+revision=da0c197d36272125589180e20fdd32b6fe3ba548
+mkdir -p external-projects/vibe-source/C
+for file in C/vibe-background-sequential.c C/vibe-background-sequential.h LICENSE; do
+  curl --fail --location "https://raw.githubusercontent.com/vandroogenbroeckmarc/vibe/$revision/$file" \
+    --output "external-projects/vibe-source/$file"
+done
+nix develop --no-update-lock-file --command uv run --frozen python scripts/prepare_vibe.py \
+  --source external-projects/vibe-source --output external-projects/vibe-build
+```
+
+The preparation script checks all three source hashes before compiling unmodified C with the Nix environment's compiler. It writes the compiler command/version, source revision and hashes, native defaults and library digest to `manifest.json`. Use a new build directory. The benchmark verifies the library digest again; changing the binary requires a new manifest and experiment directory.
+
+To exercise optional native tests, set `CHONGMING_VIBE_TEST_LIBRARY` to the absolute library path recorded in that manifest. Without it, native tests are explicitly skipped. Native workbench mode 4 requires a ViBe policy carrying this path and digest; an ordinary MOG2 policy does not provision a library.
 
 ### Plants
 

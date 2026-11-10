@@ -805,9 +805,8 @@ class PreviewRuntime:
                     try:
                         encoded = future.result(timeout=5.0)
                         cache[station_id] = encoded
-                        with self._encode_queue_lock:
-                            if station_id in self._pending_encodes:
-                                del self._pending_encodes[station_id]
+                        # This branch already owns the non-reentrant queue lock.
+                        self._pending_encodes.pop(station_id, None)
                     except Exception as error:
                         # Timeout or error, fall back to sync encoding
                         logger.warning(

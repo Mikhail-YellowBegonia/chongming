@@ -100,7 +100,7 @@ The renderer supports distortion-free cameras, square pixels, zero skew, a singl
 
 `Tracking2DModule` uses constant-velocity prediction and distance-ordered greedy one-to-one assignment. Velocity comes from the last two actual detections. Consecutive hits confirm a track; missing frames break the hit streak.
 
-The explicit workbench policy selects `WorkbenchMotionModule` and `WorkbenchTrackingModule` instead. These share frame difference or optional MOG2, occupancy filtering and Kalman tracking with the native tuning workbench. They do not silently replace the legacy device policy. Configuration and scoring are documented in [Algorithm evaluation](algorithm-evaluation.md).
+The explicit workbench policy selects `WorkbenchMotionModule` and `WorkbenchTrackingModule` instead. These share frame difference, optional MOG2 or a pinned optional ViBe library, occupancy filtering and Kalman tracking with the native tuning workbench. They do not silently replace the legacy device policy. Configuration and scoring are documented in [Algorithm evaluation](algorithm-evaluation.md).
 
 ### Auxiliary calibration
 

@@ -15,7 +15,7 @@ import numpy as np
 
 from chongming.benchmark_occupancy import arm_policies, supervise
 from chongming.evaluate_recording import evaluate
-from chongming.evaluation_attempt import EvaluationBudget, EvaluationLimit
+from chongming.evaluation_attempt import EvaluationAttempt, EvaluationBudget, EvaluationLimit
 from chongming.scenarios.run import _json
 from tests.test_detection import batch, frame
 
@@ -169,6 +169,52 @@ class OverloadTests(unittest.TestCase):
 
 
 class SupervisorTests(unittest.TestCase):
+    def test_launch_oserrors_preserve_an_attempt_without_a_worker(self) -> None:
+        for error in (
+            FileNotFoundError(2, "executable missing"),
+            PermissionError(13, "execution denied"),
+        ):
+            with (
+                self.subTest(error=type(error).__name__),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                output = Path(directory) / "attempt"
+                command = ["unavailable-worker"]
+                with patch("chongming.benchmark_occupancy.subprocess.Popen", side_effect=error):
+                    result = supervise(
+                        command, output, wall_limit_s=5, memory_limit_bytes=1024**3, phase_limit_s=2
+                    )
+                self.assertEqual(result["stop_reason"], "worker_launch_error")
+                self.assertEqual(result["stop_stage"], "startup")
+                self.assertIsNone(result["aggregate"])
+                self.assertEqual(result["attempt"]["processed_frames"], 0)
+                self.assertIsNone(result["supervision"]["exit_code"])
+                self.assertEqual(result["supervision"]["command"], command)
+                self.assertEqual(result["error"]["errno"], error.errno)
+                self.assertTrue((output / "worker.log").exists())
+                self.assertEqual(json.loads((output / "summary.json").read_text()), result)
+
+    def test_successful_exit_without_final_summary_is_a_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            result = supervise(
+                [sys.executable, "-c", "pass"],
+                Path(directory) / "attempt",
+                wall_limit_s=5,
+                memory_limit_bytes=1024**3,
+                phase_limit_s=2,
+            )
+            self.assertEqual(result["stop_reason"], "missing_final_summary")
+            self.assertEqual(result["status"], "failed")
+            self.assertIsNone(result["aggregate"])
+            self.assertEqual(result["supervision"]["exit_code"], 0)
+
+    def test_returned_phase_threshold_is_inclusive(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            attempt = EvaluationAttempt(Path(directory), EvaluationBudget(phase_limit_s=2), ["a"])
+            attempt.check_phase(2000.0)
+            with self.assertRaisesRegex(EvaluationLimit, "phase_time_limit"):
+                attempt.check_phase(2000.001)
+
     def test_hung_native_phase_leaves_a_failure_summary_after_hard_kill(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "attempt"

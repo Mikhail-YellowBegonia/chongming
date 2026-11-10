@@ -31,6 +31,7 @@ from chongming.ports.device import MotionDetector, Tracker2D
 from chongming.scenarios.json_content import parse_json
 from chongming.scenarios.run import _provenance
 from chongming.scenarios.serialization import _decode
+from chongming.vision.vibe import VibeStage, seed_native
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,15 @@ def evaluate(
     skipped = {station: 0 for station in policies}
     sessions: dict[str, str] = {}
     # Validate policy families before creating output or opening video decoders.
+    seeds = {
+        p.detection.vibe_seed
+        for p in policies.values()
+        if isinstance(p.detection, d.FrameDifferencePolicy) and p.detection.mode == "vibe"
+    }
+    if len(seeds) > 1:
+        raise ValueError("ViBe station policies must share one process-global RNG seed")
+    if seeds:
+        seed_native(next(iter(seeds)))
     for station, policy in policies.items():
         validate_detection_policy(policy.detection)
         validate_tracking_policy(policy.tracking)
@@ -389,6 +399,11 @@ def evaluate(
     finally:
         for reader in readers.values():
             reader.release()
+        for detector in detectors.values():
+            if isinstance(detector, WorkbenchMotionModule):
+                for stage in detector.stages:
+                    if isinstance(stage, VibeStage):
+                        stage.reset()
         run_context: dict[str, Any] = {
             "recording": str(recording.resolve()),
             "policy_sha256": hashlib.sha256(policy_file.read_bytes()).hexdigest(),

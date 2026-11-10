@@ -48,7 +48,7 @@ Use `python -m chongming.vision.interactive_tuning VIDEO` inside the Nix/uv envi
 Controls:
 
 - Space pauses; A/D step backward/forward; Q or Escape exits.
-- Mode 0/1/2 selects two-/three-/five-frame difference. Mode 3 selects MOG2.
+- Mode 0/1/2 selects two-/three-/five-frame difference. Mode 3 selects MOG2. Mode 4 selects ViBe and requires a policy with a pinned native library.
 - `Use Occupancy` enables occupancy filtering independently of foreground extraction.
 - `Score k x100` sets the projected-size multiplier; `Score Floor px` sets its lower bound.
 - Changing algorithm parameters or seeking backward replays training history. Paused display refreshes do not repeatedly train or count a frame.
@@ -78,6 +78,8 @@ See [device performance and embedded interpretation](benchmark-2026-11-02.md#dev
 
 The [2026-11-08 occupancy report](benchmark-2026-11-08.md) records the new completed scores and resource-limit failures separately from the historical benchmark.
 The [2026-11-09 erosion follow-up](benchmark-2026-11-09.md) records the fixed independent-erosion attempts and their per-target tradeoffs.
+The [2026-11-10 attribution comparison](benchmark-2026-11-10.md) adds a fixed saved-ray direct-geometry baseline, coarse-representative ablation, the occupancy-plus-erosion MOG2 arm, common-region diagnostics and repeated timings. These offline tools leave production algorithms unchanged.
+The [ViBe and physical-difficulty follow-up](benchmark-vibe-2026-11-10.md) adds the optional official native baseline, range-to-size strata and a complete software regression result list.
 
 The issue #51 benchmark reuses the same three-station Hannover recording. It does not render new images. Start with a bounded probe in a new directory:
 
@@ -119,7 +121,33 @@ Each output contains `freeze.json` with input and source hashes, `history.json` 
 
 `candidates.jsonl` records foreground pixels before and after morphology and after occupancy, connected components before area filtering, accepted candidates and detection stage times. With erosion, opening and closing all disabled, the pre-occupancy foreground is the foreground operator output. `frames.jsonl` adds actual observations, suppression flags, pipeline times and scoring evidence. Component counts are after blob dilation; record that dilation separately from occupancy-mask dilation. Earlier runs did not record the pre-morphology pixel count; their preserved records have not been rewritten.
 
-Only a completed full-input arm has an aggregate quality score. Probe and failed arms use `aggregate: null`; any partial diagnostic explicitly describes only its processed/scored frames. A failure is evidence of exceeding the declared budget, not zero precision. ViBe remains a reported historical attempt until its original implementation and configuration are recovered. The benchmark does not replace it with a new implementation or establish new center or integrated quality results.
+Only a completed full-input arm has an aggregate quality score. Probe and failed arms use `aggregate: null`; any partial diagnostic explicitly describes only its processed/scored frames. A failure is evidence of exceeding the declared budget, not zero precision. The historical ViBe attempt remains unreproduced. The separately pinned official ViBe baseline below is a new experiment.
+
+### Physical difficulty
+
+Difficulty is the Euclidean distance from a main camera's optical center to the target reference point, divided by the physical model body-space AABB diagonal after asset scaling. The ratio is dimensionless. Keep one value per station, target and exposure; do not average camera distances before forming it. Within comparable imaging conditions, larger ratios describe smaller angular targets. This descriptor alone does not control contrast, texture, motion, occlusion or camera resolution, and does not establish a universal capability limit.
+
+The offline `chongming.difficulty_evaluation` tool reads recorded truth and saved completed device results. It uses fixed powers-of-two bins, with inclusive lower and exclusive upper bounds. It reports responsible target-times, hits, misses and recall in each bin. Matching retains the pixel gate above. Unmatched predictions have no known target size, so precision is reported globally. Warmup exclusions remain unchanged. These truth-derived labels never enter online interfaces.
+
+```sh
+uv run --frozen python -m chongming.difficulty_evaluation \
+  results/hannover_vegetation_test_30s --output results/difficulty-NEW \
+  --frames results/device-example/frames.jsonl
+```
+
+### Official ViBe baseline
+
+`vibe-workbench-v1` uses the unmodified official sequential C implementation through a hash-checked shared library. Source provisioning and license details are in [Development](development.md#optional-official-vibe-library). Its pinned current defaults are 30 samples, matching threshold 10, two required matches and update factor 8. These differ from the original paper's commonly cited defaults. This experiment does not reproduce the project's unrecovered historical attempt.
+
+The native model consumes grayscale images after the same preprocessing as MOG2. It updates from its own unfiltered foreground mask, before shared morphology, occupancy and blob extraction. No demo median filter is added. `vibe_library_path`, `vibe_library_sha256` and `vibe_seed` are explicit policy fields. The official implementation uses a process-global libc RNG; the evaluator seeds it once before processing the three stations in recorded order. Seeds and station order belong to the reproducibility context.
+
+`chongming.benchmark_vibe` compares occupancy on/off, each with and without independent erosion, at blob dilation 3. Opening and closing stay disabled. The selected frame-difference and tuned MOG2 policies are repeated controls. The same recording, warmup, scoring, tracker and resource limits apply. Each ViBe arm first receives a bounded probe; only feasible probes proceed to full input. Seeds 42, 43 and 44 measure random variation, while repeated controls measure timing variation. Report official defaults as defaults, rather than as a scene-wide optimum.
+
+```sh
+OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 uv run --frozen python -m chongming.benchmark_vibe \
+  results/hannover_vegetation_test_30s \
+  --build-manifest external-projects/vibe-build/manifest.json --output results/vibe-NEW
+```
 
 ## Center scoring
 

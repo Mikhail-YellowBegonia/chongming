@@ -71,6 +71,9 @@ class FrameDifferencePolicy:
     mog2_learning_rate: float | None = None
     mog2_detect_shadows: bool | None = None
     apply_erosion: bool = False
+    vibe_library_path: str | None = None
+    vibe_library_sha256: str | None = None
+    vibe_seed: int = 42
 
 
 @dataclass(frozen=True, kw_only=True)
