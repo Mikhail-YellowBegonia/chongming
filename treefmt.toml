@@ -16,6 +16,8 @@ excludes = [
   ".codex-cache/**",
   "build/**",
   "dist/**",
+  "target/**",
+  "**/target/**",
   "logs/**",
   "tmp/**",
   "temp/**",
@@ -40,6 +42,10 @@ includes = ["*.nix"]
 command = "ruff"
 options = ["format"]
 includes = ["*.py"]
+
+[formatter.rust]
+command = "rustfmt"
+includes = ["*.rs"]
 
 [formatter.prettier]
 command = "prettier"

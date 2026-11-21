@@ -15,6 +15,7 @@ env/
 .codex-cache/
 build/
 dist/
+target/
 *.egg-info/
 .coverage
 htmlcov/

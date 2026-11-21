@@ -11,7 +11,7 @@ nix develop --no-update-lock-file
 uv sync --frozen
 ```
 
-The shell provides Python 3.12, uv, Godot 4.7.2 stable, FFmpeg, Ruff, Git, and treefmt. Linux also has Xvfb. `flake.lock` pins Nix inputs; `uv.lock` pins Python dependencies. The package supports Python 3.12 through 3.14.
+The shell provides Python 3.12, uv, Godot 4.7.2 stable, FFmpeg, Ruff, Rust (`rustc`, `cargo`, `rustfmt`, `clippy`), Protocol Buffers (`protoc`), Git, and treefmt. Linux also has Xvfb. `flake.lock` pins Nix inputs; `uv.lock` pins Python dependencies. The package supports Python 3.12 through 3.14.
 
 Use `uv run --frozen` for Python commands. Use the shell's `ruff`, not `uv run ruff`, on NixOS. Do not update dependencies, lock files, or tools without approval. First setup may need network access. The shell supplies native libraries required by Python wheels; using `.venv/bin/python` outside it can fail.
 

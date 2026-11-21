@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package chongming.v1;
+
+import "chongming/v1/common.proto";
+
+// Privileged test-framework messages for Godot Producer, V-Switch storage, and Scorer.
+// Business packages (Edge, Center) MUST NOT import or generate code from this file.
+
+enum OcclusionStatus {
+  OCCLUSION_STATUS_UNSPECIFIED = 0;
+  OCCLUSION_STATUS_VISIBLE = 1;
+  OCCLUSION_STATUS_OCCLUDED = 2;
+  OCCLUSION_STATUS_OUT_OF_FOV = 3;
+  OCCLUSION_STATUS_UNKNOWN = 4;
+}
+
+message TargetTruth {
+  string target_id = 1;
+  string target_class = 2;
+  // 64-bit ENU coordinates and velocity computed in Godot scalar precision.
+  Vec3 position_enu_m = 3;
+  Vec3 velocity_enu_mps = 4;
+  double bounding_radius_m = 5;
+}
+
+message StationTargetProjection {
+  string station_id = 1;
+  string target_id = 2;
+  OcclusionStatus occlusion_status = 3;
+  optional Vec2 projected_centroid_px = 4;
+  optional double projected_diagonal_px = 5;
+  optional double range_m = 6;
+}
+
+message TruthFrame {
+  string world_frame_id = 1;
+  int64 experiment_time_ns = 2;
+  uint64 step_index = 3;
+  repeated TargetTruth targets = 4;
+  repeated StationTargetProjection projections = 5;
+}
+
+message ScoreMetric {
+  string name = 1;
+  optional double value = 2;
+  string unit = 3;
+}
+
+// Compact evaluation update pushed by Scorer back to V-Switch for optional Viewer display.
+message ScoreEvent {
+  string run_id = 1;
+  int64 experiment_time_ns = 2;
+  uint64 matched_count = 3;
+  uint64 unmatched_count = 4;
+  uint64 unevaluable_count = 5;
+  optional double mean_error = 6;
+  optional double rmse = 7;
+  optional double max_error = 8;
+  string error_unit = 9;
+  repeated ScoreMetric extra_metrics = 10;
+}
+
+message TestFrameworkMessage {
+  uint64 sequence_no = 1;
+  oneof payload {
+    TruthFrame truth_frame = 10;
+    ScoreEvent score_event = 11;
+  }
+}

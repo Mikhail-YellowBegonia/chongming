@@ -1,0 +1,166 @@
+syntax = "proto3";
+
+package chongming.v1;
+
+// Right-handed ENU world coordinates (east, north, up) in meters.
+// Camera coordinates are right, down, forward; pixel (0, 0) is top-left pixel center.
+// All timestamps are signed 64-bit nanoseconds.
+
+message Vec2 {
+  double x = 1;
+  double y = 2;
+}
+
+message Vec3 {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+}
+
+// Row-major 2x2 matrix (length must be 4).
+message Mat2 {
+  repeated double values = 1;
+}
+
+// Row-major 3x3 matrix (length must be 9).
+message Mat3 {
+  repeated double values = 1;
+}
+
+// Row-major 6x6 matrix (length must be 36).
+message Mat6 {
+  repeated double values = 1;
+}
+
+enum CameraRole {
+  CAMERA_ROLE_UNSPECIFIED = 0;
+  CAMERA_ROLE_MAIN = 1;
+  CAMERA_ROLE_AUXILIARY = 2;
+}
+
+enum PixelFormat {
+  PIXEL_FORMAT_UNSPECIFIED = 0;
+  PIXEL_FORMAT_GRAY8 = 1;
+  PIXEL_FORMAT_RGB8 = 2;
+  PIXEL_FORMAT_BGR8 = 3;
+  PIXEL_FORMAT_YUV420P = 4;
+  PIXEL_FORMAT_YUV444P = 5;
+}
+
+enum VideoCodec {
+  VIDEO_CODEC_UNSPECIFIED = 0;
+  VIDEO_CODEC_RAW = 1;
+  VIDEO_CODEC_H264 = 2;
+}
+
+enum EventType {
+  EVENT_TYPE_UNSPECIFIED = 0;
+  EVENT_TYPE_RAY = 1;
+  EVENT_TYPE_CALIBRATION_STATE = 2;
+  EVENT_TYPE_DIAGNOSTIC = 3;
+}
+
+enum ProcessingStatus {
+  PROCESSING_STATUS_UNSPECIFIED = 0;
+  PROCESSING_STATUS_PROCESSED = 1;
+  PROCESSING_STATUS_FAILED = 2;
+}
+
+enum ScoreKind {
+  SCORE_KIND_UNSPECIFIED = 0;
+  SCORE_KIND_RANKING = 1;
+  SCORE_KIND_CALIBRATED_PROBABILITY = 2;
+}
+
+enum CalibrationHealth {
+  CALIBRATION_HEALTH_UNSPECIFIED = 0;
+  CALIBRATION_HEALTH_INITIALIZING = 1;
+  CALIBRATION_HEALTH_VALID = 2;
+  CALIBRATION_HEALTH_FROZEN = 3;
+  CALIBRATION_HEALTH_STALE = 4;
+  CALIBRATION_HEALTH_RECOVERING = 5;
+  CALIBRATION_HEALTH_INVALID = 6;
+}
+
+enum CalibrationUsage {
+  CALIBRATION_USAGE_UNSPECIFIED = 0;
+  CALIBRATION_USAGE_VALID = 1;
+  CALIBRATION_USAGE_FROZEN = 2;
+  CALIBRATION_USAGE_STALE = 3;
+}
+
+enum FusionStatus {
+  FUSION_STATUS_UNSPECIFIED = 0;
+  FUSION_STATUS_LOCATED = 1;
+  FUSION_STATUS_GEOMETRY_DEGENERATE = 2;
+  FUSION_STATUS_ASSOCIATION_AMBIGUOUS = 3;
+  FUSION_STATUS_INSUFFICIENT_STATIONS = 4;
+  FUSION_STATUS_NO_CANDIDATE_IN_VOLUME = 5;
+  FUSION_STATUS_REJECTED_INPUT = 6;
+}
+
+enum TrackLifecycle {
+  TRACK_LIFECYCLE_UNSPECIFIED = 0;
+  TRACK_LIFECYCLE_TENTATIVE = 1;
+  TRACK_LIFECYCLE_CONFIRMED = 2;
+  TRACK_LIFECYCLE_COASTING = 3;
+  TRACK_LIFECYCLE_DELETED = 4;
+}
+
+enum ComponentRole {
+  COMPONENT_ROLE_UNSPECIFIED = 0;
+  COMPONENT_ROLE_PRODUCER = 1;
+  COMPONENT_ROLE_EDGE = 2;
+  COMPONENT_ROLE_CENTER = 3;
+  COMPONENT_ROLE_SCORER = 4;
+  COMPONENT_ROLE_VIEWER = 5;
+}
+
+message ProcessingTime {
+  string clock_domain_id = 1;
+  int64 time_ns = 2;
+}
+
+message TimeInterval {
+  string clock_domain_id = 1;
+  int64 start_ns = 2;
+  optional int64 end_ns = 3;
+}
+
+message CaptureTime {
+  string clock_domain_id = 1;
+  int64 exposure_start_ns = 2;
+  int64 exposure_end_ns = 3;
+  int64 clock_uncertainty_ns = 4;
+  string rolling_shutter_model = 5;
+}
+
+message EventId {
+  string station_id = 1;
+  string station_session_id = 2;
+  uint64 sequence_no = 3;
+}
+
+message EventEnvelope {
+  string schema_version = 1;
+  EventType event_type = 2;
+  string station_id = 3;
+  string station_session_id = 4;
+  uint64 sequence_no = 5;
+  string station_config_digest = 6;
+}
+
+message FrameRef {
+  string station_id = 1;
+  string station_session_id = 2;
+  CameraRole camera_role = 3;
+  string frame_id = 4;
+}
+
+message ScoreDefinition {
+  string definition_id = 1;
+  ScoreKind kind = 2;
+  optional double minimum = 3;
+  optional double maximum = 4;
+  optional string cross_station_comparison_group = 5;
+}

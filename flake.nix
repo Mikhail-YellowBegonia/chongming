@@ -40,12 +40,13 @@
             pkgs.nixfmt
             pkgs.prettier
             pkgs.ruff
+            pkgs.rustfmt
             pkgs.git
           ];
           text = ''
             exec ${lib.getExe pkgs.treefmt} --config-file ${./treefmt.toml} "$@"
           '';
-          meta.description = "Format the project with nixfmt, Ruff and Prettier";
+          meta.description = "Format the project with nixfmt, Ruff, rustfmt and Prettier";
         };
 
       # Test-scene assets that are not in Git. Each archive is produced by
@@ -110,6 +111,11 @@
                   pkgs.godot_4_7
                   pkgs.ffmpeg
                   pkgs.ruff
+                  pkgs.rustc
+                  pkgs.cargo
+                  pkgs.rustfmt
+                  pkgs.clippy
+                  pkgs.protobuf
                   pkgs.git
                   treefmt
                 ]
@@ -130,6 +136,11 @@
                 pkgs.python312
                 pkgs.uv
                 pkgs.ruff
+                pkgs.rustc
+                pkgs.cargo
+                pkgs.rustfmt
+                pkgs.clippy
+                pkgs.protobuf
                 pkgs.git
                 treefmt
               ];

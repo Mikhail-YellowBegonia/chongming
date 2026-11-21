@@ -1,0 +1,316 @@
+syntax = "proto3";
+
+package chongming.v1;
+
+import "chongming/v1/common.proto";
+
+// Online business messages shared by Edge, Center, V-Switch, and Scorer.
+// Truth and generation parameters are strictly excluded from this file.
+
+message SessionHello {
+  string protocol_version = 1;
+  ComponentRole role = 2;
+  string instance_id = 3;
+  string session_id = 4;
+  repeated string station_ids = 5;
+}
+
+message SessionAck {
+  bool accepted = 1;
+  string reason = 2;
+  string run_id = 3;
+}
+
+message CameraIntrinsics {
+  uint32 image_width_px = 1;
+  uint32 image_height_px = 2;
+  Mat3 matrix_px = 3;
+}
+
+message CameraDistortion {
+  string model = 1;
+  repeated double coefficients = 2;
+}
+
+message CameraModel {
+  CameraIntrinsics intrinsics = 1;
+  CameraDistortion distortion = 2;
+}
+
+message GeodeticAnchor {
+  string anchor_id = 1;
+  string datum = 2;
+  string datum_epoch = 3;
+  double latitude_deg = 4;
+  double longitude_deg = 5;
+  double height_m = 6;
+  string height_reference = 7;
+}
+
+message RigidTransform {
+  Mat3 rotation_a_from_b = 1;
+  Vec3 translation_a_m = 2;
+}
+
+message InstallationStateRef {
+  string station_id = 1;
+  string config_digest = 2;
+  string state_version = 3;
+}
+
+message InstallationUncertainty {
+  InstallationStateRef state_ref = 1;
+  Mat3 position_covariance_enu_m2 = 2;
+  Mat3 orientation_covariance_enu_rad2 = 3;
+  Mat3 fixed_extrinsic_covariance_aux_rad2 = 4;
+  string measurement_source = 5;
+}
+
+message StationConfig {
+  string station_id = 1;
+  string config_version = 2;
+  string config_digest = 3;
+  string world_frame_id = 4;
+  GeodeticAnchor geodetic_anchor = 5;
+  Vec3 main_camera_position_enu_m = 6;
+  Mat3 baseline_orientation_enu_from_main = 7;
+  CameraModel main_camera = 8;
+  CameraModel auxiliary_camera = 9;
+  Mat3 fixed_rotation_aux_from_main = 10;
+  optional RigidTransform full_rigid_transform_aux_from_main = 11;
+  string reference_scene_version = 12;
+  InstallationUncertainty installation_uncertainty = 13;
+}
+
+// Video packet sent from V-Switch to Edge (or from Producer to V-Switch).
+message FramedVideoPacket {
+  string station_id = 1;
+  string station_session_id = 2;
+  CameraRole camera_role = 3;
+  string frame_id = 4;
+  uint64 frame_index = 5;
+  CaptureTime capture_time = 6;
+  string station_config_digest = 7;
+  uint32 width_px = 8;
+  uint32 height_px = 9;
+  VideoCodec codec = 10;
+  PixelFormat pixel_format = 11;
+  uint32 row_stride_bytes = 12;
+  bool is_keyframe = 13;
+  bytes payload = 14;
+}
+
+message Observation2D {
+  FrameRef main_frame_ref = 1;
+  CaptureTime capture_time = 2;
+  Vec2 centroid_px = 3;
+  optional Mat2 centroid_covariance_px2 = 4;
+  double detection_score = 5;
+  ScoreDefinition detection_score_definition = 6;
+  optional string local_track_id = 7;
+  optional double track_quality = 8;
+  optional ScoreDefinition track_quality_definition = 9;
+}
+
+message DetectionBatch {
+  FrameRef main_frame_ref = 1;
+  CaptureTime capture_time = 2;
+  ProcessingStatus processing_status = 3;
+  repeated Observation2D observations = 4;
+  repeated string reason_codes = 5;
+  // Decoded-frame SHA-256 hex digest (per D7).
+  string decoded_pixel_sha256 = 6;
+  // Separate timing counters (per D3b) so decode cost is never conflated with CV cost.
+  uint64 decode_duration_ns = 7;
+  uint64 cv_duration_ns = 8;
+}
+
+message CalibrationSolutionRef {
+  string station_id = 1;
+  string station_session_id = 2;
+  string solution_id = 3;
+}
+
+message CalibrationQuality {
+  string source = 1;
+  uint32 matched_reference_count = 2;
+  optional double reprojection_rmse_px = 3;
+  optional double angular_residual_rad = 4;
+  repeated string reason_codes = 5;
+  optional double rotation_only_parallax_px = 6;
+}
+
+message CalibrationSolution {
+  CalibrationSolutionRef solution_ref = 1;
+  string station_config_digest = 2;
+  string world_frame_id = 3;
+  CaptureTime reference_capture_time = 4;
+  ProcessingTime accepted_time = 5;
+  TimeInterval valid_interval = 6;
+  Vec3 main_camera_position_enu_m = 7;
+  Mat3 rotation_enu_from_main = 8;
+  Mat3 correction_covariance_enu_rad2 = 9;
+  CalibrationQuality quality = 10;
+}
+
+message CalibrationState {
+  string station_id = 1;
+  string station_session_id = 2;
+  string station_config_digest = 3;
+  uint64 state_version = 4;
+  CalibrationHealth health = 5;
+  optional CalibrationSolutionRef solution_ref = 6;
+  ProcessingTime observed_at = 7;
+  optional ProcessingTime last_trusted_time = 8;
+  optional TimeInterval usable_interval = 9;
+  repeated string reason_codes = 10;
+}
+
+message CalibrationStateEvent {
+  EventEnvelope envelope = 1;
+  CalibrationState state = 2;
+  optional CalibrationSolution solution = 3;
+}
+
+message CalibrationUseEvidence {
+  uint64 state_version = 1;
+  ProcessingTime last_trusted_time = 2;
+  ProcessingTime solution_accepted_time = 3;
+  CaptureTime solution_reference_capture_time = 4;
+  TimeInterval solution_valid_interval = 5;
+  TimeInterval usable_interval = 6;
+  repeated string reason_codes = 7;
+}
+
+message RayUncertainty {
+  string model = 1;
+  Vec3 tangent_u_enu_unit = 2;
+  Vec3 tangent_v_enu_unit = 3;
+  Mat2 independent_angular_covariance_rad2 = 4;
+  Mat3 independent_origin_covariance_m2 = 5;
+  InstallationStateRef shared_installation_state_ref = 6;
+  CalibrationSolutionRef shared_calibration_solution_ref = 7;
+}
+
+message RayEvent {
+  EventEnvelope envelope = 1;
+  string frame_id = 2;
+  optional string local_track_id = 3;
+  CaptureTime capture_time = 4;
+  string world_frame_id = 5;
+  CalibrationSolutionRef calibration_solution_ref = 6;
+  CalibrationUsage calibration_usage = 7;
+  CalibrationUseEvidence calibration_evidence = 8;
+  Vec3 ray_origin_enu_m = 9;
+  Vec3 ray_direction_enu_unit = 10;
+  RayUncertainty uncertainty = 11;
+  double detection_score = 12;
+  ScoreDefinition detection_score_definition = 13;
+  optional double track_quality = 14;
+  optional ScoreDefinition track_quality_definition = 15;
+  repeated string quality_flags = 16;
+}
+
+message DiagnosticEvent {
+  EventEnvelope envelope = 1;
+  optional FrameRef related_frame_ref = 2;
+  optional CaptureTime capture_time = 3;
+  string category = 4;
+  repeated string reason_codes = 5;
+  optional string related_config_ref = 6;
+  optional CalibrationSolutionRef related_calibration_ref = 7;
+}
+
+message MeasurementRef {
+  string center_session_id = 1;
+  string measurement_id = 2;
+}
+
+message MotionAlignmentEvidence {
+  string prior_track_id = 1;
+  Vec3 velocity_enu_mps = 2;
+  Mat3 velocity_projection_s = 3;
+  Mat3 independent_position_covariance_enu_m2 = 4;
+}
+
+message FusionMeasurement {
+  string center_session_id = 1;
+  string measurement_id = 2;
+  string clock_domain_id = 3;
+  string world_frame_id = 4;
+  int64 reference_time_ns = 5;
+  int64 support_exposure_span_ns = 6;
+  FusionStatus status = 7;
+  optional Vec3 position_enu_m = 8;
+  optional Mat3 conditional_position_covariance_enu_m2 = 9;
+  optional MotionAlignmentEvidence motion_alignment = 10;
+  repeated EventId supporting_ray_event_ids = 11;
+  repeated string supporting_station_ids = 12;
+  repeated double residuals_m = 13;
+  optional double geometry_condition = 14;
+  optional double minimum_intersection_angle_rad = 15;
+  optional string association_hypothesis_id = 16;
+  repeated string reason_codes = 17;
+}
+
+message TrackEvent {
+  string center_session_id = 1;
+  string track_id = 2;
+  string clock_domain_id = 3;
+  string world_frame_id = 4;
+  int64 event_time_ns = 5;
+  TrackLifecycle lifecycle = 6;
+  optional Vec3 position_enu_m = 7;
+  optional Vec3 velocity_enu_mps = 8;
+  optional Mat6 conditional_state_covariance = 9;
+  repeated MeasurementRef source_measurement_refs = 10;
+  repeated string reason_codes = 11;
+}
+
+// Optional heavy diagnostic payload stored in a separate voxels.pb.zst stream.
+message SparseVoxelCell {
+  int32 ix = 1;
+  int32 iy = 2;
+  int32 iz = 3;
+  uint32 station_votes = 4;
+}
+
+message SparseVoxelGrid {
+  string center_session_id = 1;
+  string world_frame_id = 2;
+  int64 window_start_ns = 3;
+  int64 window_end_ns = 4;
+  Vec3 min_enu_m = 5;
+  Vec3 step_enu_m = 6;
+  repeated SparseVoxelCell cells = 7;
+}
+
+// Explicit completion watermark reported by Edge and Center.
+// V-Switch uses this to gate lock-step dispatch without changing business logic.
+message ProgressReport {
+  ComponentRole source_role = 1;
+  string source_id = 2;
+  string session_id = 3;
+  int64 completed_time_ns = 4;
+  uint64 completed_sequence_no = 5;
+  bool finite_end_reached = 6;
+}
+
+message BusMessage {
+  uint64 bus_sequence_no = 1;
+  int64 sent_wall_time_ns = 2;
+  oneof payload {
+    SessionHello session_hello = 10;
+    SessionAck session_ack = 11;
+    StationConfig station_config = 12;
+    FramedVideoPacket video_packet = 13;
+    DetectionBatch detection_batch = 14;
+    CalibrationStateEvent calibration_state = 15;
+    RayEvent ray_event = 16;
+    DiagnosticEvent diagnostic_event = 17;
+    FusionMeasurement fusion_measurement = 18;
+    TrackEvent track_event = 19;
+    ProgressReport progress_report = 20;
+    SparseVoxelGrid sparse_voxel_grid = 21;
+  }
+}
