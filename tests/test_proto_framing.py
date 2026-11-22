@@ -123,3 +123,32 @@ class ProtoFramingTests(unittest.TestCase):
         self.assertEqual(restored.experiment_time_ns, precise_ns)
         self.assertEqual(restored.targets[0].position_enu_m.x, precise_x)
         self.assertEqual(restored.targets[0].body_aabb_diagonal_m, 13.0)
+
+    def test_test_framework_message_embeds_bus_message_roundtrip(self) -> None:
+        wrapped = truth_pb2.TestFrameworkMessage(
+            sequence_no=9,
+            bus_message=online_pb2.BusMessage(
+                bus_sequence_no=3,
+                sent_wall_time_ns=1_763_784_000_000_000_001,
+                session_hello=online_pb2.SessionHello(
+                    protocol_version="chongming.v1",
+                    role=common_pb2.COMPONENT_ROLE_SCORER,
+                    instance_id="scorer-1",
+                    session_id="run-1",
+                ),
+            ),
+        )
+        encoded = encode_length_prefixed(wrapped)
+        decoded = read_length_prefixed(io.BytesIO(encoded), truth_pb2.TestFrameworkMessage)
+        assert decoded is not None
+        self.assertEqual(decoded.sequence_no, 9)
+        self.assertEqual(decoded.WhichOneof("payload"), "bus_message")
+        self.assertEqual(decoded.bus_message.WhichOneof("payload"), "session_hello")
+        self.assertEqual(
+            decoded.bus_message.session_hello.role,
+            common_pb2.COMPONENT_ROLE_SCORER,
+        )
+        self.assertEqual(
+            decoded.bus_message.sent_wall_time_ns,
+            1_763_784_000_000_000_001,
+        )
