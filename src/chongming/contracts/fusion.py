@@ -102,6 +102,12 @@ class EmptyActiveStationPolicy(StrEnum):
     ADVANCE_WITH_MAPPED_EVENT_CLOCK = "advance_with_mapped_event_clock"
 
 
+class StreamTimeoutBasis(StrEnum):
+    PROCESSING_TIME = "processing_time"
+    CAPTURE_TIME = "capture_time"
+    DISABLED = "disabled"
+
+
 class WindowDisposition(StrEnum):
     BUFFERED = "buffered"
     PROGRESS_RECORDED = "progress_recorded"
@@ -260,6 +266,7 @@ class EventWindowPolicy:
     exclude_offline_stations: bool
     watermark_strategy: WatermarkStrategy
     no_active_station_policy: EmptyActiveStationPolicy
+    timeout_basis: StreamTimeoutBasis = StreamTimeoutBasis.PROCESSING_TIME
 
 
 @dataclass(frozen=True, kw_only=True)
