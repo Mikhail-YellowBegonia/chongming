@@ -233,7 +233,13 @@ def _capture_time_to_proto(value: m.CaptureTime) -> common_pb2.CaptureTime:
     )
 
 
-def _capture_time_from_proto(msg: common_pb2.CaptureTime) -> m.CaptureTime:
+def camera_role_from_proto(value: common_pb2.CameraRole) -> m.CameraRole:
+    """Convert a Protobuf CameraRole enum into CameraRole."""
+    return _from_pb_enum(value, _CAMERA_ROLE_FROM_PB, "CameraRole")
+
+
+def capture_time_from_proto(msg: common_pb2.CaptureTime) -> m.CaptureTime:
+    """Convert a Protobuf CaptureTime message into CaptureTime."""
     if msg.exposure_end_ns < msg.exposure_start_ns:
         raise ValueError("CaptureTime exposure_end_ns must be >= exposure_start_ns")
     if msg.clock_uncertainty_ns < 0:
@@ -245,6 +251,10 @@ def _capture_time_from_proto(msg: common_pb2.CaptureTime) -> m.CaptureTime:
         clock_uncertainty_ns=int(msg.clock_uncertainty_ns),
         rolling_shutter_model=_non_empty(msg.rolling_shutter_model, "rolling_shutter_model"),
     )
+
+
+def _capture_time_from_proto(msg: common_pb2.CaptureTime) -> m.CaptureTime:
+    return capture_time_from_proto(msg)
 
 
 def _event_id_to_proto(value: m.EventId) -> common_pb2.EventId:

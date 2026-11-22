@@ -20,57 +20,62 @@ from chongming.scenarios.serialization import _decode
 from chongming.uncertainty import covariance_factor
 
 
+def validate_device_policy(policy: d.DevicePolicy) -> None:
+    """Validate one explicit device policy configuration."""
+    validate_detection_policy(policy.detection)
+    validate_tracking_policy(policy.tracking)
+    if isinstance(policy.detection, d.FrameDifferencePolicy) != isinstance(
+        policy.tracking, d.KalmanTrackingPolicy
+    ):
+        raise ValueError("detector and tracker algorithm families must agree")
+    calibration = policy.calibration
+    if (
+        calibration.estimator_id != OPENCV_CALIBRATION_ESTIMATOR_ID
+        or type(calibration.update_period_ns) is not int
+        or calibration.update_period_ns < 0
+        or type(calibration.stale_after_ns) is not int
+        or calibration.stale_after_ns < 0
+        or type(calibration.recovery_success_count) is not int
+        or calibration.recovery_success_count <= 0
+        or type(calibration.minimum_reference_count) is not int
+        or calibration.minimum_reference_count < 4
+        or not math.isfinite(calibration.maximum_reprojection_rmse_px)
+        or calibration.maximum_reprojection_rmse_px <= 0
+        or (
+            calibration.maximum_rotation_only_parallax_px is not None
+            and (
+                not math.isfinite(calibration.maximum_rotation_only_parallax_px)
+                or calibration.maximum_rotation_only_parallax_px < 0
+            )
+        )
+    ):
+        raise ValueError("invalid explicitly configured device calibration policy")
+    rays = policy.rays
+    if rays.uncertainty_model_id != "tangent_gaussian_v1":
+        raise ValueError("unsupported device ray uncertainty model")
+    has_residual = False
+    for covariance, label in (
+        (rays.fallback_centroid_covariance_px2, "fallback_centroid_covariance_px2"),
+        (rays.unmodelled_high_frequency_jitter_covariance_rad2, "residual_jitter_rad2"),
+        (rays.unmodelled_relative_flex_covariance_rad2, "residual_flex_rad2"),
+    ):
+        if covariance is not None:
+            factor = covariance_factor(covariance, 2, label)
+            has_residual |= label != "fallback_centroid_covariance_px2" and bool(factor.any())
+    if has_residual and (
+        not isinstance(rays.residual_independence_basis, str)
+        or not rays.residual_independence_basis.strip()
+    ):
+        raise ValueError("nonzero residuals require an explicit independence basis")
+
+
 def validate_device_policies(
     policies: dict[m.StationId, d.DevicePolicy], configs: tuple[m.StationConfig, ...]
 ) -> None:
     if set(policies) != {config.station_id for config in configs}:
         raise ValueError("device policy station IDs must match scenario station IDs exactly")
     for policy in policies.values():
-        validate_detection_policy(policy.detection)
-        validate_tracking_policy(policy.tracking)
-        if isinstance(policy.detection, d.FrameDifferencePolicy) != isinstance(
-            policy.tracking, d.KalmanTrackingPolicy
-        ):
-            raise ValueError("detector and tracker algorithm families must agree")
-        calibration = policy.calibration
-        if (
-            calibration.estimator_id != OPENCV_CALIBRATION_ESTIMATOR_ID
-            or type(calibration.update_period_ns) is not int
-            or calibration.update_period_ns < 0
-            or type(calibration.stale_after_ns) is not int
-            or calibration.stale_after_ns < 0
-            or type(calibration.recovery_success_count) is not int
-            or calibration.recovery_success_count <= 0
-            or type(calibration.minimum_reference_count) is not int
-            or calibration.minimum_reference_count < 4
-            or not math.isfinite(calibration.maximum_reprojection_rmse_px)
-            or calibration.maximum_reprojection_rmse_px <= 0
-            or (
-                calibration.maximum_rotation_only_parallax_px is not None
-                and (
-                    not math.isfinite(calibration.maximum_rotation_only_parallax_px)
-                    or calibration.maximum_rotation_only_parallax_px < 0
-                )
-            )
-        ):
-            raise ValueError("invalid explicitly configured device calibration policy")
-        rays = policy.rays
-        if rays.uncertainty_model_id != "tangent_gaussian_v1":
-            raise ValueError("unsupported device ray uncertainty model")
-        has_residual = False
-        for covariance, label in (
-            (rays.fallback_centroid_covariance_px2, "fallback_centroid_covariance_px2"),
-            (rays.unmodelled_high_frequency_jitter_covariance_rad2, "residual_jitter_rad2"),
-            (rays.unmodelled_relative_flex_covariance_rad2, "residual_flex_rad2"),
-        ):
-            if covariance is not None:
-                factor = covariance_factor(covariance, 2, label)
-                has_residual |= label != "fallback_centroid_covariance_px2" and bool(factor.any())
-        if has_residual and (
-            not isinstance(rays.residual_independence_basis, str)
-            or not rays.residual_independence_basis.strip()
-        ):
-            raise ValueError("nonzero residuals require an explicit independence basis")
+        validate_device_policy(policy)
 
 
 def load_device_policies(
