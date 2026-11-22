@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import math
 from pathlib import Path
 from typing import Any
@@ -10,40 +9,83 @@ from typing import Any
 import cv2
 import numpy as np
 
-from chongming.evaluation import DetectionMetrics, annotate, target_pixel_gates
+from chongming_proto.online import common_pb2
+from chongming_proto.truth import truth_pb2
+from chongming_scorer.metrics import DetectionMetrics, annotate, target_pixel_gates
+from chongming_scorer.storage import TestScenePackage
 
 
 class WorkbenchScoring:
     """Keep actual recorded exposure times and score cached measured outputs."""
 
-    def __init__(self, recording: Path, station: str, video: Path, warmup_s: float = 15):
-        self.frames: list[dict[str, Any]] = []
-        metadata = {}
-        for line in (recording / "online.jsonl").read_text().splitlines():
-            for f in json.loads(line)["frames"]:
-                if f["station_id"] == station and f["camera_role"] == "main":
-                    if (recording / f["path"]).resolve() != video.resolve():
-                        raise ValueError("workbench video does not match station main stream")
-                    metadata[f["frame_id"]] = f
-        for line in (recording / "truth.jsonl").read_text().splitlines():
-            for truth in json.loads(line)["camera_frames"]:
-                if truth["frame_id"] in metadata:
-                    f = metadata[truth["frame_id"]]
-                    if truth["capture_time"] != f["capture_time"]:
-                        raise ValueError("scoring truth and frame exposure differ")
-                    self.frames.append({"metadata": f, "truth": truth})
-        self.frames.sort(key=lambda f: f["metadata"]["frame_index"])
-        if not self.frames or [f["metadata"]["frame_index"] for f in self.frames] != list(
-            range(len(self.frames))
-        ):
+    def __init__(
+        self,
+        scene_dir: Path,
+        station: str,
+        video: Path,
+        warmup_s: float = 15.0,
+    ) -> None:
+        scene = TestScenePackage.open(scene_dir, verify_hashes=False)
+        entries: list[truth_pb2.FrameIndexEntry] = []
+        for entry in scene.iter_frame_index():
+            if entry.station_id == station and entry.camera_role == common_pb2.CAMERA_ROLE_MAIN:
+                if (scene.root / entry.video_relpath).resolve() != video.resolve():
+                    raise ValueError("workbench video does not match station main stream")
+                entries.append(entry)
+        entries.sort(key=lambda item: item.frame_index)
+        if not entries or [item.frame_index for item in entries] != list(range(len(entries))):
             raise ValueError("scoring requires complete contiguous station truth")
-        self.times = [
-            (
-                f["metadata"]["capture_time"]["exposure_start_ns"]
-                + f["metadata"]["capture_time"]["exposure_end_ns"]
+
+        wanted_ids = {entry.frame_id: entry for entry in entries}
+        projections_by_frame: dict[str, list[truth_pb2.StationTargetProjection]] = {
+            frame_id: [] for frame_id in wanted_ids
+        }
+        for truth_frame in scene.iter_truth_frames():
+            for proj in truth_frame.projections:
+                if proj.HasField("frame_id") and proj.frame_id in wanted_ids:
+                    entry = wanted_ids[proj.frame_id]
+                    entry_ns = (
+                        entry.capture_time.exposure_start_ns + entry.capture_time.exposure_end_ns
+                    ) // 2
+                    if truth_frame.experiment_time_ns != entry_ns:
+                        raise ValueError("scoring truth and frame exposure differ")
+                    projections_by_frame[proj.frame_id].append(proj)
+
+        self.frames: list[dict[str, Any]] = []
+        for entry in entries:
+            targets_list: list[dict[str, Any]] = []
+            for proj in projections_by_frame[entry.frame_id]:
+                diag = (
+                    proj.projected_diagonal_px if proj.HasField("projected_diagonal_px") else None
+                )
+                side = diag / math.sqrt(2.0) if diag is not None else None
+                targets_list.append(
+                    {
+                        "truth_object_id": proj.target_id,
+                        "projection": {
+                            "center_in_field_of_view": (
+                                proj.occlusion_status != truth_pb2.OCCLUSION_STATUS_OUT_OF_FOV
+                            ),
+                            "centroid_px": [
+                                proj.projected_centroid_px.x,
+                                proj.projected_centroid_px.y,
+                            ]
+                            if proj.HasField("projected_centroid_px")
+                            else None,
+                        },
+                        "projected_width_px": side,
+                        "projected_height_px": side,
+                    }
+                )
+            self.frames.append(
+                {
+                    "metadata": {"frame_id": entry.frame_id, "frame_index": entry.frame_index},
+                    "truth": {"targets": targets_list},
+                }
             )
-            / 2e9
-            for f in self.frames
+        self.times = [
+            (entry.capture_time.exposure_start_ns + entry.capture_time.exposure_end_ns) / 2e9
+            for entry in entries
         ]
         self.warmup_s = warmup_s
         self.predictions: dict[int, list[tuple[float, ...]]] = {}
@@ -64,7 +106,7 @@ class WorkbenchScoring:
             assert self.cached_result is not None
             return self.cached_result
         metric = DetectionMetrics(floor, "px")
-        current = {}
+        current: dict[str, Any] = {}
         for i in sorted(self.predictions):
             if i > index:
                 continue
@@ -76,7 +118,7 @@ class WorkbenchScoring:
                 if t["projection"]["center_in_field_of_view"]
             }
             warmup = self.times[i] - self.times[0] < self.warmup_s
-            row = {
+            row: dict[str, Any] = {
                 "eligible_targets_px": targets,
                 "target_gates_px": gates,
                 "predictions_px": self.predictions[i],
@@ -107,7 +149,7 @@ class WorkbenchScoring:
         label = (
             "WARMUP - excluded"
             if current["warmup_excluded"]
-            else (f"Frame TP:{current['tp']} FP:{current['fp']} FN:{current['fn']}")
+            else f"Frame TP:{current['tp']} FP:{current['fp']} FN:{current['fn']}"
         )
         for y, text in (
             (115, f"Score k={k:.2f} floor={floor:g}px | {label}"),
@@ -121,14 +163,14 @@ class WorkbenchScoring:
 
     def panel(
         self,
-        image: np.ndarray,
+        image: np.ndarray[Any, Any],
         index: int,
         floor: float,
         k: float,
         candidates: list[tuple[float, float]],
         point: tuple[int, int] | None = None,
         timings: dict[str, float] | None = None,
-    ) -> np.ndarray:
+    ) -> np.ndarray[Any, Any]:
         """Native diagnostics with explicit recall denominators and local pixel detail."""
         current, total = self.score(index, floor, k)
         panel = np.full((600, 900, 3), 24, dtype=np.uint8)
@@ -166,10 +208,10 @@ class WorkbenchScoring:
         text("Nearest output may belong to another target. One-to-one matching applies.", 375)
         text("Click the image to inspect pixels; Space=pause; A/D=step; S=save policy", 400)
         if point is None:
-            target = next((t for t in current["targets"] if not t["matched"]), None)
+            missed = next((t for t in current["targets"] if not t["matched"]), None)
             point = (
-                tuple(round(v) for v in target["xy"])
-                if target
+                tuple(round(v) for v in missed["xy"])
+                if missed
                 else (image.shape[1] // 2, image.shape[0] // 2)
             )
         x = max(0, min(image.shape[1] - 1, point[0]))

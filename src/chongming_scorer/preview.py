@@ -1,16 +1,18 @@
-"""Build a self-contained, sampled visual audit of an existing device evaluation."""
+"""Build a self-contained, sampled visual audit of scored edge frames."""
 
 from __future__ import annotations
 
-import argparse
 import base64
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import cv2
 
-from chongming.evaluation import annotate
+from chongming_proto.online import common_pb2
+from chongming_scorer.metrics import annotate
+from chongming_scorer.storage import TestScenePackage
 
 
 def select_frames(records: list[dict[str, Any]], per_group: int) -> list[dict[str, Any]]:
@@ -27,36 +29,40 @@ def select_frames(records: list[dict[str, Any]], per_group: int) -> list[dict[st
     return sorted(chosen.values(), key=lambda r: (r["station_id"], r["time_ns"]))
 
 
-def build(evaluation: Path, output: Path, per_group: int = 8) -> int:
+def build_html_audit(
+    scene: TestScenePackage,
+    frame_records: Sequence[dict[str, Any]],
+    aggregate_summary: dict[str, Any],
+    output: Path,
+    *,
+    per_group: int = 8,
+) -> int:
+    """Render a standalone HTML audit from a Test Scene and scored frame records."""
     if per_group < 1:
         raise ValueError("per_group must be positive")
     if output.exists():
         raise FileExistsError(output)
-    summary = json.loads((evaluation / "summary.json").read_text())
-    if summary["status"] != "complete" or summary["format"] != "device-evaluation-v1":
-        raise ValueError("a complete device evaluation is required")
-    recording = Path(summary["recording"])
-    records = [
-        r
-        for line in (evaluation / "frames.jsonl").read_text().splitlines()
-        if not (r := json.loads(line))["warmup_excluded"]
-    ]
-    selected = select_frames(records, per_group)
+    scored = [dict(r) for r in frame_records if not r["warmup_excluded"]]
+    selected = select_frames(scored, per_group)
     by_id = {r["frame_id"]: r for r in selected}
-    metadata = {}
-    for line in (recording / "online.jsonl").read_text().splitlines():
-        for frame in json.loads(line)["frames"]:
-            if frame["frame_id"] in by_id:
-                metadata[frame["frame_id"]] = frame
-    if set(metadata) != set(by_id):
-        raise ValueError("preview frames missing from recording")
-    gate = summary["aggregate"]["gate"]
-    for path in sorted({m["path"] for m in metadata.values()}):
-        source = (recording / path).resolve()
-        if not source.is_relative_to(recording.resolve()):
-            raise ValueError("video path escapes recording")
+    index_entries = {
+        entry.frame_id: entry
+        for entry in scene.iter_frame_index()
+        if entry.camera_role == common_pb2.CAMERA_ROLE_MAIN and entry.frame_id in by_id
+    }
+    if set(index_entries) != set(by_id):
+        raise ValueError("preview frames missing from Test Scene frame index")
+    gate = float(aggregate_summary["gate"])
+    for relpath in sorted({entry.video_relpath for entry in index_entries.values()}):
+        source = (scene.root / relpath).resolve()
+        if not (scene.root / relpath).is_file():
+            raise FileNotFoundError(f"missing video file: {scene.root / relpath}")
         capture = cv2.VideoCapture(str(source))
-        wanted = {m["frame_index"]: by_id[key] for key, m in metadata.items() if m["path"] == path}
+        wanted = {
+            entry.frame_index: by_id[key]
+            for key, entry in index_entries.items()
+            if entry.video_relpath == relpath
+        }
         try:
             for index in range(max(wanted) + 1):
                 ok, frame = capture.read()
@@ -65,16 +71,16 @@ def build(evaluation: Path, output: Path, per_group: int = 8) -> int:
                 if index in wanted:
                     row = wanted[index]
                     row.update(annotate(row, gate))
-                    ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
-                    if not ok:
+                    ok_enc, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                    if not ok_enc:
                         raise RuntimeError("JPEG encoding failed")
                     row["image"] = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
         finally:
             capture.release()
-    payload = {"frames": selected, "summary": summary["aggregate"], "gate": gate}
+    payload = {"frames": selected, "summary": aggregate_summary, "gate": gate}
     encoded = json.dumps(payload, allow_nan=False).replace("<", "\\u003c")
     output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("x") as handle:
+    with output.open("x", encoding="utf-8") as handle:
         handle.write(HTML.replace("__PAYLOAD__", encoded))
     return len(selected)
 
@@ -106,17 +112,3 @@ const n=++token;const next=new Image();next.onload=()=>{if(n!==token)return;img=
 function reset(){frames=D.frames.filter(f=>f.station_id===$('station').value&&($('filter').value==='all'||f[$('filter').value]>0));index=0;$('slider').max=Math.max(0,frames.length-1);show();}
 $('station').onchange=reset;$('filter').onchange=reset;$('prev').onclick=()=>{index--;show();};$('next').onclick=()=>{index++;show();};$('slider').oninput=()=>{index=Number($('slider').value);show();};$('overlay').onchange=()=>{if(current)paint();};canvas.onclick=e=>{const r=canvas.getBoundingClientRect();cx=(e.clientX-r.left)*canvas.width/r.width;cy=(e.clientY-r.top)*canvas.height/r.height;crop();};document.onkeydown=e=>{if(e.key==='ArrowRight')$('next').click();if(e.key==='ArrowLeft')$('prev').click();};reset();
 </script></html>"""
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("evaluation", type=Path)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--per-group", type=int, default=8)
-    args = parser.parse_args()
-    count = build(args.evaluation, args.output, args.per_group)
-    print(f"Wrote {count} sampled frames to {args.output}")
-
-
-if __name__ == "__main__":
-    main()

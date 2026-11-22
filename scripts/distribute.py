@@ -32,6 +32,7 @@ REQUIRED_SOURCE = {
     "docs/introduction.md",
     "docs/development.md",
     "docs/design.md",
+    "docs/protocol.md",
     "scripts/distribute.py",
     "scripts/check_installed.py",
     "tests/test_distribution.py",
@@ -125,10 +126,11 @@ def read_wheel(path: Path) -> dict[str, bytes]:
 
 
 def check_wheel(sources: dict[str, bytes], wheel: dict[str, bytes], version: str) -> None:
+    wheel_prefixes = ("chongming/", "chongming_proto/", "chongming_scorer/")
     package = {
         name.removeprefix("src/"): data
         for name, data in sources.items()
-        if name.startswith("src/chongming/")
+        if name.startswith(tuple(f"src/{prefix}" for prefix in wheel_prefixes))
     }
     require_files(
         package,
@@ -143,10 +145,17 @@ def check_wheel(sources: dict[str, bytes], wheel: dict[str, bytes], version: str
             "chongming/rendering/godot/ui.gd",
             "chongming/rendering/godot/visualization.gd",
             "chongming/rendering/godot/evaluation.gd",
+            "chongming_proto/__init__.py",
+            "chongming_proto/py.typed",
+            "chongming_proto/online.py",
+            "chongming_proto/truth.py",
+            "chongming_scorer/__init__.py",
+            "chongming_scorer/py.typed",
+            "chongming_scorer/cli.py",
         },
         "Source package",
     )
-    installed = {name: data for name, data in wheel.items() if name.startswith("chongming/")}
+    installed = {name: data for name, data in wheel.items() if name.startswith(wheel_prefixes)}
     if package != installed:
         raise ValueError("Wheel package contents differ from the sdist")
     metadata_root = f"chongming-{version}.dist-info/"
@@ -158,7 +167,7 @@ def check_wheel(sources: dict[str, bytes], wheel: dict[str, bytes], version: str
         },
         "Wheel",
     )
-    if any(not name.startswith(("chongming/", metadata_root)) for name in wheel):
+    if any(not name.startswith((*wheel_prefixes, metadata_root)) for name in wheel):
         raise ValueError("Unexpected top-level wheel contents")
     metadata = BytesParser().parsebytes(wheel[f"{metadata_root}METADATA"])
     if (metadata["Name"], metadata["Version"]) != ("chongming", version):

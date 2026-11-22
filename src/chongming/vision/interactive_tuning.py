@@ -7,7 +7,7 @@ import math
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, Protocol, TypedDict
 
 import cv2
 import numpy as np
@@ -20,9 +20,31 @@ from chongming.vision.motion import FrameDiffConfig, FrameDifferenceStage
 from chongming.vision.occupancy import OccupancyConfig, OccupancyFilterStage
 from chongming.vision.pipeline import PipelineContext, Stage, process_stages
 from chongming.vision.preprocess import PreprocessConfig, PreprocessStage
-from chongming.vision.scoring import WorkbenchScoring
 from chongming.vision.tracking import TrackingConfig, TrackingStage
 from chongming.vision.vibe import VibeConfig, VibeStage, seed_native
+
+
+class ScoringOverlay(Protocol):
+    """Optional privileged scoring overlay injected externally by test tooling."""
+
+    times: list[float]
+
+    def reset(self) -> None: ...
+
+    def observe(self, index: int, predictions: list[tuple[float, ...]]) -> None: ...
+
+    def draw(self, image: Any, index: int, floor: float, k: float) -> None: ...
+
+    def panel(
+        self,
+        image: np.ndarray[Any, Any],
+        index: int,
+        floor: float,
+        k: float,
+        candidates: list[tuple[float, float]],
+        point: tuple[int, int] | None = None,
+        timings: dict[str, float] | None = None,
+    ) -> np.ndarray[Any, Any]: ...
 
 
 class TuningParameters(TypedDict):
@@ -80,7 +102,7 @@ class InteractivePipeline:
         self.export_directory: Path | None = None
         self.export_index = 0
         self.zoom_point: tuple[int, int] | None = None
-        self.scoring: WorkbenchScoring | None = None
+        self.scoring: ScoringOverlay | None = None
         self.tracking_config = TrackingConfig()
         self.maximum_area: float | None = None
         self.apply_closing = False
@@ -675,7 +697,7 @@ def main() -> None:
         parser.error("--policy and --station must be supplied together")
     parameters: tuple[d.FrameDifferencePolicy, d.KalmanTrackingPolicy] | None = None
     if args.policy:
-        from chongming.evaluate_recording import ImagePolicy
+        from chongming.contracts.device import ImagePolicy
         from chongming.modules.workbench_device import (
             validate_workbench_detection,
             validate_workbench_tracking,
@@ -696,8 +718,11 @@ def main() -> None:
         parameters = (profile.detection, profile.tracking)
     if args.export_directory and not args.policy:
         parser.error("--export-directory requires --policy and --station")
-    if args.recording and not args.station:
-        parser.error("--recording requires --station and --policy")
+    if args.recording:
+        parser.error(
+            "--recording overlay moved to chongming_scorer.workbench; "
+            "business packages must not import test-framework truth scoring"
+        )
     if not 0 < args.size_k <= 2 or abs(args.size_k * 100 - round(args.size_k * 100)) > 1e-8:
         parser.error("--size-k must be 0.01..2 in 0.01 steps")
     if not 1 <= args.gate_px <= 100 or args.gate_px != round(args.gate_px):
@@ -709,16 +734,6 @@ def main() -> None:
         workbench.export_directory = args.export_directory
         if parameters is not None:
             workbench.configure(*parameters)
-        if args.recording:
-            workbench.scoring = WorkbenchScoring(args.recording, args.station, args.video)
-            if len(workbench.scoring.frames) != len(workbench.frames):
-                raise ValueError("video and scoring frame counts differ")
-            cv2.createTrackbar(
-                "Score k x100", "Controls", round(args.size_k * 100), 200, lambda x: None
-            )
-            cv2.createTrackbar(
-                "Score Floor px", "Controls", round(args.gate_px), 100, lambda x: None
-            )
         if not 0 <= args.start_frame < len(workbench.frames):
             parser.error("--start-frame outside video")
         workbench.current_frame_idx = args.start_frame

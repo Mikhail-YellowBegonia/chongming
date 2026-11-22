@@ -2,8 +2,14 @@
 
 import unittest
 
-from chongming.evaluation import DetectionMetrics, annotate, target_pixel_gates
-from chongming.vision.scoring import WorkbenchScoring
+from chongming_proto.truth import truth_pb2
+from chongming_scorer.metrics import (
+    DetectionMetrics,
+    annotate,
+    projection_pixel_gates,
+    target_pixel_gates,
+)
+from chongming_scorer.workbench import WorkbenchScoring
 
 
 class DynamicScoringTests(unittest.TestCase):
@@ -20,6 +26,19 @@ class DynamicScoringTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             target_pixel_gates([target], 10, 0.5)
         self.assertEqual(target_pixel_gates([target], 10, None), {"plane": 10})
+
+        proj = truth_pb2.StationTargetProjection(
+            station_id="s1",
+            target_id="plane",
+            occlusion_status=truth_pb2.OCCLUSION_STATUS_VISIBLE,
+            projected_diagonal_px=100.0,
+        )
+        self.assertEqual(projection_pixel_gates([proj], 10.0, 0.5), {"plane": 50.0})
+        self.assertEqual(projection_pixel_gates([proj], 10.0, 0.01), {"plane": 10.0})
+        proj.ClearField("projected_diagonal_px")
+        with self.assertRaises(ValueError):
+            projection_pixel_gates([proj], 10.0, 0.5)
+        self.assertEqual(projection_pixel_gates([proj], 10.0, None), {"plane": 10.0})
 
     def test_wing_hit_and_duplicate_use_each_targets_gate(self) -> None:
         targets = {"plane": (0.0, 0.0), "small": (100.0, 0.0)}

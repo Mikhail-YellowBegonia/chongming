@@ -2,8 +2,8 @@
 
 import unittest
 
-from chongming.evaluation import annotate
-from chongming.evaluation_preview import select_frames
+from chongming_scorer.metrics import annotate
+from chongming_scorer.preview import select_frames
 
 
 class EvaluationPreviewTests(unittest.TestCase):

@@ -70,12 +70,13 @@ uv run --frozen chongming-center --scenario scenarios/center_clean.json \
 
 ## Commands and modes
 
-| Command             | Purpose                                       |
-| ------------------- | --------------------------------------------- |
-| `chongming-preview` | Scene preview, editing, and browser workbench |
-| `chongming-center`  | Configuration checks and modes 2, 3, and 4    |
-| `chongming-scene`   | Finite scene export with evidence             |
-| `chongming-osm`     | Offline OSM import                            |
+| Command             | Purpose                                                   |
+| ------------------- | --------------------------------------------------------- |
+| `chongming-preview` | Scene preview, editing, and browser workbench             |
+| `chongming-center`  | Configuration checks and modes 2, 3, and 4                |
+| `chongming-scene`   | Finite scene export with evidence                         |
+| `chongming-osm`     | Offline OSM import                                        |
+| `chongming-scorer`  | Independent `Test Scene` / `Run Output` verifier & scorer |
 
 Use `--help` for the complete option list. `python -m chongming` starts the preview.
 
@@ -370,6 +371,27 @@ uv run --frozen chongming-preview --recording results/recording-demo --playback-
 Keep the authoring file, referenced assets, online/truth/timing files, static truth, video files, and `video.json`. `--recording` excludes `--scenario` and camera-offset editing. Playback does not restore complete center events, still starts Godot, and can switch to live generation at the end. `chongming-center` has no recording input option.
 
 For a run with no video export, add `--no-video` to `chongming-scene`. `--render-every N` samples pixels from each camera's exposure sequence without dropping logical exposures.
+
+### Issue #49 Stage 1 packages (`chongming_proto` and `chongming_scorer`)
+
+Immutable `Test Scene` and independent `Run Output` `.pb.zst` packages (specified in [Wire Protocol and Storage Specification](protocol.md)) are scored by the independent `chongming_scorer` package (`chongming-scorer`), replacing the legacy `chongming.evaluate_*` and `chongming.benchmark_*` entry points:
+
+```sh
+uv run --frozen python scripts/generate_proto.py --check
+uv run --frozen chongming-scorer verify-scene <test-scene-dir>
+uv run --frozen chongming-scorer inspect-run <run-output-dir>
+uv run --frozen chongming-scorer score --scene <test-scene-dir> --run <run-output-dir>
+```
+
+To migrate a legacy JSONL recording or run output into the Stage 1 directory layout for offline verification:
+
+```sh
+uv run --frozen python scripts/convert_legacy_recording.py test-scene \
+  --recording <legacy-recording-dir> --output <test-scene-dir> --link-video
+uv run --frozen python scripts/convert_legacy_recording.py run-output \
+  --scene <test-scene-dir> --output <run-output-dir> --mode integrated \
+  --device-dir <legacy-device-dir> --center-dir <legacy-center-dir>
+```
 
 ## Checks
 

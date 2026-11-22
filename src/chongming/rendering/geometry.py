@@ -371,3 +371,28 @@ def mesh_segment_may_intersect(
         if entry > exit:
             return False
     return True
+
+
+def model_aabb_diagonal(geometry: GeometrySpec) -> float:
+    """Body-space model AABB diagonal in metres, independent of target pose."""
+    geometry = resolve_geometry(geometry)
+    if isinstance(geometry, SphereGeometry):
+        diagonal = 2 * geometry.radius_m * math.sqrt(3)
+    elif isinstance(geometry, BoxGeometry):
+        diagonal = 2 * math.sqrt(sum(v * v for v in geometry.half_extents_body_m))
+    elif isinstance(geometry, TriangleMeshGeometry):
+        diagonal = math.sqrt(
+            sum(
+                (
+                    max(v[i] for v in geometry.vertices_body_m)
+                    - min(v[i] for v in geometry.vertices_body_m)
+                )
+                ** 2
+                for i in range(3)
+            )
+        )
+    else:
+        raise TypeError(f"unsupported target model geometry: {type(geometry).__name__}")
+    if not math.isfinite(diagonal) or diagonal <= 0:
+        raise ValueError("target AABB diagonal must be finite and positive")
+    return diagonal

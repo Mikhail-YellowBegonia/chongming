@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import shutil
 import time
 from collections import Counter
@@ -27,9 +28,21 @@ from chongming.modules.fusion_geometry import (
 )
 from chongming.modules.fusion_motion import midpoint_span
 from chongming.modules.fusion_postintersection import candidate_groups
-from chongming.performance import distribution
 from chongming.scenarios.run import _json, _provenance
 from chongming.scenarios.serialization import _decode
+
+
+def _distribution(values: list[float]) -> dict[str, Any]:
+    if not values:
+        return {"samples": 0, "mean": None, "p50": None, "p95": None, "max": None}
+    ordered = sorted(values)
+    return {
+        "samples": len(ordered),
+        "mean": math.fsum(ordered) / len(ordered),
+        "p50": ordered[math.ceil(len(ordered) * 0.5) - 1],
+        "p95": ordered[math.ceil(len(ordered) * 0.95) - 1],
+        "max": ordered[-1],
+    }
 
 
 def intersect(
@@ -192,7 +205,7 @@ def diagnose(recording: Path, output: Path) -> dict[str, Any]:
             "raw_solution": "unweighted line least-squares diagnostic; rejected solutions are not production measurements",
             "windows": windows,
             "counts": dict(counts),
-            "intersection_ms": distribution(timings),
+            "intersection_ms": _distribution(timings),
             "provenance": _provenance(),
         }
         (output / "summary.json").write_text(json.dumps(report, indent=2) + "\n")

@@ -1,4 +1,4 @@
-"""Offline, responsibility-gated detection metrics. Truth never enters algorithms."""
+"""Offline, responsibility-gated detection and center size-band metrics."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
+
+from chongming_proto.truth import truth_pb2
 
 
 def assignment(costs: list[list[float]], columns: int) -> list[int]:
@@ -158,14 +160,14 @@ class DetectionMetrics:
 
 
 def target_pixel_gates(
-    targets: list[dict[str, Any]], floor_px: float, size_k: float | None
+    targets: Sequence[Mapping[str, Any]], floor_px: float, size_k: float | None
 ) -> dict[str, float]:
     """Use recorded projected-envelope dimensions, never pixel area as a length."""
     if not math.isfinite(floor_px) or floor_px <= 0:
         raise ValueError("pixel floor must be finite and positive")
     if size_k is not None and (not math.isfinite(size_k) or size_k <= 0):
         raise ValueError("size k must be finite and positive")
-    gates = {}
+    gates: dict[str, float] = {}
     for target in targets:
         if not target["projection"]["center_in_field_of_view"]:
             continue
@@ -186,7 +188,37 @@ def target_pixel_gates(
     return gates
 
 
-def annotate(record: dict[str, Any], gate: float) -> dict[str, Any]:
+def projection_pixel_gates(
+    projections: Sequence[truth_pb2.StationTargetProjection],
+    floor_px: float,
+    size_k: float | None,
+) -> dict[str, float]:
+    """Compute per-target pixel gates from Protobuf StationTargetProjection records."""
+    if not math.isfinite(floor_px) or floor_px <= 0:
+        raise ValueError("pixel floor must be finite and positive")
+    if size_k is not None and (not math.isfinite(size_k) or size_k <= 0):
+        raise ValueError("size k must be finite and positive")
+    gates: dict[str, float] = {}
+    for projection in projections:
+        if projection.occlusion_status == truth_pb2.OCCLUSION_STATUS_UNSPECIFIED:
+            raise ValueError(
+                f"projection for target {projection.target_id!r} has unspecified occlusion_status"
+            )
+        if projection.occlusion_status == truth_pb2.OCCLUSION_STATUS_OUT_OF_FOV:
+            continue
+        gate = floor_px
+        if size_k is not None:
+            if not projection.HasField("projected_diagonal_px"):
+                raise ValueError("dynamic scoring requires positive recorded projection diagonal")
+            diagonal = projection.projected_diagonal_px
+            if not math.isfinite(diagonal) or diagonal <= 0:
+                raise ValueError("dynamic scoring requires positive recorded projection diagonal")
+            gate = max(floor_px, size_k * diagonal)
+        gates[projection.target_id] = gate
+    return gates
+
+
+def annotate(record: Mapping[str, Any], gate: float) -> dict[str, Any]:
     """Reconstruct the evaluator's exact assignment, without changing its scores."""
     ids = sorted(record["eligible_targets_px"])
     targets = [record["eligible_targets_px"][key] for key in ids]
@@ -217,3 +249,93 @@ def annotate(record: dict[str, Any], gate: float) -> dict[str, Any]:
             for i, p in enumerate(predictions)
         ],
     }
+
+
+class CenterSizeMetrics:
+    """Independent maximum-cardinality assignments at each explicit threshold."""
+
+    def __init__(self, precise_k: float, miss_k: float) -> None:
+        if not 0 < precise_k < miss_k < math.inf:
+            raise ValueError("require finite 0 < precise_k < miss_k")
+        self.precise_k = precise_k
+        self.miss_k = miss_k
+        self.precise = DetectionMetrics(1, "m")
+        self.coarse = DetectionMetrics(1, "m")
+
+    def add(
+        self,
+        predictions: list[tuple[float, ...]],
+        targets: dict[str, tuple[float, ...]],
+        diagonals: dict[str, float],
+        ignored: list[tuple[float, ...]],
+        ignored_diagonals: list[float],
+    ) -> dict[str, Any]:
+        strict_gates = {key: self.precise_k * diagonals[key] for key in targets}
+        # Exactly miss_k diagonals is off target, not an intermediate match.
+        coarse_gates = {key: math.nextafter(self.miss_k * diagonals[key], 0) for key in targets}
+        ignore_gates = [math.nextafter(self.miss_k * d, 0) for d in ignored_diagonals]
+        strict = self.precise.add(
+            predictions,
+            targets,
+            ignored=ignored,
+            target_gates=strict_gates,
+            ignored_gates=[self.precise_k * d for d in ignored_diagonals],
+        )
+        coarse = self.coarse.add(
+            predictions,
+            targets,
+            ignored=ignored,
+            target_gates=coarse_gates,
+            ignored_gates=ignore_gates,
+        )
+        fine_annotations = annotate(
+            {
+                "eligible_targets_px": targets,
+                "predictions_px": predictions,
+                "target_gates_px": strict_gates,
+            },
+            1,
+        )
+        coarse_annotations = annotate(
+            {
+                "eligible_targets_px": targets,
+                "predictions_px": predictions,
+                "target_gates_px": coarse_gates,
+            },
+            1,
+        )
+        fine_hits = {t["id"] for t in fine_annotations["targets"] if t["matched"]}
+        coarse_hits = {t["id"] for t in coarse_annotations["targets"] if t["matched"]}
+        diagnostics = {}
+        for key, target in targets.items():
+            nearest = min((math.dist(p, target) for p in predictions), default=math.inf)
+            diagnostics[key] = {
+                "position_enu_m": target,
+                "aabb_diagonal_m": diagonals[key],
+                "precise_hit": key in fine_hits,
+                "within_miss_gate": key in coarse_hits,
+                "nearest_output_error_m": nearest if math.isfinite(nearest) else None,
+                "nearest_relative_error": nearest / diagonals[key]
+                if math.isfinite(nearest)
+                else None,
+            }
+        return {
+            "precise": strict,
+            "within_miss_gate": coarse,
+            "targets": diagnostics,
+            "predictions_enu_m": predictions,
+            "intermediate_matches": coarse["tp"] - strict["tp"],
+            "completely_off_target_outputs": coarse["false_alarms"],
+        }
+
+    def summary(self) -> dict[str, Any]:
+        fine, coarse = self.precise.summary(), self.coarse.summary()
+        return {
+            "precise_k": self.precise_k,
+            "miss_k": self.miss_k,
+            "precise": fine,
+            "within_miss_gate": coarse,
+            "intermediate_matches": coarse["tp"] - fine["tp"],
+            "no_match_within_miss_gate": coarse["fn"],
+            "completely_off_target_outputs": coarse["false_alarms"],
+        }

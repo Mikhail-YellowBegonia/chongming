@@ -218,6 +218,12 @@ class DevicePolicy:
     rays: RayGenerationPolicy
 
 
+@dataclass(frozen=True)
+class ImagePolicy:
+    detection: DetectionPolicy | FrameDifferencePolicy
+    tracking: Tracking2DPolicy | KalmanTrackingPolicy
+
+
 @dataclass(frozen=True, kw_only=True)
 class DeviceFrameResult:
     completed_at: ProcessingTime

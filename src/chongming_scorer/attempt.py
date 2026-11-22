@@ -1,4 +1,4 @@
-"""Durable progress and cooperative limits for recorded device evaluations."""
+"""Durable progress and cooperative limits for bounded evaluation attempts."""
 
 from __future__ import annotations
 

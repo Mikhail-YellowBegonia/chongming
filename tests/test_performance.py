@@ -2,73 +2,45 @@
 
 from __future__ import annotations
 
-import json
 import math
-import tempfile
 import unittest
-from pathlib import Path
 from typing import Any
 
-from chongming.performance import distribution, report
+from chongming_proto.online import common_pb2, online_pb2
+from chongming_scorer.performance import distribution, summarize_edge_timings
 from tests import test_godot_visualization as transport
 
 
 class PerformanceTests(unittest.TestCase):
-    def fixture(self, directory: str) -> Path:
-        root = Path(directory)
-        (root / "manifest.json").write_text(json.dumps({"code_revision": "fixture"}))
-        (root / "summary.json").write_text(json.dumps({"status": "complete", "counts": {}}))
-        rows = [
-            {
-                "sample_time": {"time_ns": index * 1_000_000_000},
-                "stages": {"total_ms": total, "render_ms": total - 1, "gpu_ms": 1},
-                "evidence_ms": 2,
-            }
-            for index, total in enumerate((8, 18))
-        ]
-        (root / "timing.jsonl").write_text("\n".join(map(json.dumps, rows)))
-        return root
-
-    def test_nested_stages_are_not_added_and_missing_center_is_explicit(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            result = report(self.fixture(directory))
-        self.assertEqual(result["metrics_ms"]["step_wall_ms"]["mean"], 15)
-        self.assertEqual(result["measured_step_wall_s"], 0.03)
-        self.assertAlmostEqual(result["throughput_steps_per_s"], 2 / 0.03)
-        self.assertEqual(result["recorded_span_s"], 1)
-        self.assertIn("center_ms", result["unavailable"])
-        self.assertNotIn("center_ms", result["metrics_ms"])
-
     def test_percentiles_use_nearest_rank_and_empty_is_not_zero(self) -> None:
         self.assertEqual(distribution(list(range(1, 21)))["p95"], 19)
         self.assertIsNone(distribution([])["mean"])
         self.assertEqual(distribution([])["samples"], 0)
 
-    def test_invalid_evidence_is_rejected(self) -> None:
-        for invalid in (-1, math.inf, math.nan, True, "3"):
-            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as directory:
-                root = self.fixture(directory)
-                row = {
-                    "sample_time": {"time_ns": 0},
-                    "stages": {"total_ms": invalid},
-                    "evidence_ms": 0,
-                }
-                (root / "timing.jsonl").write_text(json.dumps(row))
-                with self.assertRaises(
-                    TypeError if isinstance(invalid, (bool, str)) else ValueError
-                ):
-                    report(root)
+    def test_invalid_durations_are_rejected(self) -> None:
+        for invalid in (-1.0, math.inf, math.nan):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                distribution([1.0, invalid])
 
-    def test_empty_run_and_center_samples_stay_separate(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.fixture(directory)
-            (root / "timing.jsonl").write_text("")
-            (root / "center-output.jsonl").write_text(json.dumps({"center_ms": 4}))
-            result = report(root)
-        self.assertIsNone(result["throughput_steps_per_s"])
-        self.assertIsNone(result["recorded_span_s"])
-        self.assertEqual(result["metrics_ms"]["center_ms"]["samples"], 1)
-        self.assertNotIn("center_ms", result["unavailable"])
+    def test_edge_timings_separate_decode_and_cv_latencies(self) -> None:
+        batches = [
+            online_pb2.DetectionBatch(
+                main_frame_ref=common_pb2.FrameRef(station_id="s1", frame_id="f1"),
+                decode_duration_ns=12_000_000,
+                cv_duration_ns=3_000_000,
+            ),
+            online_pb2.DetectionBatch(
+                main_frame_ref=common_pb2.FrameRef(station_id="s2", frame_id="f2"),
+                decode_duration_ns=8_000_000,
+                cv_duration_ns=5_000_000,
+            ),
+        ]
+        report = summarize_edge_timings(batches)
+        self.assertEqual(report["aggregate"]["decode_ms"]["mean"], 10.0)
+        self.assertEqual(report["aggregate"]["cv_ms"]["mean"], 4.0)
+        self.assertEqual(report["aggregate"]["total_algorithm_ms"], report["aggregate"]["cv_ms"])
+        self.assertEqual(report["stations"]["s1"]["decode_ms"]["max"], 12.0)
+        self.assertEqual(report["stations"]["s2"]["cv_ms"]["max"], 5.0)
 
 
 @unittest.skipUnless(transport.GODOT, "Godot is required")

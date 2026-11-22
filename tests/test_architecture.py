@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import ast
 import inspect
+import shutil
+import subprocess
+import sys
 import unittest
 from collections import Counter
 from dataclasses import fields, is_dataclass
@@ -317,6 +320,106 @@ class ArchitectureStructureTests(unittest.TestCase):
                 _assert_pending_stubs(self, tree, {classname: {"pending"}})
                 with self.assertRaisesRegex(AssertionError, "pending stub must only raise"):
                     _assert_pending_stubs(self, tree, {classname: {"implemented"}})
+
+    def test_scorer_package_never_imports_chongming_business_package(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        scorer_dir = repo_root / "src" / "chongming_scorer"
+        for path in sorted(scorer_dir.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        self.assertFalse(
+                            alias.name == "chongming" or alias.name.startswith("chongming."),
+                            f"{path}: forbidden business import {alias.name!r}",
+                        )
+                elif isinstance(node, ast.ImportFrom) and node.module is not None:
+                    self.assertFalse(
+                        node.module == "chongming" or node.module.startswith("chongming."),
+                        f"{path}: forbidden business import from {node.module!r}",
+                    )
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys, chongming_scorer.cli; "
+                    "assert 'chongming' not in sys.modules, "
+                    "[m for m in sys.modules if m == 'chongming' or m.startswith('chongming.')]; "
+                    "assert not any(m.startswith('chongming.') for m in sys.modules)"
+                ),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(probe.returncode, 0)
+
+    def test_business_package_never_imports_truth_proto_or_scorer(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        business_dir = repo_root / "src" / "chongming"
+        forbidden_prefixes = (
+            "chongming_scorer",
+            "chongming_proto.truth",
+            "chongming_proto.v1.truth_pb2",
+        )
+        for path in sorted(business_dir.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        for prefix in forbidden_prefixes:
+                            self.assertFalse(
+                                alias.name == prefix or alias.name.startswith(prefix + "."),
+                                f"{path}: forbidden test-framework import {alias.name!r}",
+                            )
+                elif isinstance(node, ast.ImportFrom):
+                    module = node.module or ""
+                    for prefix in forbidden_prefixes:
+                        self.assertFalse(
+                            module == prefix or module.startswith(prefix + "."),
+                            f"{path}: forbidden test-framework import from {module!r}",
+                        )
+                    if module == "chongming_proto" or module.startswith("chongming_proto."):
+                        for alias in node.names:
+                            self.assertNotIn(
+                                alias.name,
+                                {"truth", "truth_pb2"},
+                                f"{path}: forbidden truth import {alias.name!r} from {module!r}",
+                            )
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys, chongming_proto.online; "
+                    "assert 'chongming_proto.truth' not in sys.modules; "
+                    "assert 'chongming_proto.v1.truth_pb2' not in sys.modules"
+                ),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_proto_bindings_register_expected_v1_messages(self) -> None:
+        from chongming_proto.online import common_pb2, online_pb2
+        from chongming_proto.truth import truth_pb2
+
+        self.assertTrue(hasattr(common_pb2, "CaptureTime"))
+        self.assertTrue(hasattr(online_pb2, "BusMessage"))
+        self.assertTrue(hasattr(online_pb2, "StationConfig"))
+        self.assertTrue(hasattr(truth_pb2, "FrameIndexEntry"))
+        self.assertTrue(hasattr(truth_pb2, "TruthFrame"))
+        self.assertTrue(hasattr(truth_pb2, "ScoreEvent"))
+        if shutil.which("protoc") is not None:
+            repo_root = Path(__file__).resolve().parents[1]
+            subprocess.run(
+                [sys.executable, str(repo_root / "scripts" / "generate_proto.py"), "--check"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
 
 
 if __name__ == "__main__":

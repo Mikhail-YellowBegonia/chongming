@@ -1,16 +1,22 @@
 """Center responsibility, physical-size bands and exposure-time evaluation schedule."""
 
-import json
 import math
 import tempfile
 import unittest
 from pathlib import Path
 
-from chongming.center_evaluation import CenterSizeMetrics, model_aabb_diagonal
 from chongming.contracts import scene as s
-from chongming.evaluate_center import evaluate
-from chongming.scenarios.serialization import save_compiled_scenario
-from tests.test_scene_rendering import test_scene
+from chongming.rendering.geometry import model_aabb_diagonal
+from chongming_proto.online import common_pb2, online_pb2
+from chongming_proto.truth import truth_pb2
+from chongming_scorer.metrics import CenterSizeMetrics
+from chongming_scorer.scorer import score_center_run
+from chongming_scorer.storage import (
+    RunOutputPackage,
+    RunOutputWriter,
+    TestScenePackage,
+    TestSceneWriter,
+)
 
 
 class CenterSizeEvaluationTests(unittest.TestCase):
@@ -57,84 +63,100 @@ class CenterSizeEvaluationTests(unittest.TestCase):
     def test_actual_exposure_schedule_not_window_midpoint_counts_empty_window(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            save_compiled_scenario(
-                test_scene(s.SphereGeometry(1), (5, 0, 30)), root / "scenario.json"
-            )
-            row = {
-                "batches": [
-                    {
-                        "window_update": {
-                            "sealed_windows": [
-                                {
-                                    "key": {"start_ns": 0, "end_ns": 1_000_000},
-                                    "reference_time_ns": 500_000,
-                                },
-                                {
-                                    "key": {"start_ns": 1_000_000, "end_ns": 2_000_000},
-                                    "reference_time_ns": 1_500_000,
-                                },
-                            ]
-                        }
-                    }
-                ],
-                "measurements": [
-                    {
-                        "measurement_id": "a",
-                        "reference_time_ns": 100_000,
-                        "status": "located",
-                        "position_enu_m": [5, 0, 30],
-                    }
-                ],
-            }
-            (root / "center-output.jsonl").write_text(json.dumps(row) + "\n")
-            (root / "center-input.jsonl").write_text(
-                "".join(
-                    json.dumps(
-                        {
-                            "progress": [
-                                {
-                                    "completed_capture_time": {
-                                        "exposure_start_ns": ns,
-                                        "exposure_end_ns": ns,
-                                    }
-                                }
-                            ]
-                        }
+            scene_dir = root / "scene"
+            run_dir = root / "run"
+            diagonal = model_aabb_diagonal(s.SphereGeometry(1))
+
+            with TestSceneWriter(
+                scene_dir,
+                scenario_id="size-eval",
+                world_frame_id="demo-enu",
+                clock_domain_id="demo-clock",
+                start_time_ns=0,
+                end_time_ns=2_000_000,
+                stations=[],
+            ) as scene_writer:
+                for step_index, ns in enumerate((100_000, 1_100_000)):
+                    scene_writer.add_truth_frame(
+                        truth_pb2.TruthFrame(
+                            world_frame_id="demo-enu",
+                            experiment_time_ns=ns,
+                            step_index=step_index,
+                            targets=[
+                                truth_pb2.TargetTruth(
+                                    target_id="target",
+                                    target_class="sphere",
+                                    position_enu_m=common_pb2.Vec3(x=5.0, y=0.0, z=30.0),
+                                    velocity_enu_mps=common_pb2.Vec3(),
+                                    bounding_radius_m=1.0,
+                                    body_aabb_diagonal_m=diagonal,
+                                )
+                            ],
+                            projections=[
+                                truth_pb2.StationTargetProjection(
+                                    station_id=station,
+                                    target_id="target",
+                                    occlusion_status=truth_pb2.OCCLUSION_STATUS_VISIBLE,
+                                )
+                                for station in ("s1", "s2")
+                            ],
+                        )
                     )
-                    + "\n"
-                    for ns in (100_000, 1_100_000)
+
+            scene = TestScenePackage.open(scene_dir)
+            with RunOutputWriter(
+                run_dir,
+                run_id="run-size",
+                mode="center",
+                test_scene_path=scene_dir,
+                test_scene_sha256=scene.content_sha256,
+            ) as run_writer:
+                run_writer.write_center_message(
+                    online_pb2.BusMessage(
+                        bus_sequence_no=1,
+                        fusion_measurement=online_pb2.FusionMeasurement(
+                            center_session_id="c1",
+                            measurement_id="a",
+                            clock_domain_id="demo-clock",
+                            world_frame_id="demo-enu",
+                            reference_time_ns=100_000,
+                            support_exposure_span_ns=0,
+                            status=common_pb2.FUSION_STATUS_LOCATED,
+                            position_enu_m=common_pb2.Vec3(x=5.0, y=0.0, z=30.0),
+                        ),
+                    )
                 )
-            )
-            report = evaluate(root, root / "report", size_k=0.7, miss_k=3)
+                for seq, ns in enumerate((100_000, 1_100_000), start=2):
+                    run_writer.write_center_message(
+                        online_pb2.BusMessage(
+                            bus_sequence_no=seq,
+                            progress_report=online_pb2.ProgressReport(
+                                source_role=common_pb2.COMPONENT_ROLE_CENTER,
+                                source_id="center",
+                                session_id="c1",
+                                completed_time_ns=ns,
+                                completed_sequence_no=seq - 1,
+                                finite_end_reached=(seq == 3),
+                            ),
+                        )
+                    )
+
+            run = RunOutputPackage.open(run_dir)
+            _, report, frames = score_center_run(scene, run, size_k=0.7, miss_k=3.0)
             self.assertEqual(report["metrics"]["precise"]["tp"], 1)
             self.assertEqual(report["metrics"]["precise"]["fn"], 1)
             self.assertEqual(report["metrics"]["precise"]["recall"], 0.5)
-            frames = [
-                json.loads(l) for l in (root / "report" / "frames.jsonl").read_text().splitlines()
-            ]
             self.assertEqual([r["reference_time_ns"] for r in frames], [100_000, 1_100_000])
-            three_station = evaluate(root, root / "three-station", size_k=0.7, minimum_stations=3)
+
+            _, three_station, _ = score_center_run(
+                scene, run, size_k=0.7, miss_k=3.0, minimum_stations=3
+            )
             self.assertEqual(three_station["minimum_stations"], 3)
             self.assertEqual(three_station["metrics"]["precise"]["fn"], 0)
-            after_warmup = evaluate(
-                root, root / "warmup-report", size_k=0.7, warmup_s=0.001, warmup_origin_ns=100_000
+
+            _, after_warmup, _ = score_center_run(
+                scene, run, size_k=0.7, miss_k=3.0, warmup_s=0.001, warmup_origin_ns=100_000
             )
             self.assertEqual(after_warmup["metrics"]["precise"]["frames"], 1)
             self.assertEqual(after_warmup["metrics"]["precise"]["fn"], 1)
             self.assertEqual(after_warmup["warmup_origin_ns"], 100_000)
-            row["diagnostic_raw_solutions"] = [
-                {
-                    "measurement_id": "raw/a",
-                    "reference_time_ns": 100_000,
-                    "position_enu_m": [5, 0, 30],
-                },
-                {
-                    "measurement_id": "raw/b",
-                    "reference_time_ns": 1_100_000,
-                    "position_enu_m": [5, 0, 30],
-                },
-            ]
-            (root / "center-output.jsonl").write_text(json.dumps(row) + "\n")
-            raw_report = evaluate(root, root / "raw-report", size_k=0.7, diagnostic_raw=True)
-            self.assertEqual(raw_report["metrics"]["precise"]["recall"], 1)
-            self.assertEqual(raw_report["prediction_source"], "diagnostic raw intersections")

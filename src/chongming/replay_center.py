@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -14,10 +15,22 @@ from chongming.contracts import development as d
 from chongming.contracts import fusion as f
 from chongming.contracts import model as m
 from chongming.contracts import scene as s
-from chongming.performance import distribution
 from chongming.reference import create_algorithm
 from chongming.scenarios.run import _json, _provenance
 from chongming.scenarios.serialization import _decode, load_compiled_scenario
+
+
+def _distribution(values: list[float]) -> dict[str, Any]:
+    if not values:
+        return {"samples": 0, "mean": None, "p50": None, "p95": None, "max": None}
+    ordered = sorted(values)
+    return {
+        "samples": len(ordered),
+        "mean": math.fsum(ordered) / len(ordered),
+        "p50": ordered[math.ceil(len(ordered) * 0.5) - 1],
+        "p95": ordered[math.ceil(len(ordered) * 0.95) - 1],
+        "max": ordered[-1],
+    }
 
 
 def replay(
@@ -162,7 +175,7 @@ def replay(
             "steps": count,
             "input": "ordinary recorded clean virtual packets, no truth supplied to algorithm",
             "evaluation_provenance": provenance,
-            "center_process_ms": distribution(samples),
+            "center_process_ms": _distribution(samples),
         }
         (output / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
     return report

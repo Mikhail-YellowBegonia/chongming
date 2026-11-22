@@ -12,39 +12,30 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-import cv2
-
 from chongming.composition.development import development_run
 from chongming.contracts import development as d
 from chongming.contracts import device as dev
 from chongming.contracts import fusion as f
 from chongming.contracts import model as m
 from chongming.contracts import scene as s
-from chongming.evaluate_recording import evaluate as evaluate_device
 from chongming.modules.device import EventSequencerModule
 from chongming.modules.rays import RayGenerationModule
-from chongming.performance import distribution
 from chongming.reference import create_postintersection_algorithm
 from chongming.scenarios.run import _json, _provenance
 from chongming.scenarios.serialization import _decode, load_compiled_scenario
 
 
-def record_observations(recording: Path, policy: Path, output: Path) -> dict[str, Any]:
-    output.mkdir(parents=True, exist_ok=False)
-    with (output / "observations.jsonl").open("x") as observations:
-
-        def save(frame: m.CameraFrame, values: tuple[m.Observation2D, ...]) -> None:
-            observations.write(_json({"frame_id": frame.frame_id, "observations": values}) + "\n")
-
-        return evaluate_device(
-            recording,
-            policy,
-            output / "evaluation",
-            gate_px=10,
-            size_k=0.5,
-            warmup_s=15,
-            observation_sink=save,
-        )
+def _distribution(values: list[float]) -> dict[str, Any]:
+    if not values:
+        return {"samples": 0, "mean": None, "p50": None, "p95": None, "max": None}
+    ordered = sorted(values)
+    return {
+        "samples": len(ordered),
+        "mean": math.fsum(ordered) / len(ordered),
+        "p50": ordered[math.ceil(len(ordered) * 0.5) - 1],
+        "p95": ordered[math.ceil(len(ordered) * 0.95) - 1],
+        "max": ordered[-1],
+    }
 
 
 def replay(
@@ -324,12 +315,12 @@ def replay(
             "pixel_error_model": "explicit uncalibrated isotropic experiment assumption",
             "calibration": "recorded known calibration remapped to image sessions; auxiliary calibration algorithm not evaluated",
             "residual_jitter_flex": "explicit zero conditional on unperturbed recorded camera poses",
-            "center_process_ms": distribution(timings),
-            "center_process_ms_scored": distribution(scored_timings),
+            "center_process_ms": _distribution(timings),
+            "center_process_ms_scored": _distribution(scored_timings),
             "stage_ms_scored": {
-                name: distribution(values) for name, values in scored_stage_samples.items()
+                name: _distribution(values) for name, values in scored_stage_samples.items()
             },
-            "stage_ms": {name: distribution(values) for name, values in stage_samples.items()},
+            "stage_ms": {name: _distribution(values) for name, values in stage_samples.items()},
             "timing_scope": "center processing only; window stages exclude ingress outside sealed-window pipeline; serialization, disk IO, scoring, image decoding and device processing excluded",
             "provenance": _provenance(),
         }
@@ -340,18 +331,15 @@ def replay(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("recording", type=Path)
-    parser.add_argument("--policy", type=Path, required=True)
+    parser.add_argument("--observations", type=Path, required=True)
     parser.add_argument("--asset-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--pixel-sigma-px", type=float, required=True)
     args = parser.parse_args()
-    cv2.setNumThreads(1)
-    args.output.mkdir(parents=True, exist_ok=False)
-    record_observations(args.recording, args.policy, args.output / "device")
     replay(
         args.recording,
-        args.output / "device/observations.jsonl",
-        args.output / "center",
+        args.observations,
+        args.output,
         asset_root=args.asset_root,
         pixel_sigma_px=args.pixel_sigma_px,
     )

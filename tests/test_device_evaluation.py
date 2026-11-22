@@ -16,10 +16,19 @@ import numpy as np
 
 from chongming.contracts import device as d
 from chongming.contracts import model as m
-from chongming.evaluate_recording import ImagePolicy
-from chongming.evaluation import DetectionMetrics, assignment
+from chongming.contracts.device import ImagePolicy
 from chongming.modules.workbench_device import image_modules
 from chongming.scenarios.serialization import _decode
+from chongming_proto.online import common_pb2, online_pb2
+from chongming_proto.truth import truth_pb2
+from chongming_scorer.metrics import DetectionMetrics, assignment
+from chongming_scorer.scorer import score_center_run, score_edge_run
+from chongming_scorer.storage import (
+    RunOutputPackage,
+    RunOutputWriter,
+    TestScenePackage,
+    TestSceneWriter,
+)
 from tests.test_detection import frame
 
 PROFILE = Path(__file__).resolve().parents[1] / "scenarios/policies/hannover_vision_start.json"
@@ -135,156 +144,235 @@ class WorkbenchDeviceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _decode(raw, ImagePolicy)
 
+    def test_bundled_policy_profiles_decode_and_construct_workbench_modules(self) -> None:
+        from chongming.modules.workbench_device import WorkbenchMotionModule
+
+        policies_dir = Path(__file__).resolve().parents[1] / "scenarios" / "policies"
+        for policy_path in sorted(policies_dir.glob("*.json")):
+            with self.subTest(policy=policy_path.name):
+                decoded = _decode(json.loads(policy_path.read_text()), dict[str, ImagePolicy])
+                self.assertTrue(decoded)
+                for station_id, station_policy in decoded.items():
+                    detector, _ = image_modules(
+                        station_policy.detection,
+                        station_policy.tracking,
+                        m.StationId(station_id),
+                        m.SessionId("policy-check"),
+                    )
+                    self.assertIsInstance(detector, WorkbenchMotionModule)
+
 
 class RecordingEvaluationTests(unittest.TestCase):
     def test_warmup_trains_all_frames_but_fov_responsibility_scores_only_later_frames(self) -> None:
-        import hashlib
-        from unittest.mock import patch
-
-        from chongming.evaluate_recording import evaluate
-
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "video").mkdir()
-            (root / "video/main.mp4").write_bytes(b"fixture decoder input")
-            digest = hashlib.sha256(b"fixture decoder input").hexdigest()
-            (root / "manifest.json").write_text(json.dumps({"code_revision": "fixture"}))
-            (root / "video.json").write_text(
-                json.dumps(
-                    {
-                        "streams": {
-                            "camera": {"path": "video/main.mp4", "frame_count": 3, "sha256": digest}
-                        }
-                    }
-                )
-            )
-            policy_path = root / "policy.json"
-            policy_path.write_text(
-                json.dumps({"station-west": json.loads(PROFILE.read_text())["station-west"]})
-            )
-            online, truth = [], []
-            for index, ns in enumerate((0, 15_000_000_000, 16_000_000_000)):
-                capture = {
-                    "clock_domain_id": "fixture",
-                    "clock_uncertainty_ns": 0,
-                    "exposure_start_ns": ns,
-                    "exposure_end_ns": ns,
-                    "rolling_shutter_model": "none",
-                }
-                metadata = {
-                    "station_id": "station-west",
-                    "session_id": "fixture",
-                    "camera_role": "main",
-                    "frame_id": str(index),
-                    "capture_time": capture,
-                    "path": "video/main.mp4",
-                    "frame_index": index,
-                    "height_px": 32,
-                    "width_px": 32,
-                    "camera_config_ref": "fixture",
-                }
-                online.append({"sample_time": {"time_ns": ns}, "frames": [metadata]})
-                truth.append(
-                    {
-                        "sample_time": {"time_ns": ns},
-                        "camera_frames": [
-                            {
-                                "station_id": "station-west",
-                                "station_session_id": "fixture",
-                                "camera_role": "main",
-                                "frame_id": str(index),
-                                "capture_time": capture,
-                                "targets": [
-                                    {
-                                        "truth_object_id": "target",
-                                        "projection": {
-                                            "center_in_field_of_view": index != 2,
-                                            "centroid_px": [16, 16],
-                                        },
-                                    }
-                                ],
-                            }
-                        ],
-                    }
-                )
-            (root / "online.jsonl").write_text("\n".join(map(json.dumps, online)))
-            (root / "truth.jsonl").write_text("\n".join(map(json.dumps, truth)))
+            scene_dir = root / "scene"
+            run_dir = root / "run"
+            times = (0, 15_000_000_000, 16_000_000_000)
 
-            class Decoder:
-                def __init__(self, path: str):
-                    self.remaining = 3
-
-                def read(self) -> tuple[bool, Any]:
-                    self.remaining -= 1
-                    return (
-                        (True, np.zeros((32, 32, 3), dtype=np.uint8))
-                        if self.remaining >= 0
-                        else (False, None)
+            with TestSceneWriter(
+                scene_dir,
+                scenario_id="edge-warmup-test",
+                world_frame_id="demo-enu",
+                clock_domain_id="fixture",
+                start_time_ns=0,
+                end_time_ns=16_000_000_000,
+                stations=[],
+            ) as scene_writer:
+                for index, ns in enumerate(times):
+                    capture = common_pb2.CaptureTime(
+                        clock_domain_id="fixture",
+                        exposure_start_ns=ns,
+                        exposure_end_ns=ns,
+                        clock_uncertainty_ns=0,
+                        rolling_shutter_model="none",
+                    )
+                    frame_id = f"f-{index}"
+                    scene_writer.add_frame_index(
+                        truth_pb2.FrameIndexEntry(
+                            station_id="station-west",
+                            station_session_id="fixture",
+                            camera_role=common_pb2.CAMERA_ROLE_MAIN,
+                            frame_index=index,
+                            frame_id=frame_id,
+                            capture_time=capture,
+                            station_config_digest="fixture",
+                            video_relpath="video/station-west-main.mp4",
+                            width_px=32,
+                            height_px=32,
+                        )
+                    )
+                    scene_writer.add_truth_frame(
+                        truth_pb2.TruthFrame(
+                            world_frame_id="demo-enu",
+                            experiment_time_ns=ns,
+                            step_index=index,
+                            targets=[
+                                truth_pb2.TargetTruth(
+                                    target_id="target",
+                                    target_class="sphere",
+                                    position_enu_m=common_pb2.Vec3(x=0.0, y=50.0, z=10.0),
+                                    velocity_enu_mps=common_pb2.Vec3(),
+                                    bounding_radius_m=1.0,
+                                    body_aabb_diagonal_m=2.0,
+                                )
+                            ],
+                            projections=[
+                                truth_pb2.StationTargetProjection(
+                                    station_id="station-west",
+                                    target_id="target",
+                                    occlusion_status=(
+                                        truth_pb2.OCCLUSION_STATUS_OUT_OF_FOV
+                                        if index == 2
+                                        else truth_pb2.OCCLUSION_STATUS_VISIBLE
+                                    ),
+                                    projected_centroid_px=common_pb2.Vec2(x=16.0, y=16.0),
+                                    projected_diagonal_px=4.0,
+                                    range_m=50.0,
+                                    frame_id=frame_id,
+                                )
+                            ],
+                        )
                     )
 
-                def release(self) -> None:
-                    pass
+            scene = TestScenePackage.open(scene_dir)
+            with RunOutputWriter(
+                run_dir,
+                run_id="run-edge-1",
+                mode="edge",
+                test_scene_path=scene_dir,
+                test_scene_sha256=scene.content_sha256,
+            ) as run_writer:
+                for index, ns in enumerate(times):
+                    capture = common_pb2.CaptureTime(
+                        clock_domain_id="fixture",
+                        exposure_start_ns=ns,
+                        exposure_end_ns=ns,
+                        clock_uncertainty_ns=0,
+                        rolling_shutter_model="none",
+                    )
+                    run_writer.write_edge_message(
+                        online_pb2.BusMessage(
+                            bus_sequence_no=index + 1,
+                            sent_wall_time_ns=0,
+                            detection_batch=online_pb2.DetectionBatch(
+                                main_frame_ref=common_pb2.FrameRef(
+                                    station_id="station-west",
+                                    station_session_id="fixture",
+                                    camera_role=common_pb2.CAMERA_ROLE_MAIN,
+                                    frame_id=f"f-{index}",
+                                ),
+                                capture_time=capture,
+                                processing_status=common_pb2.PROCESSING_STATUS_PROCESSED,
+                                decode_duration_ns=1_000_000,
+                                cv_duration_ns=500_000,
+                            ),
+                        )
+                    )
 
-            exported: list[str] = []
-            with patch("chongming.evaluate_recording.cv2.VideoCapture", Decoder):
-                result = evaluate(
-                    root,
-                    policy_path,
-                    root / "report",
-                    gate_px=10,
-                    observation_sink=lambda image, observations: exported.append(
-                        str(image.frame_id)
-                    ),
-                )
-            self.assertEqual(exported, ["0", "1", "2"])
+            run = RunOutputPackage.open(run_dir)
+            scores, result, _ = score_edge_run(scene, run, gate_px=10.0, size_k=None, warmup_s=15.0)
+            self.assertEqual(len(scores), 2)
             self.assertEqual(result["stations"]["station-west"]["processed_frames"], 3)
             self.assertEqual(result["stations"]["station-west"]["warmup_frames"], 1)
             self.assertEqual(result["aggregate"]["frames"], 2)
             self.assertEqual(result["aggregate"]["fn"], 1)
             self.assertEqual(result["aggregate"]["recall"], 0)
             self.assertIsNone(result["aggregate"]["precision"])
+            run.write_scores(scores, result)
             with self.assertRaises(FileExistsError):
-                evaluate(root, policy_path, root / "report", gate_px=10)
+                run.write_scores(scores, result)
 
     def test_center_empty_windows_count_misses_at_exact_reference_times(self) -> None:
-        from chongming.contracts import scene as s
-        from chongming.evaluate_center import evaluate
-        from chongming.scenarios.serialization import save_compiled_scenario
-        from tests.test_scene_rendering import test_scene
-
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            save_compiled_scenario(
-                test_scene(s.SphereGeometry(1), (5, 0, 30)), root / "scenario.json"
-            )
-            row = {
-                "batches": [
-                    {
-                        "window_update": {
-                            "sealed_windows": [
-                                {"reference_time_ns": 500_000},
-                                {"reference_time_ns": 1_000_000},
-                            ]
-                        }
-                    }
-                ],
-                "measurements": [
-                    {
-                        "measurement_id": "one",
-                        "reference_time_ns": 500_000,
-                        "status": "located",
-                        "position_enu_m": [5, 0, 30],
-                    }
-                ],
-            }
-            (root / "center-output.jsonl").write_text(json.dumps(row) + "\n")
-            report = evaluate(root, root / "report", gate_m=1)
+            scene_dir = root / "scene"
+            run_dir = root / "run"
+
+            with TestSceneWriter(
+                scene_dir,
+                scenario_id="center-empty-window",
+                world_frame_id="demo-enu",
+                clock_domain_id="demo-clock",
+                start_time_ns=0,
+                end_time_ns=1_000_000,
+                stations=[],
+            ) as scene_writer:
+                for step_index, ns in enumerate((500_000, 1_000_000)):
+                    scene_writer.add_truth_frame(
+                        truth_pb2.TruthFrame(
+                            world_frame_id="demo-enu",
+                            experiment_time_ns=ns,
+                            step_index=step_index,
+                            targets=[
+                                truth_pb2.TargetTruth(
+                                    target_id="target",
+                                    target_class="sphere",
+                                    position_enu_m=common_pb2.Vec3(x=5.0, y=0.0, z=30.0),
+                                    velocity_enu_mps=common_pb2.Vec3(),
+                                    bounding_radius_m=1.0,
+                                    body_aabb_diagonal_m=2.0,
+                                )
+                            ],
+                            projections=[
+                                truth_pb2.StationTargetProjection(
+                                    station_id=station,
+                                    target_id="target",
+                                    occlusion_status=truth_pb2.OCCLUSION_STATUS_VISIBLE,
+                                )
+                                for station in ("s1", "s2")
+                            ],
+                        )
+                    )
+
+            scene = TestScenePackage.open(scene_dir)
+            with RunOutputWriter(
+                run_dir,
+                run_id="run-center-1",
+                mode="center",
+                test_scene_path=scene_dir,
+                test_scene_sha256=scene.content_sha256,
+            ) as run_writer:
+                run_writer.write_center_message(
+                    online_pb2.BusMessage(
+                        bus_sequence_no=1,
+                        fusion_measurement=online_pb2.FusionMeasurement(
+                            center_session_id="c1",
+                            measurement_id="one",
+                            clock_domain_id="demo-clock",
+                            world_frame_id="demo-enu",
+                            reference_time_ns=500_000,
+                            support_exposure_span_ns=0,
+                            status=common_pb2.FUSION_STATUS_LOCATED,
+                            position_enu_m=common_pb2.Vec3(x=5.0, y=0.0, z=30.0),
+                        ),
+                    )
+                )
+                for seq, ns in enumerate((500_000, 1_000_000), start=2):
+                    run_writer.write_center_message(
+                        online_pb2.BusMessage(
+                            bus_sequence_no=seq,
+                            progress_report=online_pb2.ProgressReport(
+                                source_role=common_pb2.COMPONENT_ROLE_CENTER,
+                                source_id="center",
+                                session_id="c1",
+                                completed_time_ns=ns,
+                                completed_sequence_no=seq - 1,
+                                finite_end_reached=(seq == 3),
+                            ),
+                        )
+                    )
+
+            run = RunOutputPackage.open(run_dir)
+            scores, report, _ = score_center_run(scene, run, gate_m=1.0)
             self.assertEqual(report["metrics"]["tp"], 1)
             self.assertEqual(report["metrics"]["fn"], 1)
             self.assertEqual(report["metrics"]["recall"], 0.5)
             self.assertEqual(report["metrics"]["precision"], 1)
-            evidence = json.loads((root / "report" / "frames.jsonl").read_text().splitlines()[0])
-            self.assertEqual(evidence["matched_errors"], [0])
+            self.assertEqual(scores[0].matched_count, 1)
+            self.assertEqual(scores[0].mean_error, 0.0)
+            self.assertEqual(scores[1].matched_count, 0)
+            self.assertFalse(scores[1].HasField("mean_error"))
 
 
 class WorkbenchStateTests(unittest.TestCase):

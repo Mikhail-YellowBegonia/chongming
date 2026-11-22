@@ -7,6 +7,10 @@ import "chongming/v1/common.proto";
 // Privileged test-framework messages for Godot Producer, V-Switch storage, and Scorer.
 // Business packages (Edge, Center) MUST NOT import or generate code from this file.
 
+// Visibility/FOV classification for a target projection in a camera frame.
+// Invariant: OCCLUSION_STATUS_OUT_OF_FOV means the target center is outside the
+// camera FOV; VISIBLE, OCCLUDED, and UNKNOWN all mean the target center is inside
+// the camera FOV.
 enum OcclusionStatus {
   OCCLUSION_STATUS_UNSPECIFIED = 0;
   OCCLUSION_STATUS_VISIBLE = 1;
@@ -22,6 +26,8 @@ message TargetTruth {
   Vec3 position_enu_m = 3;
   Vec3 velocity_enu_mps = 4;
   double bounding_radius_m = 5;
+  // Body-space model AABB diagonal in meters for size-aware center metrics and difficulty strata.
+  optional double body_aabb_diagonal_m = 6;
 }
 
 message StationTargetProjection {
@@ -31,6 +37,22 @@ message StationTargetProjection {
   optional Vec2 projected_centroid_px = 4;
   optional double projected_diagonal_px = 5;
   optional double range_m = 6;
+  // Links this projection to FrameIndexEntry.frame_id / DetectionBatch.main_frame_ref.frame_id.
+  optional string frame_id = 7;
+}
+
+// Compact index entry stored in frame_index.pb.zst inside an immutable Test Scene package.
+message FrameIndexEntry {
+  string station_id = 1;
+  string station_session_id = 2;
+  CameraRole camera_role = 3;
+  uint64 frame_index = 4;
+  string frame_id = 5;
+  CaptureTime capture_time = 6;
+  string station_config_digest = 7;
+  string video_relpath = 8;
+  uint32 width_px = 9;
+  uint32 height_px = 10;
 }
 
 message TruthFrame {

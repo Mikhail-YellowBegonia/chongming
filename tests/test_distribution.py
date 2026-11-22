@@ -51,6 +51,13 @@ chongming-center = "chongming.development:main"
                 "src/chongming/rendering/godot/ui.gd": b"extends Control\n",
                 "src/chongming/rendering/godot/visualization.gd": b"extends RefCounted\n",
                 "src/chongming/rendering/godot/evaluation.gd": b"extends RefCounted\n",
+                "src/chongming_proto/__init__.py": b"",
+                "src/chongming_proto/py.typed": b"",
+                "src/chongming_proto/online.py": b"",
+                "src/chongming_proto/truth.py": b"",
+                "src/chongming_scorer/__init__.py": b"",
+                "src/chongming_scorer/py.typed": b"",
+                "src/chongming_scorer/cli.py": b"def main(): pass\n",
                 "scenarios/center_clean.json": b'{"scenario_id": "fixture"}\n',
                 "scenarios/assets/grid.json": b'{ "heights_m": [[0, 1], [2, 3]] }\n',
             }
@@ -59,7 +66,7 @@ chongming-center = "chongming.development:main"
         self.wheel = {
             name.removeprefix("src/"): data
             for name, data in self.sources.items()
-            if name.startswith("src/chongming/")
+            if name.startswith(("src/chongming/", "src/chongming_proto/", "src/chongming_scorer/"))
         }
         self.wheel.update(
             {
@@ -92,6 +99,7 @@ chongming-center = "chongming.development:main"
             "docs/introduction.md",
             "docs/design.md",
             "docs/development.md",
+            "docs/protocol.md",
         }
         self.assertEqual({name for name in REQUIRED_SOURCE if name.endswith(".md")}, documents)
         for name in documents:
@@ -109,6 +117,7 @@ chongming-center = "chongming.development:main"
             "docs/introduction.md",
             "docs/development.md",
             "docs/design.md",
+            "docs/protocol.md",
             "scenarios/assets/grid.json",
         ):
             self.assertEqual(bundle[name], self.sources[name])
@@ -162,6 +171,7 @@ chongming-center = "chongming.development:main"
             "docs/introduction.md",
             "docs/development.md",
             "docs/design.md",
+            "docs/protocol.md",
         ):
             with self.subTest(name=name):
                 content = self.sources.pop(name)

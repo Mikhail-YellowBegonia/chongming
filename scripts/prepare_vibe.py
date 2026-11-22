@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import platform
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
-from chongming.benchmark_occupancy import sha256
-from chongming.evaluation_attempt import write_json
+
+def _sha256(path: Path) -> str:
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def _write_json(path: Path, value: Any) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
 
 REVISION = "da0c197d36272125589180e20fdd32b6fe3ba548"
 FILES = {
@@ -27,7 +38,7 @@ def main() -> None:
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     for name, digest in FILES.items():
-        if sha256(args.source / name) != digest:
+        if _sha256(args.source / name) != digest:
             raise ValueError(f"official ViBe source hash mismatch: {name}")
     compiler = shutil.which("cc")
     if compiler is None:
@@ -59,11 +70,11 @@ def main() -> None:
         "compiler": subprocess.check_output([compiler, "--version"], text=True),
         "platform": platform.platform(),
         "library": str(library.resolve()),
-        "library_sha256": sha256(library),
+        "library_sha256": _sha256(library),
         "parameters": {"samples": 30, "threshold": 10, "minimum_matches": 2, "update_factor": 8},
         "history": "new pinned official baseline; not a reproduction of the unrecovered historical project attempt",
     }
-    write_json(args.output / "manifest.json", manifest)
+    _write_json(args.output / "manifest.json", manifest)
     print(json.dumps(manifest, indent=2))
 
 
