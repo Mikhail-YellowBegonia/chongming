@@ -393,6 +393,17 @@ uv run --frozen python scripts/convert_legacy_recording.py run-output \
   --device-dir <legacy-device-dir> --center-dir <legacy-center-dir>
 ```
 
+### Issue #49 online bus processes (`chongming-edge` and `chongming-center-bus`)
+
+Standalone Stage 2 TCP bus processes connect to `V-Switch` using 4-byte length-prefixed `chongming.v1.BusMessage` frames with explicit `DevicePolicy` and `FusionPolicy` JSON files (without changing legacy `chongming-center`):
+
+```sh
+uv run --frozen chongming-edge --host 127.0.0.1 --port <vswitch-port> --policy <device-policy.json>
+uv run --frozen chongming-center-bus --host 127.0.0.1 --port <vswitch-port> --policy <fusion-policy.json> --timeout-basis capture_time
+```
+
+Note that `EventWindowPolicy.timeout_basis` supports `processing_time` (wall-clock default), `capture_time`, and `disabled`. Lock-step TCP replay over `V-Switch` should use `capture_time` or `disabled` so real-time pauses do not mark stations idle or offline.
+
 ## Checks
 
 In the development shell (or `nix develop --no-update-lock-file .#ci`, as used by `.github/workflows/checks.yml`):
@@ -405,6 +416,9 @@ uv run --frozen python scripts/generate_proto.py --check
 uv run --frozen python -m unittest -v \
   tests/test_architecture.py \
   tests/test_proto_framing.py \
+  tests/test_bus_codec.py \
+  tests/test_edge_process.py \
+  tests/test_center_process.py \
   tests/test_scorer_*.py \
   tests/test_legacy_converter.py \
   tests/test_device_evaluation.py \

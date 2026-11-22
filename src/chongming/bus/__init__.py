@@ -3,6 +3,11 @@
 Strictly isolated from scenario truth and scoring packages.
 """
 
+from chongming.bus.center_process import (
+    CenterProcess,
+    default_online_clock_mapping,
+    load_fusion_policy,
+)
 from chongming.bus.client import PROTOCOL_VERSION, BusHandshakeError, OnlineBusClient
 from chongming.bus.codec import (
     calibration_solution_from_proto,
@@ -45,6 +50,7 @@ from chongming.bus.frame_source import (
 __all__ = [
     "PROTOCOL_VERSION",
     "BusHandshakeError",
+    "CenterProcess",
     "DecodedFrame",
     "EdgeProcess",
     "FrameSource",
@@ -60,6 +66,7 @@ __all__ = [
     "camera_role_from_proto",
     "capture_time_from_proto",
     "decode_video_packet",
+    "default_online_clock_mapping",
     "detection_batch_from_proto",
     "detection_batch_to_proto",
     "diagnostic_event_from_proto",
@@ -67,6 +74,7 @@ __all__ = [
     "fusion_measurement_from_proto",
     "fusion_measurement_to_proto",
     "load_device_policy_map",
+    "load_fusion_policy",
     "progress_report_from_proto",
     "progress_report_to_proto",
     "ray_event_from_proto",
