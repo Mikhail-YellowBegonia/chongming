@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter, defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from itertools import combinations, product
 from typing import Any
 
@@ -148,9 +148,10 @@ def _label_edge_observations(
     return by_track, by_index
 
 
-def attribute_run(
+def attribute_messages(
     scene: TestScenePackage,
-    run: RunOutputPackage,
+    edge_messages: Iterable[online_pb2.BusMessage],
+    center_messages: Iterable[online_pb2.BusMessage],
     center_frame_records: Sequence[Mapping[str, Any]],
     *,
     gate_px: float = 10.0,
@@ -159,13 +160,10 @@ def attribute_run(
     minimum_stations: int = 2,
     warmup_s: float = 15.0,
 ) -> dict[str, Any]:
-    """Attribute center misses and false outputs across edge and center streams."""
-    if not run.has_edge_events or not run.has_center_output:
-        raise ValueError("attribution requires both edge_events.pb.zst and center_output.pb.zst")
-
+    """Attribute center misses and false outputs across in-memory edge and center streams."""
     batches: list[online_pb2.DetectionBatch] = []
     ray_events: list[online_pb2.RayEvent] = []
-    for msg in run.iter_edge_events():
+    for msg in edge_messages:
         kind = msg.WhichOneof("payload")
         if kind == "detection_batch":
             batches.append(msg.detection_batch)
@@ -209,7 +207,7 @@ def attribute_run(
 
     measurements_by_time: dict[int, list[online_pb2.FusionMeasurement]] = defaultdict(list)
     seen_ids: set[str] = set()
-    for msg in run.iter_center_output():
+    for msg in center_messages:
         if msg.WhichOneof("payload") != "fusion_measurement":
             continue
         meas = msg.fusion_measurement
@@ -346,3 +344,30 @@ def attribute_run(
         "false_output_contributors": dict(contributors),
         "geometry_rejections_scored_windows": dict(rejection_reasons),
     }
+
+
+def attribute_run(
+    scene: TestScenePackage,
+    run: RunOutputPackage,
+    center_frame_records: Sequence[Mapping[str, Any]],
+    *,
+    gate_px: float = 10.0,
+    size_k_px: float | None = 0.5,
+    precise_k_m: float = 0.7,
+    minimum_stations: int = 2,
+    warmup_s: float = 15.0,
+) -> dict[str, Any]:
+    """Attribute center misses and false outputs across edge and center streams."""
+    if not run.has_edge_events or not run.has_center_output:
+        raise ValueError("attribution requires both edge_events.pb.zst and center_output.pb.zst")
+    return attribute_messages(
+        scene,
+        run.iter_edge_events(),
+        run.iter_center_output(),
+        center_frame_records,
+        gate_px=gate_px,
+        size_k_px=size_k_px,
+        precise_k_m=precise_k_m,
+        minimum_stations=minimum_stations,
+        warmup_s=warmup_s,
+    )

@@ -10,6 +10,11 @@ from pathlib import Path
 from chongming_proto.online import common_pb2, online_pb2
 from chongming_proto.truth import truth_pb2
 from chongming_scorer.cli import main
+from chongming_scorer.scorer import (
+    CenterIncrementalScorer,
+    EdgeIncrementalScorer,
+    IntegratedIncrementalScorer,
+)
 from chongming_scorer.storage import (
     RunOutputPackage,
     RunOutputWriter,
@@ -208,3 +213,41 @@ class ScorerPipelineTests(unittest.TestCase):
             )
             run = RunOutputPackage.open(run_dir)
             self.assertFalse(run.has_scores)
+
+            # Verify streaming EdgeIncrementalScorer, CenterIncrementalScorer, and
+            # IntegratedIncrementalScorer match offline score_run exactly.
+            scene = TestScenePackage.open(scene_dir)
+            edge_msgs = list(run.iter_edge_events())
+            center_msgs = list(run.iter_center_output())
+
+            inc_edge = EdgeIncrementalScorer(scene, run_id=run.run_id, warmup_s=15.0)
+            streamed_edge: list[truth_pb2.ScoreEvent] = []
+            for msg in edge_msgs:
+                streamed_edge.extend(inc_edge.feed_bus_message(msg))
+            streamed_edge.extend(inc_edge.flush_remaining())
+            edge_all, edge_rep, _ = inc_edge.finalize()
+            self.assertEqual(len(streamed_edge), 2)
+            self.assertEqual(edge_all, streamed_edge)
+            self.assertEqual(edge_rep, report["edge"])
+
+            inc_center = CenterIncrementalScorer(
+                scene, run_id=run.run_id, size_k=0.7, miss_k=3.0, warmup_s=15.0
+            )
+            streamed_center: list[truth_pb2.ScoreEvent] = []
+            for msg in center_msgs:
+                streamed_center.extend(inc_center.feed_bus_message(msg))
+            streamed_center.extend(inc_center.flush_remaining())
+            center_all, center_rep, _ = inc_center.finalize()
+            self.assertEqual(len(streamed_center), 2)
+            self.assertEqual(center_all, streamed_center)
+            self.assertEqual(center_rep, report["center"])
+
+            inc_int = IntegratedIncrementalScorer(
+                scene, run_id=run.run_id, size_k_m=0.7, miss_k=3.0, warmup_s=15.0
+            )
+            for msg in edge_msgs:
+                inc_int.feed_bus_message(msg)
+            for msg in center_msgs:
+                inc_int.feed_bus_message(msg)
+            _, int_rep = inc_int.finalize()
+            self.assertEqual(int_rep, report)
