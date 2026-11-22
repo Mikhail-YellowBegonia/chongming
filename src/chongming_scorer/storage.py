@@ -472,6 +472,24 @@ class RunOutputWriter:
         return manifest
 
 
+def persist_scores_output(
+    dest: Path,
+    scores: Sequence[truth_pb2.ScoreEvent],
+    report: Mapping[str, Any],
+) -> tuple[Path, Path]:
+    """Write scores.pb.zst and report.json exclusively into dest without overwriting."""
+    dest.mkdir(parents=True, exist_ok=True)
+    scores_path = dest / "scores.pb.zst"
+    report_path = dest / "report.json"
+    if scores_path.exists() or report_path.exists():
+        raise FileExistsError(f"refusing to overwrite existing scoring output in {dest}")
+    with PbZstWriter(scores_path, overwrite=False) as writer:
+        for event in scores:
+            writer.write(event)
+    write_json_atomic(report_path, dict(report), exclusive=True)
+    return scores_path, report_path
+
+
 class RunOutputPackage:
     """Reader and score-writer for an independent Run Output directory."""
 
@@ -574,13 +592,4 @@ class RunOutputPackage:
         output_dir: Path | None = None,
     ) -> tuple[Path, Path]:
         dest = self.root if output_dir is None else output_dir
-        dest.mkdir(parents=True, exist_ok=True)
-        scores_path = dest / "scores.pb.zst"
-        report_path = dest / "report.json"
-        if scores_path.exists() or report_path.exists():
-            raise FileExistsError(f"refusing to overwrite existing scoring output in {dest}")
-        with PbZstWriter(scores_path, overwrite=False) as writer:
-            for event in scores:
-                writer.write(event)
-        write_json_atomic(report_path, dict(report), exclusive=True)
-        return scores_path, report_path
+        return persist_scores_output(dest, scores, report)

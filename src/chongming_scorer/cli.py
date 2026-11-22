@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from chongming_scorer.online import subscribe_and_score
 from chongming_scorer.scorer import score_run
 from chongming_scorer.storage import RunOutputPackage, TestScenePackage
 
@@ -80,12 +81,66 @@ def main(argv: list[str] | None = None) -> None:
     inspect_cmd.add_argument("run", type=Path)
     inspect_cmd.add_argument("--no-verify-hashes", action="store_true")
 
+    sub_cmd = sub.add_parser(
+        "subscribe", help="Subscribe to V-Switch over TCP and stream live ScoreEvents"
+    )
+    sub_cmd.add_argument("--host", default="127.0.0.1")
+    sub_cmd.add_argument("--port", required=True, type=int)
+    sub_cmd.add_argument("--scene", required=True, type=Path)
+    sub_cmd.add_argument(
+        "--output",
+        type=Path,
+        help="Optional directory for final scores.pb.zst and report.json (must not be --scene)",
+    )
+    sub_cmd.add_argument(
+        "--mode",
+        choices=("edge", "center", "integrated"),
+        default="integrated",
+    )
+    sub_cmd.add_argument("--instance-id", default="scorer-1")
+    sub_cmd.add_argument("--session-id", default="scorer-session-1")
+    sub_cmd.add_argument("--station-id", dest="station_ids", action="append", default=[])
+    sub_cmd.add_argument("--gate-px", type=float, default=10.0)
+    sub_cmd.add_argument("--size-k-px", type=float, default=0.5)
+    sub_cmd.add_argument("--fixed-gate-px", action="store_true")
+    sub_cmd.add_argument("--gate-m", type=float, default=10.0)
+    sub_cmd.add_argument("--size-k-m", type=float)
+    sub_cmd.add_argument("--miss-k", type=float, default=3.0)
+    sub_cmd.add_argument("--warmup-s", type=float)
+    sub_cmd.add_argument("--warmup-origin-ns", type=int)
+    sub_cmd.add_argument("--minimum-stations", type=int, default=2)
+    sub_cmd.add_argument("--no-verify-hashes", action="store_true")
+    sub_cmd.add_argument("--timeout-s", type=float, default=30.0)
+
     args = parser.parse_args(argv)
     if args.command == "verify-scene":
         print(json.dumps(_verify_scene(args.scene, verify_videos=args.verify_videos), indent=2))
         return
     if args.command == "inspect-run":
         print(json.dumps(_inspect_run(args.run, verify_hashes=not args.no_verify_hashes), indent=2))
+        return
+    if args.command == "subscribe":
+        report = subscribe_and_score(
+            host=args.host,
+            port=args.port,
+            scene_dir=args.scene,
+            output_dir=args.output,
+            mode=args.mode,
+            instance_id=args.instance_id,
+            session_id=args.session_id,
+            station_ids=args.station_ids,
+            gate_px=args.gate_px,
+            size_k_px=None if args.fixed_gate_px else args.size_k_px,
+            gate_m=args.gate_m,
+            size_k_m=args.size_k_m,
+            miss_k=args.miss_k,
+            warmup_s=args.warmup_s,
+            warmup_origin_ns=args.warmup_origin_ns,
+            minimum_stations=args.minimum_stations,
+            verify_hashes=not args.no_verify_hashes,
+            timeout_s=args.timeout_s,
+        )
+        print(json.dumps(report, indent=2))
         return
     report = score_run(
         args.scene,

@@ -381,6 +381,7 @@ uv run --frozen python scripts/generate_proto.py --check
 uv run --frozen chongming-scorer verify-scene <test-scene-dir>
 uv run --frozen chongming-scorer inspect-run <run-output-dir>
 uv run --frozen chongming-scorer score --scene <test-scene-dir> --run <run-output-dir>
+uv run --frozen chongming-scorer subscribe --host 127.0.0.1 --port <vswitch-port> --scene <test-scene-dir> --output <score-output-dir>
 ```
 
 To migrate a legacy JSONL recording or run output into the Stage 1 directory layout for offline verification:
