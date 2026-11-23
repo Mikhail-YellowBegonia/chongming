@@ -1,6 +1,6 @@
 # Wire Protocol and Storage Specification (Issue #49)
 
-> Status: **Stage 1 complete** for the Issue #49 modularization (`chongming_proto` schema bindings + `.pb.zst` storage + independent `chongming_scorer` package). The currently active synchronous Python–Godot runtime is still documented in [Design](design.md).
+> Status: Implemented across `chongming_proto`, `chongming_scorer`, `crates/vswitch`, `chongming.bus`, `godot_producer`, and passive Godot Viewer (`src/chongming/rendering/godot`).
 
 ## Scope
 
@@ -82,7 +82,7 @@ Edge abstracts a `FrameSource` interface:
   +-----------------------+-----------------------------------+
   ```
 
-  > **Godot Viewer CLI & framing (Issue #57):** Start passive Godot Viewer with `--viewer <host:port>` (or `--viewer-host <host> --viewer-port <port>`, optional `--reconnect-ms <ms>`) pointing at `V-Switch`'s `--viewer-bind` socket; `worker.gd` connects as a TCP client, reads **4-byte big-endian (`uint32` BE)** `chongming-viewer-v1` JSON frames, writes nothing to disk or back over the socket, and automatically reconnects on disconnect. The legacy synchronous Python–Godot renderer ([godot.py](../src/chongming/rendering/godot.py) `_REQUEST_HEADER = struct.Struct("<I")` and `worker.gd`'s `--port` server path) keeps its 4-byte little-endian framing until Issue #58 completes the Producer migration.
+  > **Godot Viewer CLI & framing:** Start passive Godot Viewer (`src/chongming/rendering/godot/`) with `--viewer <host:port>` (or `--viewer-host <host> --viewer-port <port>`, optional `--reconnect-ms <ms>`) pointing at `V-Switch`'s `--viewer-bind` socket; `worker.gd` connects as a TCP client, reads **4-byte big-endian (`uint32` BE)** `chongming-viewer-v1` JSON frames, writes nothing to disk or back over the socket, and automatically reconnects on disconnect.
 
 - **Non-persistence rule**: Display frames pushed from V-Switch to Godot Viewer are strictly ephemeral and **must never be persisted to disk** by V-Switch or Godot Viewer. This prevents duplicate serialization and archive bloat.
 - **Weak dependency and drop-on-lag**: Godot Viewer is an optional subscriber. If no viewer is connected, or if a viewer disconnects or lags (slow read / full TCP send buffer), V-Switch drops display updates (keeping at most the latest state or dropping on backpressure) and **never blocks** `Edge -> V-Switch -> Center`, lock-step gating, or `.pb.zst` recording.

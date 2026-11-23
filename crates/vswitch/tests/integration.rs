@@ -1550,7 +1550,7 @@ from chongming.bus.codec import ray_event_to_proto, station_config_to_proto
 from chongming.composition.center import reference_policy
 from chongming.contracts import device as d, model as m
 from chongming.modules.device import OPENCV_CALIBRATION_ESTIMATOR_ID
-from chongming.scenarios.run import _json
+from chongming.contracts.json_codec import dump_json as _json
 from chongming_proto.online import common_pb2
 from chongming_proto.truth import truth_pb2
 from chongming_scorer.storage import TestSceneWriter

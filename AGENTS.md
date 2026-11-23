@@ -4,16 +4,16 @@
 
 Read the relevant sections before changing files. Do not read every document for every task.
 
-| Task                                    | Source                                                                                                                                                          |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Project purpose and limits              | [README](README.md), [Introduction](docs/introduction.md)                                                                                                       |
-| Architecture, ownership, and data rules | [Design](docs/design.md)                                                                                                                                        |
-| Environment and dependencies            | [Development: environment](docs/development.md#environment)                                                                                                     |
-| Commands, scenes, and device policies   | [Development: commands](docs/development.md#commands-and-modes), [scenarios](docs/development.md#scenarios), [device policy](docs/development.md#device-policy) |
-| Tests and formatting                    | [Development: checks](docs/development.md#checks)                                                                                                               |
-| Builds and release validation           | [Development: local release](docs/development.md#local-release)                                                                                                 |
-| Visualization and error metrics         | [Design: rendering and display](docs/design.md#rendering-and-display), [visualization contracts](src/chongming/contracts/visualization.py)                      |
-| Asset sources and permissions           | [README: license](README.md#license-and-use), [asset terms](docs/development.md#third-party-assets-and-licenses)                                                |
+| Task                                    | Source                                                                                                                                                                                           |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Project purpose and limits              | [README](README.md), [Introduction](docs/introduction.md)                                                                                                                                        |
+| Architecture, ownership, and data rules | [Design](docs/design.md)                                                                                                                                                                         |
+| Environment and dependencies            | [Development: environment](docs/development.md#environment)                                                                                                                                      |
+| Commands, scenes, and device policies   | [Development: commands](docs/development.md#commands-and-modes), [recording and replay](docs/development.md#test-scene-recording-and-replay), [device policy](docs/development.md#device-policy) |
+| Tests and formatting                    | [Development: checks](docs/development.md#checks)                                                                                                                                                |
+| Builds and release validation           | [Development: local release](docs/development.md#local-release)                                                                                                                                  |
+| Visualization and error metrics         | [Design: rendering and display](docs/design.md#rendering-and-display), [visualization contracts](src/chongming/contracts/visualization.py)                                                       |
+| Asset sources and permissions           | [README: license](README.md#license-and-use), [asset terms](docs/development.md#third-party-assets-and-licenses)                                                                                 |
 
 ## Before editing
 

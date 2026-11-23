@@ -56,6 +56,8 @@ chongming-center-bus = "chongming.bus.center_process:main"
                 "src/chongming_scorer/__init__.py": b"",
                 "src/chongming_scorer/py.typed": b"",
                 "src/chongming_scorer/cli.py": b"def main(): pass\n",
+                "godot_producer/project.godot": b"config_version=5\n",
+                "crates/vswitch/Cargo.toml": b'[package]\nname = "vswitch"\nversion = "0.1.0"\n',
                 "scenarios/center_clean.json": b'{"scenario_id": "fixture"}\n',
                 "scenarios/assets/grid.json": b'{ "heights_m": [[0, 1], [2, 3]] }\n',
             }

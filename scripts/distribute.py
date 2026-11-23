@@ -21,6 +21,8 @@ SOURCE_ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_SOURCE = {
     "pyproject.toml",
     "uv.lock",
+    "Cargo.toml",
+    "Cargo.lock",
     "flake.nix",
     "flake.lock",
     "treefmt.toml",
@@ -290,7 +292,7 @@ def check_contents(directory: Path, version: str) -> dict[str, bytes]:
     root = f"chongming-{version}"
     sources = read_tar(paths["sdist"], root)
     require_files(sources, REQUIRED_SOURCE, "sdist")
-    for prefix in ("tests/", "scripts/", "docs/", "scenarios/"):
+    for prefix in ("tests/", "scripts/", "docs/", "scenarios/", "godot_producer/", "crates/"):
         if not any(name.startswith(prefix) for name in sources):
             raise ValueError(f"sdist is missing {prefix}")
     check_wheel(sources, read_wheel(paths["wheel"]), version)

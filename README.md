@@ -1,48 +1,50 @@
 # chongming
 
-Chongming is a Python and Godot project for testing how fixed camera stations detect, locate, and track small airborne targets in daylight.
+Chongming is a Python, Rust, and Godot project for testing how fixed camera stations detect, locate, and track small airborne targets in daylight.
 
-It provides synthetic scenes, reference algorithms, and a result display. It is a research tool, not a validated field system.
+It provides a standalone Godot virtual scene producer, online edge and center bus processes, a Rust `V-Switch` hub, an independent scorer, and a passive 3D viewer. It is a research tool, not a validated field system.
 
 ## How it works
 
 ```text
-Main camera images + auxiliary reference images
-  -> detection and camera calibration
-  -> world rays from each station
-  -> center position estimates and tracks
+Godot Producer (godot_producer/)
+  -> V-Switch Record (crates/vswitch/) -> immutable Test Scene (.pb.zst + MP4)
 
-Algorithm results + separate scene truth -> Godot display and error diagnostics
+Test Scene or live cameras
+  -> Edge process (chongming-edge) -> V-Switch Relay -> Center process (chongming-center-bus)
+  -> V-Switch -> Scorer (chongming-scorer) + passive Godot Viewer (--viewer)
 ```
 
-A center-only test can use virtual rays instead of images. Truth data stays outside online algorithm interfaces.
+Virtual scene truth and sensor rendering live in `godot_producer/` and `Test Scene` packages. Online algorithm packages (`chongming`, `chongming-edge`, `chongming-center-bus`) consume ordinary frames, policies, and online events without importing truth schemas.
 
-The project has scene preview, device tests, center tests, and integrated tests. Current code includes MOG2 detection, checkerboard calibration, voxel-based candidate search, weighted position estimation, and constant-velocity tracking. General station transport and system orchestration remain incomplete. See [implementation limits](docs/design.md#current-limits), including unresolved rendering paths.
+Current code includes frame-difference and MOG2 detection (plus optional external ViBe), checkerboard auxiliary calibration, voxel candidate search, weighted position estimation, constant-velocity tracking, Lock-Step/Wall-Clock `V-Switch` replay, and independent size/range-aware scoring.
 
 ## Documentation
 
-| Read                                 | Purpose                                                                 |
-| ------------------------------------ | ----------------------------------------------------------------------- |
-| [Introduction](docs/introduction.md) | Understand the project, display, and result limits without reading code |
-| [Design](docs/design.md)             | Study the architecture, data contracts, and algorithms                  |
-| [Development](docs/development.md)   | Install, run, configure, test, and build the project                    |
-| [Agent instructions](AGENTS.md)      | Follow repository rules when changing files                             |
+| Read                                 | Purpose                                                              |
+| ------------------------------------ | -------------------------------------------------------------------- |
+| [Introduction](docs/introduction.md) | Understand the project, components, and result limits                |
+| [Design](docs/design.md)             | Study the architecture, data contracts, and algorithms               |
+| [Development](docs/development.md)   | Install, record/replay scenes, run checks, and build local releases  |
+| [Wire Protocol](docs/protocol.md)    | Study the Protobuf bus, `.pb.zst` storage, and `chongming-viewer-v1` |
+| [Agent instructions](AGENTS.md)      | Follow repository rules when changing files                          |
 
 ## Start
 
-Use the repository's Nix and uv environment. Actual runs require Godot 4.7.2 stable and a graphics session with OpenGL 3.3. FFmpeg is required for video recording and playback. Setup commands, software rendering, and release installation are in [Development](docs/development.md#environment).
+Use the repository's Nix and uv environment. Godot 4.7.2 stable and an OpenGL 3.3 graphics context are required for virtual scene recording (`godot_producer/`) and passive visualization (`Godot Viewer`). FFmpeg is required for video encoding and playback. Setup commands, software rendering, and release installation are in [Development](docs/development.md#environment).
 
-After setup, open a bundled preview:
+After setup, build `vswitch` and run a smoke check:
 
 ```sh
-uv run --frozen chongming-preview --scenario scenarios/review.json
+cargo build -p vswitch
+uv run --frozen chongming-center-bus --help
+uv run --frozen chongming-edge --help
+uv run --frozen chongming-scorer --help
 ```
-
-Map assets for external scenarios must be prepared separately.
 
 ## License and use
 
-Code is licensed under the GNU Affero General Public License v3.0. See [COPYING](COPYING). Dependencies, maps, elevation data, and models retain their own licenses. [Asset sources and terms](docs/development.md#third-party-assets-and-licenses) include the bundled CC0 plant kit.
+Code is licensed under the GNU Affero General Public License v3.0. See [COPYING](COPYING). Dependencies, maps, elevation data, and external models retain their own licenses. See [asset sources and terms](docs/development.md#third-party-assets-and-licenses).
 
 Except when otherwise stated in writing the copyright holders and/or other parties provide the program "as is" without warranty of any kind, either expressed or implied, including, but not limited to, the implied warranties of merchantability and fitness for a particular purpose. The entire risk as to the quality and performance of the program is with you. Should the program prove defective, you assume the cost of all necessary servicing, repair or correction.
 
