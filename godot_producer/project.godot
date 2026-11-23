@@ -1,0 +1,22 @@
+; Godot 4.7.2 virtual-scene producer for Chongming (Issue #58).
+; Separates scene presentation/assets from 64-bit scalar simulation,
+; physics raycast visibility, single-exposure capture, and V-Switch TCP streaming.
+
+config_version=5
+
+[application]
+
+config/name="Chongming Godot Producer"
+run/main_scene="res://producer_main.tscn"
+
+[display]
+
+window/size/viewport_width=640
+window/size/viewport_height=480
+window/vsync/vsync_mode=0
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+environment/defaults/default_clear_color=Color(0, 0, 0, 1)
