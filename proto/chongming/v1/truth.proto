@@ -3,6 +3,7 @@ syntax = "proto3";
 package chongming.v1;
 
 import "chongming/v1/common.proto";
+import "chongming/v1/online.proto";
 
 // Privileged test-framework messages for Godot Producer, V-Switch storage, and Scorer.
 // Business packages (Edge, Center) MUST NOT import or generate code from this file.
@@ -88,5 +89,6 @@ message TestFrameworkMessage {
   oneof payload {
     TruthFrame truth_frame = 10;
     ScoreEvent score_event = 11;
+    BusMessage bus_message = 12;
   }
 }

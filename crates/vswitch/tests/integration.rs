@@ -8,7 +8,7 @@ use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
-use vswitch::bus::connect_bus_client;
+use vswitch::bus::{connect_bus_client, connect_truth_scorer_client};
 use vswitch::framing::{
     read_length_prefixed_async, read_raw_frame_async, write_length_prefixed_async, MAX_FRAME_BYTES,
     PROTOCOL_VERSION,
@@ -413,9 +413,9 @@ async fn record_then_replay_integrated_lockstep_with_scorer_and_viewer() {
         .await
         .unwrap();
 
-    // Connect Scorer (both Online Bus and Truth socket)
-    let (mut scorer_bus, _) = connect_bus_client(
-        rep_addrs.bus_addr,
+    // Connect Scorer via single TestFrameworkMessage TCP channel (PR #60 / docs/protocol.md)
+    let (mut scorer_truth, scorer_ack) = connect_truth_scorer_client(
+        rep_addrs.truth_addr.unwrap(),
         SessionHello {
             protocol_version: PROTOCOL_VERSION.to_string(),
             role: ComponentRole::Scorer as i32,
@@ -426,9 +426,8 @@ async fn record_then_replay_integrated_lockstep_with_scorer_and_viewer() {
     )
     .await
     .unwrap();
-    let mut scorer_truth = TcpStream::connect(rep_addrs.truth_addr.unwrap())
-        .await
-        .unwrap();
+    assert!(scorer_ack.accepted);
+    assert_eq!(scorer_ack.run_id, "run-integ-1");
 
     // Connect Edge (handling both s1 & s2) and Center
     let (mut edge_bus, _) = connect_bus_client(
@@ -782,56 +781,57 @@ async fn record_then_replay_integrated_lockstep_with_scorer_and_viewer() {
         (saw_calib, saw_diag, saw_rays)
     });
 
-    // Mock Scorer: reads TruthFrames and responds with ScoreEvents
-    let scorer_truth_task = tokio::spawn(async move {
-        let mut count = 0usize;
+    // Single-channel Scorer task: reads TruthFrames and embedded BusMessages, responds with ScoreEvents
+    let scorer_task = tokio::spawn(async move {
+        let mut truth_count = 0usize;
+        let mut configs = 0usize;
+        let mut batches = 0usize;
+        let mut rays = 0usize;
+        let mut tracks = 0usize;
         while let Ok(Some(msg)) = read_length_prefixed_async::<_, TestFrameworkMessage>(
             &mut scorer_truth,
             MAX_FRAME_BYTES,
         )
         .await
         {
-            if let Some(test_framework_message::Payload::TruthFrame(tf)) = msg.payload {
-                count += 1;
-                let score = ScoreEvent {
-                    run_id: "run-integ-1".to_string(),
-                    experiment_time_ns: tf.experiment_time_ns,
-                    matched_count: 1,
-                    unmatched_count: 0,
-                    unevaluable_count: 0,
-                    mean_error: Some(0.25),
-                    rmse: Some(0.25),
-                    max_error: Some(0.25),
-                    error_unit: "m".to_string(),
-                    ..Default::default()
-                };
-                let _ = write_length_prefixed_async(
-                    &mut scorer_truth,
-                    &TestFrameworkMessage {
-                        sequence_no: count as u64,
-                        payload: Some(test_framework_message::Payload::ScoreEvent(score)),
-                    },
-                    MAX_FRAME_BYTES,
-                )
-                .await;
-            }
-        }
-        count
-    });
-
-    let scorer_bus_task = tokio::spawn(async move {
-        let mut rays = 0usize;
-        let mut tracks = 0usize;
-        while let Ok(Some(msg)) =
-            read_length_prefixed_async::<_, BusMessage>(&mut scorer_bus, MAX_FRAME_BYTES).await
-        {
             match msg.payload {
-                Some(bus_message::Payload::RayEvent(_)) => rays += 1,
-                Some(bus_message::Payload::TrackEvent(_)) => tracks += 1,
+                Some(test_framework_message::Payload::TruthFrame(tf)) => {
+                    truth_count += 1;
+                    let score = ScoreEvent {
+                        run_id: "run-integ-1".to_string(),
+                        experiment_time_ns: tf.experiment_time_ns,
+                        matched_count: 1,
+                        unmatched_count: 0,
+                        unevaluable_count: 0,
+                        mean_error: Some(0.25),
+                        rmse: Some(0.25),
+                        max_error: Some(0.25),
+                        error_unit: "m".to_string(),
+                        ..Default::default()
+                    };
+                    let _ = write_length_prefixed_async(
+                        &mut scorer_truth,
+                        &TestFrameworkMessage {
+                            sequence_no: truth_count as u64,
+                            payload: Some(test_framework_message::Payload::ScoreEvent(score)),
+                        },
+                        MAX_FRAME_BYTES,
+                    )
+                    .await;
+                }
+                Some(test_framework_message::Payload::BusMessage(bus_msg)) => {
+                    match bus_msg.payload {
+                        Some(bus_message::Payload::StationConfig(_)) => configs += 1,
+                        Some(bus_message::Payload::DetectionBatch(_)) => batches += 1,
+                        Some(bus_message::Payload::RayEvent(_)) => rays += 1,
+                        Some(bus_message::Payload::TrackEvent(_)) => tracks += 1,
+                        _ => {}
+                    }
+                }
                 _ => {}
             }
         }
-        (rays, tracks)
+        (truth_count, configs, batches, rays, tracks)
     });
 
     let viewer_task = tokio::spawn(async move {
@@ -855,10 +855,12 @@ async fn record_then_replay_integrated_lockstep_with_scorer_and_viewer() {
     assert_eq!(run_manifest["format"], "chongming-run-output-v1");
     assert_eq!(run_manifest["test_scene_sha256"], scene_sha_before);
 
-    let truth_seen = scorer_truth_task.await.unwrap();
-    let (scorer_rays, scorer_tracks) = scorer_bus_task.await.unwrap();
+    let (truth_seen, scorer_configs, scorer_batches, scorer_rays, scorer_tracks) =
+        scorer_task.await.unwrap();
     let viewer_frames = viewer_task.await.unwrap();
     assert_eq!(truth_seen, 3);
+    assert_eq!(scorer_configs, 2);
+    assert_eq!(scorer_batches, 6);
     assert_eq!(scorer_rays, 6);
     assert!(scorer_tracks >= 3);
     assert!(!viewer_frames.is_empty());
@@ -1517,4 +1519,458 @@ async fn replay_edge_only_lockstep_produces_scorable_run_output() {
     );
     assert!(run_dir.join("report.json").is_file());
     assert!(run_dir.join("scores.pb.zst").is_file());
+}
+
+#[tokio::test]
+async fn real_python_edge_center_and_scorer_e2e_with_rust_vswitch() {
+    let dir = TempDir::new().unwrap();
+    let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let setup_dir = dir.path().join("setup");
+    std::fs::create_dir_all(&setup_dir).unwrap();
+    let scene_dir = dir.path().join("e2e_scene");
+    let center_run_dir = dir.path().join("run_center");
+    let center_online_score_dir = dir.path().join("score_center_online");
+    let edge_run_dir = dir.path().join("run_edge");
+    let edge_online_score_dir = dir.path().join("score_edge_online");
+
+    // 1. Build a valid 2-station H.264 TestScene + DevicePolicy + FusionPolicy JSON via Python contracts.
+    let setup_script = r#"
+import math, os, shutil, subprocess, sys
+from pathlib import Path
+import numpy as np
+from chongming.bus.codec import ray_event_to_proto, station_config_to_proto
+from chongming.composition.center import reference_policy
+from chongming.contracts import device as d, model as m
+from chongming.modules.device import OPENCV_CALIBRATION_ESTIMATOR_ID
+from chongming.scenarios.run import _json
+from chongming_proto.online import common_pb2
+from chongming_proto.truth import truth_pb2
+from chongming_scorer.storage import TestSceneWriter
+
+out = Path(sys.argv[1])
+scene_dir = Path(sys.argv[2])
+
+def eye3(s=1.0): return ((s, 0.0, 0.0), (0.0, s, 0.0), (0.0, 0.0, s))
+def eye2(s=1.0): return ((s, 0.0), (0.0, s))
+
+w, h = 64, 48
+cam = m.CameraModel(
+    intrinsics=m.CameraIntrinsics(image_width_px=w, image_height_px=h, matrix_px=((80.0, 0.0, 32.0), (0.0, 80.0, 24.0), (0.0, 0.0, 1.0))),
+    distortion=m.CameraDistortion(model="none", coefficients=()),
+)
+def make_cfg(sid, pos):
+    dig = m.ConfigDigest(f"dig-{sid}")
+    return m.StationConfig(
+        station_id=m.StationId(sid), config_version="v1", config_digest=dig,
+        world_frame_id=m.WorldFrameId("enu"),
+        geodetic_anchor=m.GeodeticAnchor(anchor_id="a1", datum="WGS84", datum_epoch="2026", latitude_deg=52.37, longitude_deg=9.73, height_m=55.0, height_reference="ellipsoidal"),
+        main_camera_position_enu_m=pos, baseline_orientation_enu_from_main=eye3(),
+        main_camera=cam, auxiliary_camera=cam, fixed_rotation_aux_from_main=eye3(),
+        full_rigid_transform_aux_from_main=m.RigidTransform(rotation_a_from_b=eye3(), translation_a_m=(0.0, 0.0, 0.0)),
+        reference_anchor=None, reference_scene_version="ref-v1",
+        installation_uncertainty=m.InstallationUncertainty(
+            state_ref=m.InstallationStateRef(station_id=m.StationId(sid), config_digest=dig, state_version="inst-1"),
+            position_covariance_enu_m2=eye3(0.0), orientation_covariance_enu_rad2=eye3(0.0),
+            fixed_extrinsic_covariance_aux_rad2=eye3(0.0), measurement_source="synthetic",
+        ),
+    )
+
+s1 = make_cfg("s1", (0.0, 0.0, 0.0))
+s2 = make_cfg("s2", (40.0, 0.0, 0.0))
+times = [20_000_000, 60_000_000, 100_000_000, 140_000_000]
+target_pos = (20.0, 5.0, 40.0)
+
+def unit_tangent(vec):
+    n = math.sqrt(sum(c * c for c in vec))
+    d_u = np.array([vec[0]/n, vec[1]/n, vec[2]/n])
+    ref = np.array([1.0, 0.0, 0.0]) if abs(d_u[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    u = np.cross(ref, d_u); u = u / np.linalg.norm(u)
+    v = np.cross(d_u, u)
+    return tuple(d_u), tuple(u), tuple(v)
+
+ffmpeg = os.environ.get("CHONGMING_FFMPEG") or shutil.which("ffmpeg")
+assert ffmpeg
+
+with TestSceneWriter(
+    scene_dir, scenario_id="e2e-real", world_frame_id="enu", clock_domain_id="clk",
+    start_time_ns=times[0], end_time_ns=times[-1],
+    stations=[station_config_to_proto(s1), station_config_to_proto(s2)],
+    occlusion_mode="known", targets_meta={"t1": {"body_aabb_diagonal_m": 2.0}},
+) as sw:
+    for cfg in (s1, s2):
+        sid = str(cfg.station_id)
+        raw = bytearray()
+        for idx in range(len(times)):
+            arr = np.zeros((h, w, 3), dtype=np.uint8)
+            x0 = 12 + idx * 6
+            arr[18:26, x0:x0+6] = 255
+            raw.extend(arr.tobytes())
+        mp4 = out / f"{sid}-main.mp4"
+        subprocess.run([
+            ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", "25",
+            "-i", "pipe:0", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-bf", "0", "-crf", "18", str(mp4),
+        ], input=bytes(raw), check=True)
+        sw.add_video_file(mp4, f"video/{sid}-main.mp4", {
+            "station_id": sid, "camera_role": "main", "codec": "libx264", "container": "mp4",
+            "fps": 25.0, "frame_count": len(times), "width_px": w, "height_px": h,
+            "pixel_format": "rgb8", "encoded_pixel_format": "yuv420p", "quality": "d3b-test",
+        })
+
+    for idx, t_ns in enumerate(times):
+        projs = []
+        for cfg in (s1, s2):
+            sid = str(cfg.station_id)
+            fid = f"{sid}-f-{idx}"
+            ct = common_pb2.CaptureTime(clock_domain_id="clk", exposure_start_ns=t_ns, exposure_end_ns=t_ns, rolling_shutter_model="none")
+            sw.add_frame_index(truth_pb2.FrameIndexEntry(
+                station_id=sid, station_session_id=f"img-{sid}", camera_role=common_pb2.CAMERA_ROLE_MAIN,
+                frame_index=idx, frame_id=fid, capture_time=ct,
+                station_config_digest=str(cfg.config_digest), video_relpath=f"video/{sid}-main.mp4",
+                width_px=w, height_px=h,
+            ))
+            projs.append(truth_pb2.StationTargetProjection(
+                station_id=sid, target_id="t1", occlusion_status=truth_pb2.OCCLUSION_STATUS_VISIBLE,
+                projected_centroid_px=common_pb2.Vec2(x=15.0 + idx * 6.0, y=22.0),
+                projected_diagonal_px=8.0, range_m=40.0, frame_id=fid,
+            ))
+            ox, oy, oz = cfg.main_camera_position_enu_m
+            d_u, u_u, v_u = unit_tangent((target_pos[0]-ox, target_pos[1]-oy, target_pos[2]-oz))
+            ray = m.RayEvent(
+                envelope=m.EventEnvelope(schema_version="event-v1", event_type=m.EventType.RAY, station_id=cfg.station_id, station_session_id=m.SessionId(f"img-{sid}"), sequence_no=idx+1, station_config_digest=cfg.config_digest),
+                frame_id=m.FrameId(fid), local_track_id=m.LocalTrackId("1"),
+                capture_time=m.CaptureTime(clock_domain_id="clk", exposure_start_ns=t_ns, exposure_end_ns=t_ns, clock_uncertainty_ns=0, rolling_shutter_model="none"),
+                world_frame_id=m.WorldFrameId("enu"),
+                calibration_solution_ref=m.CalibrationSolutionRef(station_id=cfg.station_id, station_session_id=m.SessionId(f"img-{sid}"), solution_id="sol-1"),
+                calibration_usage=m.CalibrationUsage.VALID,
+                calibration_evidence=m.CalibrationUseEvidence(
+                    state_version=1, last_trusted_time=m.ProcessingTime(clock_domain_id="clk", time_ns=0),
+                    solution_accepted_time=m.ProcessingTime(clock_domain_id="clk", time_ns=0),
+                    solution_reference_capture_time=m.CaptureTime(clock_domain_id="clk", exposure_start_ns=0, exposure_end_ns=0, clock_uncertainty_ns=0, rolling_shutter_model="none"),
+                    solution_valid_interval=m.TimeInterval(clock_domain_id="clk", start_ns=0, end_ns=None),
+                    usable_interval=m.TimeInterval(clock_domain_id="clk", start_ns=0, end_ns=None),
+                    reason_codes=(),
+                ),
+                ray_origin_enu_m=cfg.main_camera_position_enu_m, ray_direction_enu_unit=d_u,
+                uncertainty=m.RayUncertainty(
+                    model="tangent_gaussian_v1", tangent_u_enu_unit=u_u, tangent_v_enu_unit=v_u,
+                    independent_angular_covariance_rad2=eye2(1e-6), independent_origin_covariance_m2=eye3(0.0),
+                    shared_installation_state_ref=cfg.installation_uncertainty.state_ref,
+                    shared_calibration_solution_ref=m.CalibrationSolutionRef(station_id=cfg.station_id, station_session_id=m.SessionId(f"img-{sid}"), solution_id="sol-1"),
+                ),
+                detection_score=0.95, detection_score_definition=m.ScoreDefinition(definition_id="d1", kind=m.ScoreKind.RANKING, minimum=0.0, maximum=1.0, cross_station_comparison_group=None),
+                track_quality=0.9, track_quality_definition=m.ScoreDefinition(definition_id="q1", kind=m.ScoreKind.RANKING, minimum=0.0, maximum=1.0, cross_station_comparison_group=None),
+                quality_flags=(),
+            )
+            sw.add_virtual_ray(ray_event_to_proto(ray))
+        sw.add_truth_frame(truth_pb2.TruthFrame(
+            world_frame_id="enu", experiment_time_ns=t_ns, step_index=idx,
+            targets=[truth_pb2.TargetTruth(
+                target_id="t1", target_class="uav",
+                position_enu_m=common_pb2.Vec3(x=target_pos[0], y=target_pos[1], z=target_pos[2]),
+                velocity_enu_mps=common_pb2.Vec3(x=0.0, y=0.0, z=0.0),
+                bounding_radius_m=1.0, body_aabb_diagonal_m=2.0,
+            )],
+            projections=projs,
+        ))
+
+fusion_policy = reference_policy(
+    search=m.VoxelSearchSpec(world_frame_id=m.WorldFrameId("enu"), min_enu_m=(10.0, -5.0, 30.0), max_enu_m=(30.0, 15.0, 50.0), step_enu_m=(2.0, 2.0, 2.0), forward_range_m=None),
+    clock_domain_id="clk", window_width_ns=40_000_000,
+)
+(out / "fusion_policy.json").write_text(_json(fusion_policy), encoding="utf-8")
+
+dev_policy = {
+    sid: d.DevicePolicy(
+        detection=d.DetectionPolicy(
+            algorithm_id="mog2-components-v1",
+            score_definition=m.ScoreDefinition(definition_id="foreground-component-fill-ratio-v1", kind=m.ScoreKind.RANKING, minimum=0.0, maximum=1.0, cross_station_comparison_group=None),
+            minimum_component_area_px2=1.0, maximum_component_area_px2=None,
+            background_warmup_frame_count=1, background_history_frame_count=10,
+            background_variance_threshold=16.0, background_learning_rate=0.0, background_detect_shadows=False,
+        ),
+        tracking=d.Tracking2DPolicy(
+            algorithm_id="constant-velocity-nearest-neighbor-v1",
+            association_gate_px=12.0, confirmation_frame_count=2, maximum_missing_duration_ns=500_000_000,
+            quality_definition=m.ScoreDefinition(definition_id="consecutive-detection-fraction-v1", kind=m.ScoreKind.RANKING, minimum=0.0, maximum=1.0, cross_station_comparison_group=None),
+        ),
+        calibration=d.CalibrationPolicy(
+            update_period_ns=0, stale_after_ns=2_000_000_000, recovery_success_count=1,
+            minimum_reference_count=4, maximum_reprojection_rmse_px=2.0, maximum_rotation_only_parallax_px=None,
+            estimator_id=OPENCV_CALIBRATION_ESTIMATOR_ID,
+        ),
+        rays=d.RayGenerationPolicy(
+            uncertainty_model_id="tangent_gaussian_v1",
+            fallback_centroid_covariance_px2=eye2(1.0),
+            unmodelled_high_frequency_jitter_covariance_rad2=None,
+            unmodelled_relative_flex_covariance_rad2=None,
+        ),
+    )
+    for sid in ("s1", "s2")
+}
+(out / "device_policy.json").write_text(_json(dev_policy), encoding="utf-8")
+"#;
+    let setup_out = Command::new("uv")
+        .current_dir(&repo_root)
+        .args(["run", "--frozen", "python", "-c", setup_script])
+        .arg(&setup_dir)
+        .arg(&scene_dir)
+        .output()
+        .unwrap();
+    assert!(
+        setup_out.status.success(),
+        "setup failed: {}",
+        String::from_utf8_lossy(&setup_out.stderr)
+    );
+
+    // 2. Test A: Center replay with real Python chongming-center-bus + chongming-scorer subscribe + Viewer
+    let (c_bound_tx, c_bound_rx) = oneshot::channel::<BoundAddresses>();
+    let scene_for_c = scene_dir.clone();
+    let run_for_c = center_run_dir.clone();
+    let c_replay_task = tokio::spawn(async move {
+        run_replay(
+            ReplayConfig {
+                mode: ReplayMode::Center,
+                stepping: SteppingMode::LockStep,
+                scene_dir: scene_for_c,
+                run_output_dir: run_for_c,
+                run_id: "run-py-center-e2e".into(),
+                bus_bind: "127.0.0.1:0".parse().unwrap(),
+                truth_bind: Some("127.0.0.1:0".parse().unwrap()),
+                viewer_bind: Some("127.0.0.1:0".parse().unwrap()),
+                record_voxels: true,
+                wait_scorer: true,
+                verify_videos: false,
+                flush_every: 4,
+                handshake_timeout: Duration::from_secs(10),
+                step_timeout: Duration::from_secs(10),
+                drain_timeout: Duration::from_millis(500),
+                wall_clock_speed: 1.0,
+            },
+            Some(c_bound_tx),
+        )
+        .await
+    });
+    let c_addrs = c_bound_rx.await.unwrap();
+
+    let mut viewer = TcpStream::connect(c_addrs.viewer_addr.unwrap())
+        .await
+        .unwrap();
+    let viewer_task = tokio::spawn(async move {
+        let mut frames = Vec::new();
+        while let Ok(Some(raw)) = read_raw_frame_async(&mut viewer, MAX_FRAME_BYTES).await {
+            frames.push(serde_json::from_slice::<Value>(&raw).unwrap());
+        }
+        frames
+    });
+
+    let center_child = Command::new("uv")
+        .current_dir(&repo_root)
+        .args([
+            "run",
+            "--frozen",
+            "chongming-center-bus",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &c_addrs.bus_addr.port().to_string(),
+            "--policy",
+        ])
+        .arg(setup_dir.join("fusion_policy.json"))
+        .args(["--timeout-basis", "capture_time", "--voxel-diagnostics"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let c_scorer_child = Command::new("uv")
+        .current_dir(&repo_root)
+        .args([
+            "run",
+            "--frozen",
+            "chongming-scorer",
+            "subscribe",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &c_addrs.truth_addr.unwrap().port().to_string(),
+            "--scene",
+        ])
+        .arg(&scene_dir)
+        .arg("--output")
+        .arg(&center_online_score_dir)
+        .args(["--mode", "center", "--warmup-s", "0"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let c_replay_res = timeout(Duration::from_secs(20), c_replay_task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(c_replay_res["mode"], "center");
+    let center_out = center_child.wait_with_output().unwrap();
+    assert!(
+        center_out.status.success(),
+        "chongming-center-bus failed: {}",
+        String::from_utf8_lossy(&center_out.stderr)
+    );
+    let c_scorer_out = c_scorer_child.wait_with_output().unwrap();
+    assert!(
+        c_scorer_out.status.success(),
+        "chongming-scorer subscribe (center) failed: {}",
+        String::from_utf8_lossy(&c_scorer_out.stderr)
+    );
+
+    let c_offline = Command::new("uv")
+        .current_dir(&repo_root)
+        .args(["run", "--frozen", "chongming-scorer", "score", "--scene"])
+        .arg(&scene_dir)
+        .arg("--run")
+        .arg(&center_run_dir)
+        .args(["--mode", "center", "--warmup-s", "0"])
+        .output()
+        .unwrap();
+    assert!(
+        c_offline.status.success(),
+        "offline score failed: {}",
+        String::from_utf8_lossy(&c_offline.stderr)
+    );
+    let online_center_rep: Value = serde_json::from_str(
+        &std::fs::read_to_string(center_online_score_dir.join("report.json")).unwrap(),
+    )
+    .unwrap();
+    let offline_center_rep: Value =
+        serde_json::from_str(&std::fs::read_to_string(center_run_dir.join("report.json")).unwrap())
+            .unwrap();
+    assert_eq!(online_center_rep["metrics"], offline_center_rep["metrics"]);
+    // `reference_policy()` sets `confirmation_measurement_count = 2`, so 4 steps yield 3 confirmed TPs and 0 FPs.
+    assert_eq!(online_center_rep["metrics"]["tp"], 3);
+    assert_eq!(online_center_rep["metrics"]["fp"], 0);
+
+    let c_viewer_frames = viewer_task.await.unwrap();
+    assert!(c_viewer_frames.iter().any(|f| f
+        .get("score")
+        .is_some_and(|s| s["events"][0]["error_unit"] == "m")));
+    assert!(c_viewer_frames
+        .iter()
+        .any(|f| f.get("sparse_voxel_grid").is_some()));
+
+    // 3. Test B: Edge replay with real Python chongming-edge (H.264 decode) + chongming-scorer subscribe
+    let (e_bound_tx, e_bound_rx) = oneshot::channel::<BoundAddresses>();
+    let scene_for_e = scene_dir.clone();
+    let run_for_e = edge_run_dir.clone();
+    let e_replay_task = tokio::spawn(async move {
+        run_replay(
+            ReplayConfig {
+                mode: ReplayMode::Edge,
+                stepping: SteppingMode::LockStep,
+                scene_dir: scene_for_e,
+                run_output_dir: run_for_e,
+                run_id: "run-py-edge-e2e".into(),
+                bus_bind: "127.0.0.1:0".parse().unwrap(),
+                truth_bind: Some("127.0.0.1:0".parse().unwrap()),
+                viewer_bind: None,
+                record_voxels: false,
+                wait_scorer: true,
+                verify_videos: true,
+                flush_every: 4,
+                handshake_timeout: Duration::from_secs(10),
+                step_timeout: Duration::from_secs(15),
+                drain_timeout: Duration::from_millis(500),
+                wall_clock_speed: 1.0,
+            },
+            Some(e_bound_tx),
+        )
+        .await
+    });
+    let e_addrs = e_bound_rx.await.unwrap();
+
+    let edge_child = Command::new("uv")
+        .current_dir(&repo_root)
+        .args([
+            "run",
+            "--frozen",
+            "chongming-edge",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &e_addrs.bus_addr.port().to_string(),
+            "--policy",
+        ])
+        .arg(setup_dir.join("device_policy.json"))
+        .args(["--warmup-hold-s", "0"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let e_scorer_child = Command::new("uv")
+        .current_dir(&repo_root)
+        .args([
+            "run",
+            "--frozen",
+            "chongming-scorer",
+            "subscribe",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &e_addrs.truth_addr.unwrap().port().to_string(),
+            "--scene",
+        ])
+        .arg(&scene_dir)
+        .arg("--output")
+        .arg(&edge_online_score_dir)
+        .args(["--mode", "edge", "--warmup-s", "0"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let e_replay_res = timeout(Duration::from_secs(20), e_replay_task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(e_replay_res["mode"], "edge");
+    let edge_out = edge_child.wait_with_output().unwrap();
+    assert!(
+        edge_out.status.success(),
+        "chongming-edge failed: {}",
+        String::from_utf8_lossy(&edge_out.stderr)
+    );
+    let e_scorer_out = e_scorer_child.wait_with_output().unwrap();
+    assert!(
+        e_scorer_out.status.success(),
+        "chongming-scorer subscribe (edge) failed: {}",
+        String::from_utf8_lossy(&e_scorer_out.stderr)
+    );
+
+    let e_offline = Command::new("uv")
+        .current_dir(&repo_root)
+        .args(["run", "--frozen", "chongming-scorer", "score", "--scene"])
+        .arg(&scene_dir)
+        .arg("--run")
+        .arg(&edge_run_dir)
+        .args(["--mode", "edge", "--warmup-s", "0"])
+        .output()
+        .unwrap();
+    assert!(
+        e_offline.status.success(),
+        "offline edge score failed: {}",
+        String::from_utf8_lossy(&e_offline.stderr)
+    );
+    let online_edge_rep: Value = serde_json::from_str(
+        &std::fs::read_to_string(edge_online_score_dir.join("report.json")).unwrap(),
+    )
+    .unwrap();
+    let offline_edge_rep: Value =
+        serde_json::from_str(&std::fs::read_to_string(edge_run_dir.join("report.json")).unwrap())
+            .unwrap();
+    assert_eq!(online_edge_rep["aggregate"], offline_edge_rep["aggregate"]);
 }

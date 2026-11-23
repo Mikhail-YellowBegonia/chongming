@@ -135,6 +135,7 @@
               packages = [
                 pkgs.python312
                 pkgs.uv
+                pkgs.ffmpeg
                 pkgs.ruff
                 pkgs.rustc
                 pkgs.cargo
@@ -146,6 +147,9 @@
               ];
             }
             // pythonEnv pkgs
+            // {
+              CHONGMING_FFMPEG = lib.getExe pkgs.ffmpeg;
+            }
           );
         }
         // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {

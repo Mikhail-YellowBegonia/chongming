@@ -984,6 +984,101 @@ class FusionIngressTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "durations"):
             self.windows(replace(self.window_policy, width_ns=0))
 
+    def test_capture_time_timeout_ignores_wall_delays_and_detects_capture_lag(self) -> None:
+        windows = self.windows(
+            replace(
+                self.window_policy,
+                timeout_basis=f.StreamTimeoutBasis.CAPTURE_TIME,
+                exclude_idle_stations=True,
+                exclude_offline_stations=True,
+                awaiting_first_event_timeout_ns=20,
+                idle_after_ns=15,
+                offline_after_ns=30,
+                allowed_lateness_ns=0,
+            )
+        )
+        windows.start_module("center/windows", self.time(0))
+        # Large wall-clock jump before any capture arrives keeps both stations awaiting.
+        before_first = windows.advance(self.time(10_000_000_000))
+        self.assertTrue(
+            all(
+                item.health is f.StationStreamHealth.AWAITING_FIRST_EVENT
+                for item in before_first.watermark.station_progress
+            )
+        )
+        # Station 0 advances in capture time while station 1 has not emitted yet.
+        windows.report_progress(self.progress(0, 5, 10_000_000_001))
+        update = windows.report_progress(self.progress(0, 25, 10_000_000_002))
+        missing = next(
+            item
+            for item in update.watermark.station_progress
+            if item.station_id == self.configs[1].station_id
+        )
+        self.assertIs(missing.health, f.StationStreamHealth.OFFLINE)
+        self.assertEqual(missing.reason_codes, ("first_event_timeout",))
+        self.assertEqual([w.key.start_ns for w in update.sealed_windows], [BASE, BASE + 10])
+
+        # Station 1 catches up; huge wall-clock pause does not mark synchronized stations idle.
+        caught = windows.report_progress(self.progress(1, 25, 20_000_000_000))
+        self.assertTrue(
+            all(
+                item.health is f.StationStreamHealth.ACTIVE
+                for item in caught.watermark.station_progress
+            )
+        )
+        stalled_wall = windows.advance(self.time(90_000_000_000))
+        self.assertTrue(
+            all(
+                item.health is f.StationStreamHealth.ACTIVE
+                for item in stalled_wall.watermark.station_progress
+            )
+        )
+        # Station 0 advances 20 ns ahead of station 1 -> station 1 becomes IDLE.
+        idle_update = windows.report_progress(self.progress(0, 45, 90_000_000_001))
+        s1_idle = next(
+            item
+            for item in idle_update.watermark.station_progress
+            if item.station_id == self.configs[1].station_id
+        )
+        self.assertIs(s1_idle.health, f.StationStreamHealth.IDLE)
+
+    def test_disabled_timeout_never_marks_stations_idle_or_offline_in_lockstep(self) -> None:
+        windows = self.windows(
+            replace(
+                self.window_policy,
+                timeout_basis=f.StreamTimeoutBasis.DISABLED,
+                exclude_idle_stations=True,
+                exclude_offline_stations=True,
+                awaiting_first_event_timeout_ns=1,
+                idle_after_ns=1,
+                offline_after_ns=2,
+                allowed_lateness_ns=0,
+            )
+        )
+        windows.start_module("center/windows", self.time(0))
+        windows.report_progress(self.progress(0, 5, 1_000_000_000))
+        # Even after huge wall-clock and capture-time gaps, station 1 stays AWAITING_FIRST_EVENT.
+        waiting = windows.report_progress(self.progress(0, 500, 10_000_000_000))
+        self.assertFalse(waiting.sealed_windows)
+        s1 = next(
+            item
+            for item in waiting.watermark.station_progress
+            if item.station_id == self.configs[1].station_id
+        )
+        self.assertIs(s1.health, f.StationStreamHealth.AWAITING_FIRST_EVENT)
+        # Once station 1 sends progress, windows advance synchronously and seal cleanly on end.
+        synced = windows.report_progress(self.progress(1, 15, 20_000_000_000))
+        self.assertEqual([w.key.start_ns for w in synced.sealed_windows], [BASE])
+        s1_active = next(
+            item
+            for item in synced.watermark.station_progress
+            if item.station_id == self.configs[1].station_id
+        )
+        self.assertIs(s1_active.health, f.StationStreamHealth.ACTIVE)
+        windows.report_progress(self.progress(0, 500, 30_000_000_000, ended=True))
+        final = windows.report_progress(self.progress(1, 15, 30_000_000_001, ended=True))
+        self.assertEqual(final.sealed_windows[-1].key.end_ns, BASE + 510)
+
 
 if __name__ == "__main__":
     unittest.main()

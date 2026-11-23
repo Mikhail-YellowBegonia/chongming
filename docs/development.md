@@ -374,13 +374,14 @@ For a run with no video export, add `--no-video` to `chongming-scene`. `--render
 
 ### Issue #49 Stage 1 packages (`chongming_proto` and `chongming_scorer`)
 
-Immutable `Test Scene` and independent `Run Output` `.pb.zst` packages (specified in [Wire Protocol and Storage Specification](protocol.md)) are scored by the independent `chongming_scorer` package (`chongming-scorer`), replacing the legacy `chongming.evaluate_*` and `chongming.benchmark_*` entry points:
+Immutable `Test Scene` and independent `Run Output` `.pb.zst` packages (specified in [Wire Protocol and Storage Specification](protocol.md)) are scored by the independent `chongming_scorer` package (`chongming-scorer`), replacing the legacy `chongming.evaluate_*` and `chongming.benchmark_*` entry points. `chongming_scorer` never imports `chongming`, and `chongming` never imports `chongming_proto.truth` or `chongming_scorer`:
 
 ```sh
 uv run --frozen python scripts/generate_proto.py --check
 uv run --frozen chongming-scorer verify-scene <test-scene-dir>
 uv run --frozen chongming-scorer inspect-run <run-output-dir>
 uv run --frozen chongming-scorer score --scene <test-scene-dir> --run <run-output-dir>
+uv run --frozen chongming-scorer subscribe --host 127.0.0.1 --port <vswitch-port> --scene <test-scene-dir> --output <score-output-dir>
 ```
 
 To migrate a legacy JSONL recording or run output into the Stage 1 directory layout for offline verification:
@@ -393,19 +394,48 @@ uv run --frozen python scripts/convert_legacy_recording.py run-output \
   --device-dir <legacy-device-dir> --center-dir <legacy-center-dir>
 ```
 
+### Issue #49 online bus processes (`chongming-edge` and `chongming-center-bus`)
+
+Standalone Stage 2 TCP bus processes connect to `V-Switch` using 4-byte length-prefixed `chongming.v1.BusMessage` frames with explicit `DevicePolicy` and `FusionPolicy` JSON files (without changing legacy `chongming-center`):
+
+```sh
+uv run --frozen chongming-edge --host 127.0.0.1 --port <vswitch-port> --policy <device-policy.json>
+uv run --frozen chongming-center-bus --host 127.0.0.1 --port <vswitch-port> --policy <fusion-policy.json> --timeout-basis capture_time
+```
+
+Note that `EventWindowPolicy.timeout_basis` supports `processing_time` (wall-clock default), `capture_time`, and `disabled`. Lock-step TCP replay over `V-Switch` should use `capture_time` or `disabled` so real-time pauses do not mark stations idle or offline.
+
 ## Checks
 
-In the development shell:
+In the development shell (or `nix develop --no-update-lock-file .#ci`, as used by `.github/workflows/checks.yml`):
 
 ```sh
 ruff check src tests scripts
 ruff format --check src tests scripts
 uv run --frozen mypy src tests
-uv run --frozen python -m unittest tests.test_architecture tests.test_distribution -v
+uv run --frozen python scripts/generate_proto.py --check
+uv run --frozen python -m unittest -v \
+  tests/test_architecture.py \
+  tests/test_proto_framing.py \
+  tests/test_bus_codec.py \
+  tests/test_edge_process.py \
+  tests/test_center_process.py \
+  tests/test_scorer_*.py \
+  tests/test_legacy_converter.py \
+  tests/test_device_evaluation.py \
+  tests/test_center_size_evaluation.py \
+  tests/test_difficulty_evaluation.py \
+  tests/test_integrated_attribution.py \
+  tests/test_dynamic_scoring.py \
+  tests/test_evaluation_preview.py \
+  tests/test_performance.py \
+  tests/test_distribution.py
 for scenario in scenarios/*.json; do
   uv run --frozen chongming-center --scenario "$scenario" --check
 done
 ```
+
+CI runs `treefmt --no-cache --fail-on-change`, Ruff, mypy, `scripts/generate_proto.py --check`, and the headless Stage 1 test suite above (`VisualizationPerformanceTests` in `tests/test_performance.py` is skipped when Godot is absent). `.github/workflows/checks.yml` also reserves conditional Rust checks (`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`) that activate once a root `Cargo.toml` is added.
 
 The scenario loop reports missing local assets; it does not download or repair them. `scenarios/external/` needs separate asset preparation.
 

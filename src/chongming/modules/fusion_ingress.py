@@ -690,6 +690,7 @@ class EventWindowModule(ModuleShell):
         self._watermark_ns: int | None = None
         self._started_at_ns: int | None = None
         self._last_time_ns: int | None = None
+        self._first_capture_ns: int | None = None
 
     def start_module(self, module_key: str, now: m.ProcessingTime) -> ModuleHealth:
         self._check_time(now)
@@ -803,41 +804,76 @@ class EventWindowModule(ModuleShell):
         self._streams.pop((station, None), None)
         return self._streams.setdefault((station, session), _Stream())
 
-    @staticmethod
-    def _remember(stream: _Stream, capture: m.CaptureTime, received_at: m.ProcessingTime) -> None:
+    def _remember(
+        self, stream: _Stream, capture: m.CaptureTime, received_at: m.ProcessingTime
+    ) -> None:
         midpoint = _midpoint(capture)
+        if self._first_capture_ns is None or midpoint < self._first_capture_ns:
+            self._first_capture_ns = midpoint
         if stream.maximum_exposure_ns is None or midpoint > stream.maximum_exposure_ns:
             stream.maximum_exposure_ns = midpoint
         if stream.last_received_at is None or received_at.time_ns > stream.last_received_at.time_ns:
             stream.last_received_at = received_at
+
+    def _stream_health(
+        self,
+        stream: _Stream,
+        now: m.ProcessingTime,
+        global_max_capture_ns: int | None,
+    ) -> tuple[f.StationStreamHealth, tuple[str, ...]]:
+        if stream.ended:
+            return f.StationStreamHealth.ENDED, ()
+        basis = self.policy.timeout_basis
+        if basis is f.StreamTimeoutBasis.DISABLED:
+            if stream.last_received_at is None:
+                return f.StationStreamHealth.AWAITING_FIRST_EVENT, ()
+            return f.StationStreamHealth.ACTIVE, ()
+        if basis is f.StreamTimeoutBasis.CAPTURE_TIME:
+            if stream.maximum_exposure_ns is None:
+                if (
+                    global_max_capture_ns is not None
+                    and self._first_capture_ns is not None
+                    and global_max_capture_ns - self._first_capture_ns
+                    >= self.policy.awaiting_first_event_timeout_ns
+                ):
+                    return f.StationStreamHealth.OFFLINE, ("first_event_timeout",)
+                return f.StationStreamHealth.AWAITING_FIRST_EVENT, ()
+            assert global_max_capture_ns is not None
+            lag = global_max_capture_ns - stream.maximum_exposure_ns
+            if lag >= self.policy.offline_after_ns:
+                return f.StationStreamHealth.OFFLINE, ()
+            if lag >= self.policy.idle_after_ns:
+                return f.StationStreamHealth.IDLE, ()
+            return f.StationStreamHealth.ACTIVE, ()
+        assert self._started_at_ns is not None
+        if stream.last_received_at is None:
+            if now.time_ns - self._started_at_ns >= self.policy.awaiting_first_event_timeout_ns:
+                return f.StationStreamHealth.OFFLINE, ("first_event_timeout",)
+            return f.StationStreamHealth.AWAITING_FIRST_EVENT, ()
+        elapsed = now.time_ns - stream.last_received_at.time_ns
+        if elapsed >= self.policy.offline_after_ns:
+            return f.StationStreamHealth.OFFLINE, ()
+        if elapsed >= self.policy.idle_after_ns:
+            return f.StationStreamHealth.IDLE, ()
+        return f.StationStreamHealth.ACTIVE, ()
 
     def _progress(self, now: m.ProcessingTime) -> tuple[f.StationProgress, ...]:
         for station in self.stations.registered_stations():
             if not any(key[0] == station for key in self._streams):
                 self._streams[station, None] = _Stream()
         result = []
-        assert self._started_at_ns is not None
+        global_max_capture_ns = max(
+            (
+                stream.maximum_exposure_ns
+                for stream in self._streams.values()
+                if stream.maximum_exposure_ns is not None
+            ),
+            default=None,
+        )
         for (station, session), stream in sorted(
             self._streams.items(), key=lambda item: (item[0][0], item[0][1] or "")
         ):
-            reasons: tuple[str, ...] = ()
-            if stream.ended:
-                health = f.StationStreamHealth.ENDED
-            elif stream.last_received_at is None:
-                if now.time_ns - self._started_at_ns >= self.policy.awaiting_first_event_timeout_ns:
-                    health = f.StationStreamHealth.OFFLINE
-                    reasons = ("first_event_timeout",)
-                else:
-                    health = f.StationStreamHealth.AWAITING_FIRST_EVENT
-            else:
-                elapsed = now.time_ns - stream.last_received_at.time_ns
-                health = (
-                    f.StationStreamHealth.OFFLINE
-                    if elapsed >= self.policy.offline_after_ns
-                    else f.StationStreamHealth.IDLE
-                    if elapsed >= self.policy.idle_after_ns
-                    else f.StationStreamHealth.ACTIVE
-                )
+            health, reasons = self._stream_health(stream, now, global_max_capture_ns)
             behind_seal = (
                 self._sealed
                 and stream.maximum_exposure_ns is not None

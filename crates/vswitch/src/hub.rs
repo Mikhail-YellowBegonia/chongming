@@ -14,9 +14,10 @@ use tokio::time::{sleep_until, timeout, Instant};
 
 use crate::bus::{BusEvent, BusServer, PeerHandle, TruthEvent, TruthPeerHandle, TruthServer};
 use crate::proto::{
-    bus_message, now_wall_time_ns, test_framework_message, BusMessage, CalibrationStateEvent,
-    CameraRole, ComponentRole, DiagnosticEvent, FrameIndexEntry, FramedVideoPacket,
-    FusionMeasurement, ProgressReport, RayEvent, ScoreEvent, SparseVoxelGrid, StationConfig,
+    bus_message, now_wall_time_ns, test_framework_message, BusMessage, CalibrationHealth,
+    CalibrationQuality, CalibrationSolution, CalibrationState, CalibrationStateEvent, CameraRole,
+    ComponentRole, DiagnosticEvent, EventEnvelope, EventType, FrameIndexEntry, FramedVideoPacket,
+    FusionMeasurement, Mat3, ProgressReport, RayEvent, ScoreEvent, SparseVoxelGrid, StationConfig,
     TestFrameworkMessage, TrackEvent, TruthFrame, VideoCodec,
 };
 use crate::storage::{
@@ -359,12 +360,14 @@ impl ReplayRuntime {
                         if self.mode == ReplayMode::Integrated {
                             self.forward_to_centers(&message);
                         }
+                        self.forward_to_scorers(&message);
                     }
                     bus_message::Payload::DiagnosticEvent(diag) => {
                         self.step_diagnostics.push(diag.clone());
                         if self.mode == ReplayMode::Integrated {
                             self.forward_to_centers(&message);
                         }
+                        self.forward_to_scorers(&message);
                     }
                     bus_message::Payload::ProgressReport(pr) => {
                         if let Some(state) = self.edges.get_mut(&peer_id) {
@@ -384,7 +387,9 @@ impl ReplayRuntime {
                         }
                         self.forward_to_scorers(&message);
                     }
-                    bus_message::Payload::DetectionBatch(_) => {}
+                    bus_message::Payload::DetectionBatch(_) => {
+                        self.forward_to_scorers(&message);
+                    }
                     _ => {}
                 }
             }
@@ -394,6 +399,7 @@ impl ReplayRuntime {
                         self.run_writer.write_voxel_grid(grid)?;
                     }
                     self.latest_voxels = Some(grid.clone());
+                    self.forward_to_scorers(&message);
                 }
                 bus_message::Payload::FusionMeasurement(fm) => {
                     self.run_writer.write_center_message(&message)?;
@@ -453,6 +459,17 @@ impl ReplayRuntime {
             sent_wall_time_ns: original.sent_wall_time_ns,
             payload: Some(payload),
         };
+        if !self.truth_peers.is_empty() {
+            let tfm = TestFrameworkMessage {
+                sequence_no: self.next_truth_seq(),
+                payload: Some(test_framework_message::Payload::BusMessage(
+                    forwarded.clone(),
+                )),
+            };
+            for peer in self.truth_peers.values() {
+                let _ = peer.try_send(tfm.clone());
+            }
+        }
         for scorer in self.scorers.values() {
             let _ = scorer.try_send(forwarded.clone());
         }
@@ -493,13 +510,16 @@ impl ReplayRuntime {
         if self.mode.needs_center() && self.centers.is_empty() {
             return false;
         }
-        if wait_scorer && (self.scorers.is_empty() || self.truth_peers.is_empty()) {
+        if wait_scorer && self.truth_peers.is_empty() && self.scorers.is_empty() {
             return false;
         }
         true
     }
 
     fn step_completed(&self, group_time_ns: i64) -> bool {
+        // Edge reports ProgressReport per exposure group; Center only emits ProgressReport when
+        // an observation window seals (on a subsequent watermark >= window.end_ns or stream end),
+        // so Center completion is drained via `all_finite_ends_reached()`.
         if self.mode.needs_edge() {
             for edge in self.edges.values() {
                 if edge.dispatched_time_ns == Some(group_time_ns) {
@@ -508,15 +528,6 @@ impl ReplayRuntime {
                     if !ok {
                         return false;
                     }
-                }
-            }
-        }
-        if self.mode.needs_center() {
-            for center in self.centers.values() {
-                let ok = center.finite_end_reached
-                    || center.completed_time_ns.is_some_and(|t| t >= group_time_ns);
-                if !ok {
-                    return false;
                 }
             }
         }
@@ -539,6 +550,77 @@ enum ReplayGroup {
     Rays(Vec<RayEvent>),
 }
 
+/// Synthesize a baseline `CalibrationStateEvent` for a virtual `RayEvent` in Center-only replay
+/// so `Center`'s calibration registry can admit the ray without an Edge producer.
+fn build_virtual_calibration_event(
+    ray: &RayEvent,
+    stations_by_id: &HashMap<String, &StationConfig>,
+    sequence_no: u64,
+) -> Option<CalibrationStateEvent> {
+    let env = ray.envelope.as_ref()?;
+    let sol_ref = ray.calibration_solution_ref.as_ref()?;
+    let evidence = ray.calibration_evidence.as_ref()?;
+    let station = stations_by_id.get(&env.station_id).copied();
+    let identity_mat = Mat3 {
+        values: vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+    };
+    let observed_at = evidence
+        .last_trusted_time
+        .clone()
+        .or_else(|| evidence.solution_accepted_time.clone());
+    let usable_interval = evidence
+        .usable_interval
+        .clone()
+        .or_else(|| evidence.solution_valid_interval.clone());
+    let main_pos = station
+        .and_then(|s| s.main_camera_position_enu_m)
+        .or(ray.ray_origin_enu_m);
+    let rotation = station
+        .and_then(|s| s.baseline_orientation_enu_from_main.clone())
+        .unwrap_or(identity_mat);
+
+    Some(CalibrationStateEvent {
+        envelope: Some(EventEnvelope {
+            schema_version: env.schema_version.clone(),
+            event_type: EventType::CalibrationState as i32,
+            station_id: env.station_id.clone(),
+            station_session_id: env.station_session_id.clone(),
+            sequence_no,
+            station_config_digest: env.station_config_digest.clone(),
+        }),
+        state: Some(CalibrationState {
+            station_id: env.station_id.clone(),
+            station_session_id: env.station_session_id.clone(),
+            station_config_digest: env.station_config_digest.clone(),
+            state_version: evidence.state_version.max(1),
+            health: CalibrationHealth::Valid as i32,
+            solution_ref: Some(sol_ref.clone()),
+            observed_at,
+            last_trusted_time: evidence.last_trusted_time.clone(),
+            usable_interval,
+            reason_codes: Vec::new(),
+        }),
+        solution: Some(CalibrationSolution {
+            solution_ref: Some(sol_ref.clone()),
+            station_config_digest: env.station_config_digest.clone(),
+            world_frame_id: ray.world_frame_id.clone(),
+            reference_capture_time: evidence.solution_reference_capture_time.clone(),
+            accepted_time: evidence.solution_accepted_time.clone(),
+            valid_interval: evidence.solution_valid_interval.clone(),
+            main_camera_position_enu_m: main_pos,
+            rotation_enu_from_main: Some(rotation),
+            correction_covariance_enu_rad2: Some(Mat3 {
+                values: vec![0.0; 9],
+            }),
+            quality: Some(CalibrationQuality {
+                source: "virtual-scene-baseline".into(),
+                matched_reference_count: 0,
+                ..Default::default()
+            }),
+        }),
+    })
+}
+
 /// Run V-Switch in Replay mode (`edge`, `center`, or `integrated`; `lock-step` or `wall-clock`).
 pub async fn run_replay(
     cfg: ReplayConfig,
@@ -547,11 +629,14 @@ pub async fn run_replay(
     let scene = TestSceneReader::open(&cfg.scene_dir, true, cfg.verify_videos)?;
     let stations = scene.station_configs().to_vec();
     let station_ids: Vec<String> = stations.iter().map(|s| s.station_id.clone()).collect();
+    let stations_by_id: HashMap<String, &StationConfig> =
+        stations.iter().map(|s| (s.station_id.clone(), s)).collect();
     let scene_sha = scene.content_sha256().to_string();
 
     let mut truth_frames = scene.iter_truth_frames()?.collect_all()?;
     truth_frames.sort_by_key(|tf| tf.experiment_time_ns);
 
+    let mut next_virtual_cal_seq: u64 = 1;
     let (groups, tracks): (
         BTreeMap<i64, ReplayGroup>,
         HashMap<String, Vec<H264AccessUnit>>,
@@ -576,6 +661,12 @@ pub async fn run_replay(
         )
     } else {
         let rays = scene.iter_virtual_rays()?.collect_all()?;
+        next_virtual_cal_seq = rays
+            .iter()
+            .filter_map(|r| r.envelope.as_ref().map(|e| e.sequence_no))
+            .max()
+            .unwrap_or(0)
+            + 1;
         let mut grouped: BTreeMap<i64, Vec<RayEvent>> = BTreeMap::new();
         for ray in rays {
             let t = ray
@@ -630,7 +721,16 @@ pub async fn run_replay(
 
     let (truth_tx, mut truth_rx) = mpsc::channel::<TruthEvent>(512);
     let truth_server = match cfg.truth_bind {
-        Some(addr) => Some(TruthServer::bind(addr, truth_tx).await?),
+        Some(addr) => Some(
+            TruthServer::bind_with_handshake(
+                addr,
+                cfg.run_id.clone(),
+                vec![ComponentRole::Scorer],
+                false,
+                truth_tx,
+            )
+            .await?,
+        ),
         None => None,
     };
     let truth_addr = truth_server.as_ref().map(TruthServer::local_addr);
@@ -718,9 +818,7 @@ pub async fn run_replay(
         for center in rt.centers.values() {
             let _ = center.handle.send(msg.clone()).await;
         }
-        for scorer in rt.scorers.values() {
-            let _ = scorer.send(msg.clone()).await;
-        }
+        rt.forward_to_scorers(&msg);
     }
 
     // Group dispatch loop.
@@ -729,6 +827,7 @@ pub async fn run_replay(
     let wall_start = Instant::now();
     let speed = cfg.wall_clock_speed.max(0.01);
     let mut last_group_time_ns = first_time_ns;
+    let mut sent_virtual_cal_keys: HashSet<(String, String, String)> = HashSet::new();
 
     for (group_time_ns, group) in groups.into_iter() {
         last_group_time_ns = group_time_ns;
@@ -813,40 +912,99 @@ pub async fn run_replay(
                 }
             }
             ReplayGroup::Rays(rays) => {
+                let mut seen_stations: BTreeMap<String, String> = BTreeMap::new();
                 for ray in rays {
+                    if let Some(env) = &ray.envelope {
+                        seen_stations
+                            .entry(env.station_id.clone())
+                            .or_insert_with(|| env.station_session_id.clone());
+                    }
+                    if let Some(sol_ref) = &ray.calibration_solution_ref {
+                        let key = (
+                            sol_ref.station_id.clone(),
+                            sol_ref.station_session_id.clone(),
+                            sol_ref.solution_id.clone(),
+                        );
+                        if !sent_virtual_cal_keys.contains(&key) {
+                            if let Some(cal_ev) = build_virtual_calibration_event(
+                                &ray,
+                                &stations_by_id,
+                                next_virtual_cal_seq,
+                            ) {
+                                next_virtual_cal_seq += 1;
+                                sent_virtual_cal_keys.insert(key);
+                                rt.latest_calibrations
+                                    .insert(sol_ref.station_id.clone(), cal_ev.clone());
+                                rt.step_calibration_states.push(cal_ev.clone());
+                                let cal_msg =
+                                    rt.wrap_bus(bus_message::Payload::CalibrationState(cal_ev));
+                                for center in rt.centers.values() {
+                                    let _ = center.handle.send(cal_msg.clone()).await;
+                                }
+                                rt.forward_to_scorers(&cal_msg);
+                            }
+                        }
+                    }
                     rt.step_rays.push(ray.clone());
                     let msg = rt.wrap_bus(bus_message::Payload::RayEvent(ray));
                     for center in rt.centers.values() {
                         let _ = center.handle.send(msg.clone()).await;
                     }
-                    for scorer in rt.scorers.values() {
-                        let _ = scorer.send(msg.clone()).await;
+                    rt.forward_to_scorers(&msg);
+                }
+                for st in &stations {
+                    let session_id = seen_stations
+                        .get(&st.station_id)
+                        .cloned()
+                        .unwrap_or_else(|| format!("virtual-{}", st.station_id));
+                    let pr_msg =
+                        rt.wrap_bus(bus_message::Payload::ProgressReport(ProgressReport {
+                            source_role: ComponentRole::Edge as i32,
+                            source_id: st.station_id.clone(),
+                            session_id,
+                            completed_time_ns: group_time_ns,
+                            completed_sequence_no: 0,
+                            finite_end_reached: false,
+                        }));
+                    for center in rt.centers.values() {
+                        let _ = center.handle.send(pr_msg.clone()).await;
                     }
+                    rt.forward_to_scorers(&pr_msg);
                 }
             }
         }
 
         match cfg.stepping {
             SteppingMode::LockStep => {
-                let deadline = Instant::now() + cfg.step_timeout;
-                while !rt.step_completed(group_time_ns) {
-                    if Instant::now() >= deadline {
-                        return Err(HubError::StepTimeout(group_time_ns));
-                    }
-                    tokio::select! {
-                        _ = sleep_until(deadline) => {
+                if cfg.mode.needs_edge() {
+                    let deadline = Instant::now() + cfg.step_timeout;
+                    while !rt.step_completed(group_time_ns) {
+                        if Instant::now() >= deadline {
                             return Err(HubError::StepTimeout(group_time_ns));
                         }
-                        ev = bus_rx.recv() => {
-                            if let Some(ev) = ev {
-                                rt.handle_bus_event(ev)?;
+                        tokio::select! {
+                            _ = sleep_until(deadline) => {
+                                return Err(HubError::StepTimeout(group_time_ns));
+                            }
+                            ev = bus_rx.recv() => {
+                                if let Some(ev) = ev {
+                                    rt.handle_bus_event(ev)?;
+                                }
+                            }
+                            tev = truth_rx.recv() => {
+                                if let Some(tev) = tev {
+                                    rt.handle_truth_event(tev);
+                                }
                             }
                         }
-                        tev = truth_rx.recv() => {
-                            if let Some(tev) = tev {
-                                rt.handle_truth_event(tev);
-                            }
-                        }
+                    }
+                } else {
+                    tokio::task::yield_now().await;
+                    while let Ok(ev) = bus_rx.try_recv() {
+                        rt.handle_bus_event(ev)?;
+                    }
+                    while let Ok(tev) = truth_rx.try_recv() {
+                        rt.handle_truth_event(tev);
                     }
                 }
             }
@@ -886,8 +1044,25 @@ pub async fn run_replay(
             let _ = edge.handle.send(end_notice.clone()).await;
         }
     } else if cfg.mode.needs_center() {
-        for center in rt.centers.values() {
-            let _ = center.handle.send(end_notice.clone()).await;
+        if stations.is_empty() {
+            for center in rt.centers.values() {
+                let _ = center.handle.send(end_notice.clone()).await;
+            }
+        } else {
+            for st in &stations {
+                let st_end = rt.wrap_bus(bus_message::Payload::ProgressReport(ProgressReport {
+                    source_role: ComponentRole::Edge as i32,
+                    source_id: st.station_id.clone(),
+                    session_id: format!("virtual-{}", st.station_id),
+                    completed_time_ns: last_group_time_ns,
+                    completed_sequence_no: 0,
+                    finite_end_reached: true,
+                }));
+                for center in rt.centers.values() {
+                    let _ = center.handle.send(st_end.clone()).await;
+                }
+                rt.forward_to_scorers(&st_end);
+            }
         }
     }
 
@@ -912,6 +1087,10 @@ pub async fn run_replay(
             }
         }
     }
+
+    // Close outbound Scorer streams cleanly so online Scorer flushes final ScoreEvents before EOF.
+    rt.truth_peers.clear();
+    rt.scorers.clear();
 
     // Brief grace drain for final ScoreEvents if any.
     let score_grace = Instant::now() + Duration::from_millis(50);
@@ -1465,7 +1644,9 @@ pub async fn run_record(
                         }
                     }
                     TruthEvent::Message { message, .. } => {
-                        if let Some(test_framework_message::Payload::TruthFrame(tf)) = message.payload {
+                        if let Some(test_framework_message::Payload::TruthFrame(tf)) =
+                            message.payload
+                        {
                             update_bounds(tf.experiment_time_ns, &mut min_time_ns, &mut max_time_ns);
                             scene_writer.add_truth_frame(&tf)?;
                             if let Some(viewer) = &viewer_hub {

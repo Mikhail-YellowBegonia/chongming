@@ -1,4 +1,5 @@
 from chongming_proto.v1 import common_pb2 as _common_pb2
+from chongming_proto.v1 import online_pb2 as _online_pb2
 from google.protobuf.internal import containers as _containers
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
@@ -128,11 +129,13 @@ class ScoreEvent(_message.Message):
     def __init__(self, run_id: _Optional[str] = ..., experiment_time_ns: _Optional[int] = ..., matched_count: _Optional[int] = ..., unmatched_count: _Optional[int] = ..., unevaluable_count: _Optional[int] = ..., mean_error: _Optional[float] = ..., rmse: _Optional[float] = ..., max_error: _Optional[float] = ..., error_unit: _Optional[str] = ..., extra_metrics: _Optional[_Iterable[_Union[ScoreMetric, _Mapping]]] = ...) -> None: ...
 
 class TestFrameworkMessage(_message.Message):
-    __slots__ = ("sequence_no", "truth_frame", "score_event")
+    __slots__ = ("sequence_no", "truth_frame", "score_event", "bus_message")
     SEQUENCE_NO_FIELD_NUMBER: _ClassVar[int]
     TRUTH_FRAME_FIELD_NUMBER: _ClassVar[int]
     SCORE_EVENT_FIELD_NUMBER: _ClassVar[int]
+    BUS_MESSAGE_FIELD_NUMBER: _ClassVar[int]
     sequence_no: int
     truth_frame: TruthFrame
     score_event: ScoreEvent
-    def __init__(self, sequence_no: _Optional[int] = ..., truth_frame: _Optional[_Union[TruthFrame, _Mapping]] = ..., score_event: _Optional[_Union[ScoreEvent, _Mapping]] = ...) -> None: ...
+    bus_message: _online_pb2.BusMessage
+    def __init__(self, sequence_no: _Optional[int] = ..., truth_frame: _Optional[_Union[TruthFrame, _Mapping]] = ..., score_event: _Optional[_Union[ScoreEvent, _Mapping]] = ..., bus_message: _Optional[_Union[_online_pb2.BusMessage, _Mapping]] = ...) -> None: ...

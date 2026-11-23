@@ -18,11 +18,11 @@ Shared data contracts live in [proto/chongming/v1/](../proto/chongming/v1/):
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
 | `common.proto` | Geometry primitives, 64-bit ns timestamps, enums, envelopes                                                                            | All components                                 |
 | `online.proto` | `StationConfig`, `FramedVideoPacket`, `RayEvent`, `FusionMeasurement`, `TrackEvent`, `ProgressReport`, `SparseVoxelGrid`, `BusMessage` | Edge, Center, V-Switch, Scorer, Godot Producer |
-| `truth.proto`  | `FrameIndexEntry`, `TruthFrame`, `TargetTruth`, `StationTargetProjection`, `ScoreEvent`, `TestFrameworkMessage`                        | Godot Producer, V-Switch, Scorer               |
+| `truth.proto`  | `FrameIndexEntry`, `TruthFrame`, `TargetTruth`, `StationTargetProjection`, `ScoreEvent`, `TestFrameworkMessage` (embeds `BusMessage`)  | Godot Producer, V-Switch, Scorer               |
 
 Rules:
 
-1. Business packages (`Edge`, `Center`, `chongming`) must never import or generate code from `truth.proto` (`chongming_proto.truth`).
+1. Business packages (`Edge`, `Center`, `chongming`) must never import or generate code from `truth.proto` (`chongming_proto.truth`). `truth.proto` imports `online.proto` one-way only so `online.proto` stays strictly free of truth schemas.
 2. `Scorer` (`chongming_scorer`) must never import business algorithm packages (`chongming`). It depends only on generated schema bindings (`chongming_proto`) and test-framework utilities. Architecture tests enforce both rules.
 3. All timestamps and truth coordinates use 64-bit scalars (`int64` nanoseconds, `double` ENU meters). Godot Producer computes truth and virtual rays in 64-bit scalars and projects to 32-bit scene nodes for rendering only.
 4. `OcclusionStatus` in-FOV invariant: `OCCLUSION_STATUS_OUT_OF_FOV` means the target center is outside the camera FOV; `OCCLUSION_STATUS_VISIBLE`, `OCCLUSION_STATUS_OCCLUDED`, and `OCCLUSION_STATUS_UNKNOWN` all mean the target center is inside the camera FOV. `TargetTruth.body_aabb_diagonal_m` stores the physical body-space model AABB diagonal in meters for size-aware center metrics and range-to-size difficulty strata. `StationTargetProjection.frame_id` links each projection directly to `FrameIndexEntry.frame_id` and `DetectionBatch.main_frame_ref.frame_id`.
@@ -46,6 +46,13 @@ All structured cross-process links use **TCP** with **4-byte big-endian unsigned
   - In **wall-clock / real hardware mode**, V-Switch streams frames or forwards live events without waiting.
   - In **lock-step benchmark mode**, V-Switch waits for the expected `ProgressReport` from Edge (and Center in integrated runs) before releasing the next exposure group.
 - Business timeouts (such as station idle/offline detection in Center) must use experiment/capture time (`CaptureTime`), or support disabling wall-clock timeouts in lock-step mode.
+
+### Online Scorer stream (`V-Switch <-> Scorer`)
+
+`V-Switch <-> Scorer` uses the same 4-byte length-prefixed Protobuf framing on a single TCP connection carrying `TestFrameworkMessage`:
+
+- Initial handshake on connect: `Scorer` sends `TestFrameworkMessage(bus_message=BusMessage(session_hello=SessionHello(role=COMPONENT_ROLE_SCORER, ...)))` and expects `TestFrameworkMessage(bus_message=BusMessage(session_ack=SessionAck(...)))`.
+- `V-Switch` forwards online `BusMessage` items (`StationConfig`, `DetectionBatch`, `FusionMeasurement`, `TrackEvent`, `ProgressReport`, etc.) and optional `TruthFrame` items in `TestFrameworkMessage`. `Scorer` loads static `Test Scene` truth/projections read-only from `--scene` and streams `TestFrameworkMessage(score_event=ScoreEvent(...))` back over the same socket as frames and windows complete.
 
 ### Video packets (`V-Switch -> Edge` and `Producer -> V-Switch`)
 

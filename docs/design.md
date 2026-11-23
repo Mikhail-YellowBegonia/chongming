@@ -34,7 +34,15 @@ One step processes one exposure group. It records raw inputs and results before 
 
 ## Source layout
 
-All paths below are under `src/chongming/`.
+`src/` contains three packages with enforced import boundaries (verified by `tests/test_architecture.py`):
+
+| Package                 | Responsibility                                                                               | Import boundary                                                 |
+| ----------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `src/chongming/`        | Runtime, scenarios, device/center algorithms, and Godot adapter                              | Must never import `chongming_proto.truth` or `chongming_scorer` |
+| `src/chongming_proto/`  | Generated Protobuf bindings (`online` / `truth` split) and `.pb.zst` length-prefixed framing | Depends only on `proto/chongming/v1/` and standard framing      |
+| `src/chongming_scorer/` | Independent offline scorer and `Test Scene` / `Run Output` `.pb.zst` package storage         | Must never import `chongming`                                   |
+
+Wire formats and `.pb.zst` package layouts are specified in [Wire Protocol and Storage Specification](protocol.md). Within `src/chongming/`, module responsibilities are:
 
 | Path                                       | Responsibility                                               |
 | ------------------------------------------ | ------------------------------------------------------------ |
@@ -76,7 +84,7 @@ Local track IDs, center track IDs, and truth target IDs have different scopes. T
 
 `ScenarioStep` has three outputs: `video`, `packets`, and `truth`. Online ports exclude scene truth types. `SceneDefinition` stores generation parameters; `StationConfig` stores the estimates available to algorithms.
 
-This separation is an interface rule, not a security sandbox. Plugins are trusted Python code in the same process.
+This separation is an interface rule, not a security sandbox. Plugins are trusted Python code in the same process. `tests/test_architecture.py` enforces both this online port boundary and the package import boundary isolating `chongming` from `chongming_proto.truth` and `chongming_scorer`.
 
 ## Scene generation
 
@@ -218,6 +226,8 @@ These development display gates are separate from offline model-size scoring. On
 Input frame hashes identify pixels but cannot recover them. Output files and interpretation are listed in [Development](development.md#evidence-and-playback).
 
 Recorded preview restores images and selected truth records, still needs Godot. At recording end it can switch to a live scene source. It is not a complete algorithm replay system.
+
+For the Issue #49 Stage 1 `.pb.zst` storage layout (`Test Scene` and `Run Output` packages) scored independently by `chongming_scorer`, see [Wire Protocol and Storage Specification](protocol.md#storage-format-d6).
 
 ## Technical references
 
