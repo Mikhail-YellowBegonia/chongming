@@ -1,0 +1,24 @@
+[package]
+name = "vswitch"
+version = "0.1.0"
+edition = "2021"
+description = "Chongming V-Switch hub: TCP bus, .pb.zst & Test Scene/Run Output storage, H.264 record/playback, and Viewer push"
+
+[dependencies]
+anyhow = "1"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+prost = "0.13"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "net", "io-util", "process", "rt-multi-thread", "signal", "sync", "time"] }
+zstd = "0.13"
+
+[build-dependencies]
+prost-build = "0.13"
+
+[dev-dependencies]
+tempfile = "3"

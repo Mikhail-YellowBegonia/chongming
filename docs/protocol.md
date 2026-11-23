@@ -58,7 +58,7 @@ All structured cross-process links use **TCP** with **4-byte big-endian unsigned
 
 `FramedVideoPacket` carries exact per-frame metadata (`station_id`, `camera_role`, `frame_id`, `frame_index`, `capture_time`, `codec`, `pixel_format`, `is_keyframe`) alongside `payload`:
 
-- `VIDEO_CODEC_H264`: default for recorded Test Scenes (lower-bitrate `yuv420p` configurable profile).
+- `VIDEO_CODEC_H264`: default for recorded `Test Scene` packages using the D3b `yuv420p` preset (`d3b-yuv420p-crf18-max6m-v1`: `libx264`, `-pix_fmt yuv420p`, `-preset medium`, `-crf 18`, `-maxrate 6M`, `-bufsize 12M`, `-movflags +faststart`). On the 30 s Hannover 3-station 1080p30 benchmark, this reduces main-camera video bitrate from `19.41 Mbps` (`218.34 MB`, `crf-8-yuv444p`) to `5.36 Mbps` (`60.35 MB`) and cuts H.264 decode latency roughly 3x while preserving small-target recall (`100.00%` on `[8, 16) px`, `95.99%` on `extreme-far-small`) and keeping detector F1 within `1.93 pp` (`frame-difference-occupancy-v1`) / `0.02 pp` (`mog2-workbench-v1`). Lower bitrates (`crf 23+`, `<= 2.4 Mbps`) degrade distant targets and trigger compression-artifact false positives on frame-difference detectors. Test Scene generators allow overriding this preset via `manifest.json` for long-range small-target scenes.
 - `VIDEO_CODEC_RAW`: supported for Godot Producer -> V-Switch recording and lossless debugging.
 
 Edge abstracts a `FrameSource` interface:
@@ -70,13 +70,278 @@ Edge abstracts a `FrameSource` interface:
 
 ### Display push (`V-Switch -> Godot Viewer`)
 
-`V-Switch -> Godot Viewer` uses a separate, lightweight, **non-persistent** push channel:
+`V-Switch -> Godot Viewer` uses a separate, lightweight, **non-persistent** TCP push channel carrying UTF-8 JSON display frames (`schema_version: "chongming-viewer-v1"`).
 
-- **Framing**: TCP with 4-byte big-endian length-prefixed UTF-8 JSON (matching the existing Godot viewer parser, with 64-bit integer timestamps encoded as decimal strings to avoid GDScript JSON float truncation).
-- **Non-persistence rule**: display frames pushed from V-Switch to Godot Viewer are strictly ephemeral and **must never be persisted to disk** by V-Switch or Godot Viewer. This prevents duplicate serialization and archive bloat.
-- **Weak dependency**: Godot Viewer is an optional subscriber. If no viewer is connected, or if the viewer disconnects or lags, V-Switch drops display updates and never blocks `Edge -> V-Switch -> Center` or recording.
-- **No scoring in Godot**: Godot Viewer renders pushed overlays (`Truth`, `Rays`, `Answer`, `Score`, optional `SparseVoxelGrid`) only. It does not compute scores, run motion, or write run outputs.
-- In real-hardware / field-trial mode, `Truth` and `Score` fields are absent.
+#### Transport, framing, and lifecycle rules
+
+- **Framing**: TCP stream of **4-byte big-endian (`uint32` BE)** length-prefixed UTF-8 JSON frames (`2 <= length <= 64 MiB`):
+
+  ```text
+  +-----------------------+-----------------------------------+
+  | uint32 length (BE)    | UTF-8 JSON DisplayFrame bytes     |
+  +-----------------------+-----------------------------------+
+  ```
+
+  > **Migration note (Issue #57):** The legacy synchronous Python–Godot renderer ([godot.py](../src/chongming/rendering/godot.py) `_REQUEST_HEADER = struct.Struct("<I")` and [worker.gd](../src/chongming/rendering/godot/worker.gd) `_buffer.decode_u32(0)`) currently reads a 4-byte **little-endian** length prefix. Issue #57 must update Godot Viewer's passive display-push reader in `worker.gd` to **big-endian (`uint32` BE)** to match this frozen wire contract and the rest of the Issue #49 bus.
+
+- **Non-persistence rule**: Display frames pushed from V-Switch to Godot Viewer are strictly ephemeral and **must never be persisted to disk** by V-Switch or Godot Viewer. This prevents duplicate serialization and archive bloat.
+- **Weak dependency and drop-on-lag**: Godot Viewer is an optional subscriber. If no viewer is connected, or if a viewer disconnects or lags (slow read / full TCP send buffer), V-Switch drops display updates (keeping at most the latest state or dropping on backpressure) and **never blocks** `Edge -> V-Switch -> Center`, lock-step gating, or `.pb.zst` recording.
+- **No scoring in Godot**: Godot Viewer renders pushed overlays (`truth`, `rays`, `answer`, `score`, optional `sparse_voxel_grid`) only. It does not compute scores, run motion/fusion, or write run outputs.
+- **Real-hardware / field-trial mode (`mode: "live"`)**: `has_truth` MUST be `false`, and top-level `truth` and `score` keys MUST be **omitted (absent)** from the JSON object.
+- **64-bit integer encoding rule**: GDScript's `JSON.parse_string()` parses JSON numbers as IEEE-754 `float64` (exact only up to `2^53`). Therefore, **every `int64` and `uint64` field** — all nanosecond timestamps (`experiment_time_ns`, `capture_time_ns`, `exposure_start_ns`, `exposure_end_ns`, `reference_time_ns`, `event_time_ns`, `window_start_ns`, `window_end_ns`), all sequence/update/step counters (`update_id`, `sequence_no`, `step_index`, `EventId.sequence_no`, `CalibrationState.state_version`), and all 64-bit counts (`matched_count`, `unmatched_count`, `unevaluable_count`) — MUST be encoded as **base-10 decimal strings** (e.g., `"1763784000123456789"`), never JSON numbers. Readers validate integer strings and reject floats or out-of-range values.
+
+#### Top-level `DisplayFrame` JSON envelope
+
+| Field                | JSON type           | Presence / Rule                                                                                                                 | Description                                                                |
+| -------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `schema_version`     | `string`            | Required                                                                                                                        | Fixed `"chongming-viewer-v1"`                                              |
+| `run_id`             | `string`            | Required                                                                                                                        | Run identifier (`SessionAck.run_id` / `run_manifest.json["run_id"]`)       |
+| `mode`               | `string`            | Required                                                                                                                        | `"edge"`, `"center"`, `"integrated"`, or `"live"`                          |
+| `update_id`          | `string` (`uint64`) | Required                                                                                                                        | Monotonic logical display update ID (`>= "1"`) encoded as base-10 string   |
+| `sequence_no`        | `string` (`uint64`) | Required                                                                                                                        | Monotonic viewer-stream push counter (`>= "1"`) to detect drop-on-lag gaps |
+| `experiment_time_ns` | `string` (`int64`)  | Required                                                                                                                        | Current experiment/capture timestamp in ns encoded as base-10 string       |
+| `has_truth`          | `boolean`           | Required                                                                                                                        | `true` when Test Scene truth is active; `false` in `"live"` mode           |
+| `stations`           | `array[object]`     | Required                                                                                                                        | Array of `StationDisplayState` (`[]` if none registered yet)               |
+| `truth`              | `object`            | Present iff `has_truth == true` and truth is available for `experiment_time_ns`; **omitted (absent)** when `has_truth == false` | `TruthOverlay` mapped from `TruthFrame`                                    |
+| `rays`               | `object`            | Required                                                                                                                        | `RaysOverlay` (`items`, `calibration_states`, `diagnostics`)               |
+| `answer`             | `object`            | Required                                                                                                                        | `AnswerOverlay` (`measurements`, `tracks`)                                 |
+| `score`              | `object`            | Present iff `has_truth == true` and Scorer has emitted `ScoreEvent`(s); **omitted (absent)** when `has_truth == false`          | `ScoreOverlay` mapped from `ScoreEvent`                                    |
+| `sparse_voxel_grid`  | `object`            | Optional; **omitted (absent)** unless Center exported a `SparseVoxelGrid`                                                       | `SparseVoxelGridOverlay` mapped from `SparseVoxelGrid`                     |
+
+#### Nested object schemas and Protobuf mappings
+
+Geometry vectors use JSON arrays of finite `number`s (`[x, y]` for `Vec2`, `[x, y, z]` for `Vec3`, and `[[r00, r01, r02], [r10, r11, r12], [r20, r21, r22]]` row-major for 3x3 rotations). Protobuf enums map to lowercase snake-case strings without the enum prefix:
+
+- `CalibrationHealth`: `"initializing" | "valid" | "frozen" | "stale" | "recovering" | "invalid"`
+- `CalibrationUsage`: `"valid" | "frozen" | "stale"`
+- `OcclusionStatus`: `"visible" | "occluded" | "out_of_fov" | "unknown"`
+- `FusionStatus`: `"located" | "geometry_degenerate" | "association_ambiguous" | "insufficient_stations" | "no_candidate_in_volume" | "rejected_input"`
+- `TrackLifecycle`: `"tentative" | "confirmed" | "coasting" | "deleted"`
+
+1. **`stations[]` (`StationDisplayState`, from `StationConfig` + latest `CalibrationStateEvent`)**:
+   - `station_id` (`string`, required)
+   - `main_camera_position_enu_m` (`[number, number, number]`, required)
+   - `baseline_orientation_enu_from_main` (`number[3][3]`, required)
+   - `calibrated_orientation_enu_from_main` (`number[3][3] | null`, from `CalibrationSolution.rotation_enu_from_main`)
+   - `calibration_health` (`string | null`, `CalibrationHealth`)
+   - `calibration_usage` (`string | null`, `CalibrationUsage`)
+   - `state_version` (`string | null`, `uint64` decimal string from `CalibrationState.state_version`)
+   - `solution_id` (`string | null`, from `CalibrationSolutionRef.solution_id`)
+
+2. **`truth` (`TruthOverlay`, from `truth.proto` `TruthFrame`; omitted when `has_truth == false`)**:
+   - `world_frame_id` (`string`, required)
+   - `experiment_time_ns` (`string`, required, `int64` decimal string)
+   - `step_index` (`string`, required, `uint64` decimal string)
+   - `targets` (`array[TargetTruthItem]`, required):
+     - `target_id` (`string`, required)
+     - `target_class` (`string`, required)
+     - `position_enu_m` (`[number, number, number]`, required)
+     - `velocity_enu_mps` (`[number, number, number]`, required)
+     - `bounding_radius_m` (`number`, required, `>= 0`)
+     - `body_aabb_diagonal_m` (`number | null`, required)
+   - `projections` (`array[StationTargetProjectionItem]`, required):
+     - `station_id` (`string`, required)
+     - `target_id` (`string`, required)
+     - `occlusion_status` (`string`, required, `OcclusionStatus`)
+     - `projected_centroid_px` (`[number, number] | null`, required)
+     - `projected_diagonal_px` (`number | null`, required)
+     - `range_m` (`number | null`, required)
+     - `frame_id` (`string | null`, required)
+
+3. **`rays` (`RaysOverlay`, from `online.proto` `RayEvent`, `CalibrationStateEvent`, `DiagnosticEvent`)**:
+   - `items` (`array[RayItem]`, required):
+     - `event_id` (`[string, string, string]`, required: `[station_id, station_session_id, sequence_no_u64_str]`)
+     - `frame_id` (`string`, required)
+     - `capture_time_ns` (`string`, required, `int64` decimal string midpoint `(exposure_start_ns + exposure_end_ns) // 2`)
+     - `exposure_start_ns` (`string`, required, `int64` decimal string)
+     - `exposure_end_ns` (`string`, required, `int64` decimal string)
+     - `origin_enu_m` (`[number, number, number]`, required, from `ray_origin_enu_m`)
+     - `direction_enu_unit` (`[number, number, number]`, required, from `ray_direction_enu_unit`)
+     - `calibration_usage` (`string`, required, `CalibrationUsage`)
+     - `detection_score` (`number`, required)
+     - `angular_std_rad` (`number | null`, required: spectral norm / major std of `uncertainty.independent_angular_covariance_rad2`)
+     - `local_track_id` (`string | null`, required)
+     - `quality_flags` (`array[string]`, required)
+   - `calibration_states` (`array[CalibrationStateItem]`, required):
+     - `event_id` (`[string, string, string]`, required)
+     - `station_id` (`string`, required)
+     - `state_version` (`string`, required, `uint64` decimal string)
+     - `health` (`string`, required, `CalibrationHealth`)
+     - `solution_id` (`string | null`, required)
+     - `observed_at_ns` (`string`, required, `int64` decimal string)
+     - `reason_codes` (`array[string]`, required)
+   - `diagnostics` (`array[DiagnosticItem]`, required):
+     - `event_id` (`[string, string, string]`, required)
+     - `station_id` (`string`, required)
+     - `capture_time_ns` (`string | null`, required, `int64` decimal string midpoint if `capture_time` is present)
+     - `category` (`string`, required)
+     - `reason_codes` (`array[string]`, required)
+
+4. **`answer` (`AnswerOverlay`, from `online.proto` `FusionMeasurement` and `TrackEvent`)**:
+   - `measurements` (`array[MeasurementItem]`, required):
+     - `center_session_id` (`string`, required)
+     - `measurement_id` (`string`, required)
+     - `reference_time_ns` (`string`, required, `int64` decimal string)
+     - `support_exposure_span_ns` (`string`, required, `int64` decimal string)
+     - `status` (`string`, required, `FusionStatus`)
+     - `position_enu_m` (`[number, number, number] | null`, required; `null` when `status != "located"`)
+     - `position_std_enu_m` (`[number, number, number] | null`, required; square root of diagonal of `conditional_position_covariance_enu_m2`, `null` when `status != "located"` or covariance absent)
+     - `supporting_ray_event_ids` (`array[[string, string, string]]`, required)
+     - `supporting_station_ids` (`array[string]`, required)
+     - `minimum_intersection_angle_deg` (`number | null`, required; converted from `minimum_intersection_angle_rad`)
+     - `geometry_condition` (`number | null`, required)
+     - `reason_codes` (`array[string]`, required)
+   - `tracks` (`array[TrackItem]`, required):
+     - `center_session_id` (`string`, required)
+     - `track_id` (`string`, required)
+     - `event_time_ns` (`string`, required, `int64` decimal string)
+     - `lifecycle` (`string`, required, `TrackLifecycle`)
+     - `position_enu_m` (`[number, number, number] | null`, required)
+     - `velocity_enu_mps` (`[number, number, number] | null`, required)
+     - `position_std_enu_m` (`[number, number, number] | null`, required; square root of diagonal `[0..2]` of `conditional_state_covariance`)
+     - `velocity_std_enu_mps` (`[number, number, number] | null`, required; square root of diagonal `[3..5]` of `conditional_state_covariance`)
+     - `source_measurement_ids` (`array[string]`, required, from `source_measurement_refs[].measurement_id`)
+     - `reason_codes` (`array[string]`, required)
+
+5. **`score` (`ScoreOverlay`, from `truth.proto` `ScoreEvent`; omitted when `has_truth == false` or before any `ScoreEvent` arrives)**:
+   - `events` (`array[ScoreEventItem]`, required, non-empty when `score` key is present; integrated runs may carry both `"px"` and `"m"` items):
+     - `run_id` (`string`, required)
+     - `experiment_time_ns` (`string`, required, `int64` decimal string)
+     - `matched_count` (`string`, required, `uint64` decimal string)
+     - `unmatched_count` (`string`, required, `uint64` decimal string)
+     - `unevaluable_count` (`string`, required, `uint64` decimal string)
+     - `mean_error` (`number | null`, required)
+     - `rmse` (`number | null`, required)
+     - `max_error` (`number | null`, required)
+     - `error_unit` (`string`, required: `"px"` or `"m"`)
+     - `extra_metrics` (`array[{"name": string, "value": number | null, "unit": string}]`, required)
+
+6. **`sparse_voxel_grid` (`SparseVoxelGridOverlay`, from `online.proto` `SparseVoxelGrid`; omitted unless exported)**:
+   - `center_session_id` (`string`, required)
+   - `world_frame_id` (`string`, required)
+   - `window_start_ns` (`string`, required, `int64` decimal string)
+   - `window_end_ns` (`string`, required, `int64` decimal string)
+   - `min_enu_m` (`[number, number, number]`, required)
+   - `step_enu_m` (`[number, number, number]`, required)
+   - `max_score` (`integer`, required: `max(station_votes)`, fits in `uint32`)
+   - `cells` (`array[{"ix": integer, "iy": integer, "iz": integer, "station_votes": integer}]`, required)
+
+#### Example `DisplayFrame` JSON (benchmark run with truth & score)
+
+```json
+{
+  "schema_version": "chongming-viewer-v1",
+  "run_id": "run-01",
+  "mode": "integrated",
+  "update_id": "42",
+  "sequence_no": "42",
+  "experiment_time_ns": "1763784000123456789",
+  "has_truth": true,
+  "stations": [
+    {
+      "station_id": "station-west",
+      "main_camera_position_enu_m": [-250.0, 0.0, 12.0],
+      "baseline_orientation_enu_from_main": [
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0]
+      ],
+      "calibrated_orientation_enu_from_main": [
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0]
+      ],
+      "calibration_health": "valid",
+      "calibration_usage": "valid",
+      "state_version": "3",
+      "solution_id": "sol-3"
+    }
+  ],
+  "truth": {
+    "world_frame_id": "enu",
+    "experiment_time_ns": "1763784000123456789",
+    "step_index": "42",
+    "targets": [
+      {
+        "target_id": "ultra-far-aircraft",
+        "target_class": "f86",
+        "position_enu_m": [120.5, 840.0, 210.0],
+        "velocity_enu_mps": [18.0, -4.0, 0.5],
+        "bounding_radius_m": 6.5,
+        "body_aabb_diagonal_m": 13.0
+      }
+    ],
+    "projections": [
+      {
+        "station_id": "station-west",
+        "target_id": "ultra-far-aircraft",
+        "occlusion_status": "visible",
+        "projected_centroid_px": [964.2, 412.8],
+        "projected_diagonal_px": 14.3,
+        "range_m": 939.4,
+        "frame_id": "station-west-main-0042"
+      }
+    ]
+  },
+  "rays": {
+    "items": [
+      {
+        "event_id": ["station-west", "sess-w1", "105"],
+        "frame_id": "station-west-main-0042",
+        "capture_time_ns": "1763784000123456789",
+        "exposure_start_ns": "1763784000123456789",
+        "exposure_end_ns": "1763784000123456789",
+        "origin_enu_m": [-250.0, 0.0, 12.0],
+        "direction_enu_unit": [0.394, 0.894, 0.211],
+        "calibration_usage": "valid",
+        "detection_score": 0.88,
+        "angular_std_rad": 0.0012,
+        "local_track_id": "1",
+        "quality_flags": []
+      }
+    ],
+    "calibration_states": [],
+    "diagnostics": []
+  },
+  "answer": {
+    "measurements": [
+      {
+        "center_session_id": "sess-c1",
+        "measurement_id": "m-42",
+        "reference_time_ns": "1763784000123456789",
+        "support_exposure_span_ns": "0",
+        "status": "located",
+        "position_enu_m": [121.1, 839.2, 209.6],
+        "position_std_enu_m": [1.8, 2.4, 1.5],
+        "supporting_ray_event_ids": [["station-west", "sess-w1", "105"]],
+        "supporting_station_ids": ["station-west", "station-east"],
+        "minimum_intersection_angle_deg": 28.4,
+        "geometry_condition": 2.1,
+        "reason_codes": []
+      }
+    ],
+    "tracks": []
+  },
+  "score": {
+    "events": [
+      {
+        "run_id": "run-01",
+        "experiment_time_ns": "1763784000123456789",
+        "matched_count": "1",
+        "unmatched_count": "0",
+        "unevaluable_count": "0",
+        "mean_error": 1.077,
+        "rmse": 1.077,
+        "max_error": 1.077,
+        "error_unit": "m",
+        "extra_metrics": [
+          { "name": "missed_targets", "value": 0.0, "unit": "count" }
+        ]
+      }
+    ]
+  }
+}
+```
 
 ## Storage format (D6)
 
@@ -117,7 +382,22 @@ Created once by `Godot Producer -> V-Switch`. Once finalized, it is **strictly r
 - `occlusion_mode`: `"known"` or `"unknown"`
 - `stations`: list of Protobuf `StationConfig` JSON objects (`MessageToDict` with `preserving_proto_field_name=True`)
 - `targets`: optional static target metadata mapping (`target_id -> {"body_aabb_diagonal_m": float, ...}`)
-- `video`: per-track codec/dimensions metadata keyed by relative path (`video/<station>-<role>.mp4`)
+- `encoding_preset`: optional scene-wide H.264 encoding preset object used when generating or re-encoding tracks (defaults to D3b `d3b-yuv420p-crf18-max6m-v1` when omitted on converted legacy scenes):
+  ```json
+  {
+    "preset_id": "d3b-yuv420p-crf18-max6m-v1",
+    "codec": "libx264",
+    "container": "mp4",
+    "encoded_pixel_format": "yuv420p",
+    "x264_preset": "medium",
+    "crf": 18,
+    "maxrate_kbps": 6000,
+    "bufsize_kbps": 12000,
+    "target_bitrate_kbps": null
+  }
+  ```
+  Future high-quality or long-range small-target scenes can override `crf`, `encoded_pixel_format` (e.g., `"yuv444p"`), `x264_preset`, `maxrate_kbps`, `bufsize_kbps`, or `target_bitrate_kbps` here or per track.
+- `video`: per-track codec/dimensions metadata keyed by relative path (`video/<station>-<role>.mp4`), including `station_id`, `camera_role`, `codec`, `container`, `fps`, `frame_count`, `width_px`, `height_px`, `pixel_format` (pre-encode source format such as `"rgb8"`), `encoded_pixel_format` (e.g., `"yuv420p"`), `quality` label, optional per-track `encoding_preset` override object, and measured `average_bitrate_kbps`.
 - `files`: mapping from package-relative paths (`frame_index.pb.zst`, `truth.pb.zst`, `virtual_rays.pb.zst`, and video tracks) to `{"sha256": "<hex>", "bytes": <int>}`
 - `content_sha256`: SHA-256 hex digest of canonical JSON (`sort_keys=True`, compact separators) of the manifest excluding `"content_sha256"`
 
