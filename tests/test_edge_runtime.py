@@ -651,15 +651,12 @@ class EdgeGodotTests(unittest.TestCase):
                 ):
                     session.run_ui(tick_hz=240)
                 _, reports, states = workers[-1]
-                self.assertEqual(reports[0]["evaluation"]["edge"]["outputs"], 0)
-                self.assertEqual(reports[0]["evaluation"]["center"]["outputs"], 0)
+                self.assertEqual(reports[0]["measurements"], [])
                 if known_pixels:
                     self.assertGreater(session.ray_count, 0)
-                    self.assertGreater(reports[-1]["evaluation"]["edge"]["matched"], 0)
                 else:
                     self.assertEqual(session.ray_count, 0)
-                    self.assertIsNone(reports[-1]["evaluation"]["edge"]["mean_error"])
-                    self.assertEqual(reports[-1]["evaluation"]["center"]["outputs"], 0)
+                    self.assertEqual(reports[-1]["measurements"], [])
                     journal = rows(output / "edge-output.jsonl")
                     self.assertTrue(
                         any(
@@ -679,16 +676,14 @@ class EdgeGodotTests(unittest.TestCase):
                         "unknown_centroid_covariance_px2",
                         (output / "edge-output.jsonl").read_text(),
                     )
-                self.assertEqual(reports[-1]["evaluation"]["edge"]["outputs"], session.ray_count)
                 self.assertIn(f"模式 {mode}", reports[-1]["info_text"])
                 self.assertTrue(all(state["execution_mode"] == mode for state in states))
                 self.assertTrue(all(all(report["controls"]) for report in reports))
                 self.assertNotIn("SCRIPT ERROR", reports[-1]["worker_log"])
                 if mode == 2:
-                    self.assertEqual(reports[-1]["evaluation"]["center"]["outputs"], 0)
+                    self.assertEqual(reports[-1]["measurements"], [])
                 elif known_pixels:
-                    self.assertGreater(reports[-1]["evaluation"]["center"]["outputs"], 0)
-                    self.assertGreater(reports[-1]["evaluation"]["center"]["matched"], 0)
+                    self.assertGreater(len(reports[-1]["measurements"]), 0)
                     events = [
                         received["event"]
                         for row in rows(output / "center-input.jsonl")

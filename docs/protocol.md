@@ -82,7 +82,7 @@ Edge abstracts a `FrameSource` interface:
   +-----------------------+-----------------------------------+
   ```
 
-  > **Migration note (Issue #57):** The legacy synchronous Python–Godot renderer ([godot.py](../src/chongming/rendering/godot.py) `_REQUEST_HEADER = struct.Struct("<I")` and [worker.gd](../src/chongming/rendering/godot/worker.gd) `_buffer.decode_u32(0)`) currently reads a 4-byte **little-endian** length prefix. Issue #57 must update Godot Viewer's passive display-push reader in `worker.gd` to **big-endian (`uint32` BE)** to match this frozen wire contract and the rest of the Issue #49 bus.
+  > **Godot Viewer CLI & framing (Issue #57):** Start passive Godot Viewer with `--viewer <host:port>` (or `--viewer-host <host> --viewer-port <port>`, optional `--reconnect-ms <ms>`) pointing at `V-Switch`'s `--viewer-bind` socket; `worker.gd` connects as a TCP client, reads **4-byte big-endian (`uint32` BE)** `chongming-viewer-v1` JSON frames, writes nothing to disk or back over the socket, and automatically reconnects on disconnect. The legacy synchronous Python–Godot renderer ([godot.py](../src/chongming/rendering/godot.py) `_REQUEST_HEADER = struct.Struct("<I")` and `worker.gd`'s `--port` server path) keeps its 4-byte little-endian framing until Issue #58 completes the Producer migration.
 
 - **Non-persistence rule**: Display frames pushed from V-Switch to Godot Viewer are strictly ephemeral and **must never be persisted to disk** by V-Switch or Godot Viewer. This prevents duplicate serialization and archive bloat.
 - **Weak dependency and drop-on-lag**: Godot Viewer is an optional subscriber. If no viewer is connected, or if a viewer disconnects or lags (slow read / full TCP send buffer), V-Switch drops display updates (keeping at most the latest state or dropping on backpressure) and **never blocks** `Edge -> V-Switch -> Center`, lock-step gating, or `.pb.zst` recording.
@@ -431,6 +431,6 @@ This specification tracks the Issue #49 stages:
 
 1. Stage 0 (Done): Shared Schema (`.proto`), wire/storage spec, and Nix Rust/`protoc` toolchain.
 2. Stage 1 (Done): Independent `chongming_scorer` package and `chongming_proto` bindings reading/writing immutable `Test Scene` and independent `Run Output` packages (`.pb.zst`).
-3. Stage 2: Rust `V-Switch` and standalone Python `Edge` / `Center` processes using `online.proto`.
-4. Stage 3: Godot Producer full-stack migration and passive Godot Viewer push integration.
+3. Stage 2 (Done): Rust `V-Switch` (`crates/vswitch`) and standalone Python `Edge` / `Center` / `Scorer` TCP processes using `online.proto` and `truth.proto`.
+4. Stage 3 (In progress): Passive Godot Viewer push integration (Done, Issue #57) and Godot Producer full-stack migration (Issue #58).
 5. Stage 4: Rust `Edge` validated against Issue #51 metrics, QEMU functional/cross-compile CI, and real hardware integration.

@@ -52,7 +52,6 @@ class VisualizationPerformanceTests(unittest.TestCase):
         for item in reports:
             perf = item["performance"]
             self.assertEqual(perf["update_ms"]["samples"], 1)
-            self.assertEqual(perf["evaluation_ms"]["samples"], 1)
             self.assertEqual(perf["redraw_ms"]["samples"], 0)
             self.assertIsNone(perf["redraw_ms"]["p95"])
             self.assertGreaterEqual(perf["update_ms"]["p95"], 0)
@@ -60,13 +59,29 @@ class VisualizationPerformanceTests(unittest.TestCase):
         self.assertEqual(reports[1]["performance"], reports[2]["performance"])
 
     def test_timing_window_is_bounded_without_losing_update_count(self) -> None:
-        from tests.test_godot_evaluation import TIME, payload
+        from dataclasses import replace
 
-        states = [payload({TIME: ()}, update_id=index) for index in range(1, 521)]
+        from chongming.contracts import visualization as v
+        from chongming.rendering.godot import visualization_ui_state
+
+        states = [
+            {
+                "version": index,
+                **visualization_ui_state(
+                    replace(
+                        transport.fixed_update(index),
+                        edge_events=None,
+                        center_events=None,
+                        station_states=None,
+                    ),
+                    (v.TruthComparisonSnapshot(targets=()),),
+                ),
+            }
+            for index in range(1, 521)
+        ]
         result = transport.VisualizationReceiverTests().receive(*states)[-1]
         self.assertEqual(result["update_count"], 520)
-        for key in ("update_ms", "evaluation_ms"):
-            timing = result["performance"][key]
-            self.assertEqual(timing["samples"], 512)
-            self.assertLessEqual(timing["p50"], timing["p95"])
-            self.assertLessEqual(timing["p95"], timing["max"])
+        timing = result["performance"]["update_ms"]
+        self.assertEqual(timing["samples"], 512)
+        self.assertLessEqual(timing["p50"], timing["p95"])
+        self.assertLessEqual(timing["p95"], timing["max"])

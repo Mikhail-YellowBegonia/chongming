@@ -172,8 +172,7 @@ func _initialize() -> void:
             "measurements": receiver.measurements.values().duplicate(true), "tracks": receiver.tracks.values().duplicate(true),
             "track_history": receiver.track_history.duplicate(true), "station_states": receiver.station_states.duplicate(true),
             "truth_times": receiver.truth_by_time.keys(), "truth_snapshots": receiver.truth_by_time.values().duplicate(true),
-            "performance": receiver.performance_summary(),
-            "evaluation": receiver.evaluation.summary(), "matches": receiver.evaluation.last_matches.duplicate(true)})
+            "performance": receiver.performance_summary()})
     print("REPORT " + JSON.stringify(reports))
     quit()
 """
@@ -245,7 +244,6 @@ class VisualizationReceiverTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
             shutil.copy(PROJECT / "visualization.gd", project)
-            shutil.copy(PROJECT / "evaluation.gd", project)
             (project / "project.godot").write_text("config_version=5\n")
             (project / "receiver.gd").write_text(RECEIVER_SCRIPT)
             source = project / "states.json"

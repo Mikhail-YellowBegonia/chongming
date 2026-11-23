@@ -206,18 +206,9 @@ Raw voxel scores 0 and 1 create no geometry. Scores 2–15 use solid faces with 
 
 ### Error diagnostics
 
-`evaluation.gd` groups rays by station and exposure time, and measurements by reference time. It compares them with independently sampled truth at those times. Matching first maximizes the number of legal pairs, then minimizes total error.
+Godot no longer computes error metrics locally (`evaluation.gd` was removed in Issue #57). When running via `V-Switch`, `chongming_scorer` streams `ScoreEvent` updates that `V-Switch` pushes to Godot Viewer as `ScoreOverlay` in `chongming-viewer-v1` (`--viewer <host:port>`).
 
-The development gates are `0.01 rad` for pointing and `10 m` for position. Statistics obey:
-
-```text
-outputs = matched + unmatched + unevaluable
-valid = matched + unmatched
-```
-
-Mean error, RMSE, and maximum error use matched samples only. No samples produce `null`.
-
-These development display gates are separate from offline model-size scoring. Online update, evaluation and redraw costs are summarized in [Visualization monitoring](visualization-monitoring.md); experiment quality and timing are in the [benchmark](benchmark-2026-11-02.md).
+Visualization update and redraw CPU wall costs are summarized in [Visualization monitoring](visualization-monitoring.md); experiment quality and timing are in the [benchmark](benchmark-2026-11-02.md).
 
 ## Evidence and playback
 

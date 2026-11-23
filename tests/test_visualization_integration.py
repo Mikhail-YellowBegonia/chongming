@@ -49,7 +49,6 @@ WORKER = ui.RUN_WORKER.replace(
 ).replace(
     '"last_update": _visualization.last_update,',
     """"last_update": _visualization.last_update,
-        "last_matches": _visualization.evaluation.last_matches,
         "selection": _visualization.selection_summary(),
         "voxel_space": _visualization.voxel_space,
         "ray_count": _visualization.rays.size(), "nodes": nodes, "visible": visible,""",
@@ -115,7 +114,7 @@ class VisualizationIntegrationTests(unittest.TestCase):
             # Replay the complete accepted increment, then a heartbeat.
             # Neither may evaluate again, append history or replace meshes.
             exchange(state, images)
-            for field in ("update_count", "evaluation", "nodes", "selection", "voxel_space"):
+            for field in ("update_count", "nodes", "selection", "voxel_space"):
                 self.assertEqual(reports[-1][field], before[field], field)
             heartbeat = {
                 key: value
@@ -123,7 +122,7 @@ class VisualizationIntegrationTests(unittest.TestCase):
                 if key not in ("algorithm_output", "truth_snapshots")
             }
             exchange(heartbeat)
-            self.assertEqual(reports[-1]["evaluation"], before["evaluation"])
+            self.assertEqual(reports[-1]["update_count"], before["update_count"])
             self.assertEqual(reports[-1]["nodes"], before["nodes"])
             self.assertEqual(session.source.clock.read(), clock)
             acknowledged.append(index)
@@ -161,7 +160,7 @@ class VisualizationIntegrationTests(unittest.TestCase):
                 self.assertIsNone(renderer._socket)
                 self.assertEqual(acknowledged, list(range(1, session.step_count + 2)))
                 self.assertGreater(session.ray_count, 0)
-                self.assertGreater(reports[-1]["evaluation"]["center"]["matched"], 0)
+                self.assertGreater(len(reports[-1]["measurements"]), 0)
                 self.assertTrue(all(value == enabled for value in reports[-1]["visible"].values()))
                 if enabled:
                     self.assertTrue(reports[-1]["selection"]["available_ray_ids"])
@@ -285,9 +284,7 @@ class VisualizationIntegrationTests(unittest.TestCase):
             self.assertTrue(
                 all(not row["measurements"] for row in rows(root / "run/center-output.jsonl"))
             )
-            stats = workers[-1][1][-1]["evaluation"]["center"]
-            self.assertEqual(stats["outputs"], 0)
-            self.assertIsNone(stats["mean_error"])
+            self.assertEqual(workers[-1][1][-1]["measurements"], [])
             self.assertTrue(session.closed)
 
     def test_switching_from_image_results_to_empty_modes_and_preview_clears_every_cache(
@@ -333,9 +330,7 @@ class VisualizationIntegrationTests(unittest.TestCase):
                 self.assertEqual(reports[0]["selection"]["measurement_id"], "")
                 self.assertEqual(reports[-1]["ray_count"], 0)
                 self.assertEqual(reports[-1]["track_count"], 0)
-                for name in ("edge", "center"):
-                    self.assertEqual(reports[-1]["evaluation"][name]["outputs"], 0)
-                    self.assertIsNone(reports[-1]["evaluation"][name]["mean_error"])
+                self.assertEqual(reports[-1]["measurements"], [])
                 self.assertNotIn("SCRIPT ERROR", reports[-1]["worker_log"])
             runtime = PreviewRuntime(
                 load_scenario(path),
@@ -427,7 +422,7 @@ class VisualizationIntegrationTests(unittest.TestCase):
             recovery.run_ui(tick_hz=240)
             self.assertEqual(workers[-1][1][0]["update_count"], 0)
             self.assertEqual(workers[-1][1][0]["track_count"], 0)
-            self.assertEqual(workers[-1][1][0]["evaluation"]["center"]["outputs"], 0)
+            self.assertEqual(workers[-1][1][0]["measurements"], [])
 
 
 if __name__ == "__main__":

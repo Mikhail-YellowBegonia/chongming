@@ -50,7 +50,6 @@ chongming-center = "chongming.development:main"
                 "src/chongming/rendering/godot/terrain.gdshader": b"shader_type spatial;\n",
                 "src/chongming/rendering/godot/ui.gd": b"extends Control\n",
                 "src/chongming/rendering/godot/visualization.gd": b"extends RefCounted\n",
-                "src/chongming/rendering/godot/evaluation.gd": b"extends RefCounted\n",
                 "src/chongming_proto/__init__.py": b"",
                 "src/chongming_proto/py.typed": b"",
                 "src/chongming_proto/online.py": b"",
@@ -138,7 +137,7 @@ chongming-center = "chongming.development:main"
             check_wheel(self.sources, self.wheel, self.version)
 
     def test_visualization_resources_are_required_even_if_both_archives_omit_them(self) -> None:
-        for filename in ("ui.gd", "visualization.gd", "evaluation.gd"):
+        for filename in ("ui.gd", "visualization.gd"):
             with self.subTest(filename=filename):
                 name = f"chongming/rendering/godot/{filename}"
                 sources = {

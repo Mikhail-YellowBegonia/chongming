@@ -428,6 +428,7 @@ uv run --frozen python -m unittest -v \
   tests/test_integrated_attribution.py \
   tests/test_dynamic_scoring.py \
   tests/test_evaluation_preview.py \
+  tests/test_godot_viewer.py \
   tests/test_performance.py \
   tests/test_distribution.py
 for scenario in scenarios/*.json; do
@@ -469,6 +470,12 @@ Full discovery was interrupted while `test_editor_updates_native_view_without_se
 - `test_explicit_landscape_and_scenario_paths_survive_a_working_directory_change`: macOS `/tmp` versus resolved `/private/tmp` path mismatch.
 
 These remain unresolved. Assertions and runtime thresholds were not relaxed to hide them.
+
+During Issue #57 verification against `main` (`5b22ae2`), three additional pre-existing Godot graphics/integration test failures were reproduced without relaxing assertions:
+
+- `tests/test_godot_visualization_layers.py::VisualizationLayerTests::test_fixed_geometry_styles_visibility_and_sensor_pixels`: toggling visibility checkboxes invokes `redraw()`, freeing and recreating `MeshInstance3D` nodes so `instance` IDs differ from the initial snapshot.
+- `tests/test_godot_voxels.py::VoxelGraphicsTests::test_solid_cells_use_raw_corners_score_alpha_and_clipped_edge_cells`: `visualization.gd::_draw_voxels()` skips `score <= 2` (since commit `a37e8f0`), whereas the test supplies a 2-vote cell and asserts two mesh groups (`1 != 2`).
+- `tests/test_visualization_integration.py::VisualizationIntegrationTests` (all 4 tests): short mode-4 runs using `real_scene()` produce `session.ray_count == 0` under current device/warmup defaults.
 
 ### Formatting
 
