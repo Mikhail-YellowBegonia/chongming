@@ -95,6 +95,8 @@ class CenterProcess:
         self._last_sealed_ref_ns: int | None = None
         self._station_configs: dict[m.StationId, m.StationConfig] = {}
         self._stations_with_frames: set[m.StationId] = set()
+        self._ended_stations: set[m.StationId] = set()
+        self._stream_finished = False
         self._algorithm = ReferenceFusionAlgorithm(postintersection=postintersection)
         self._algorithm.voxel_diagnostics.enabled = voxel_diagnostics_enabled
         self._started = False
@@ -229,6 +231,17 @@ class CenterProcess:
 
         if kind == "progress_report":
             report = msg.progress_report
+            if (
+                report.finite_end_reached
+                and report.source_role == common_pb2.COMPONENT_ROLE_UNSPECIFIED
+                and m.StationId(report.source_id) not in self._station_configs
+            ):
+                now = self._next_now(
+                    int(report.completed_time_ns) if report.completed_time_ns != 0 else None
+                )
+                self._emit_step(now=now, stream_ended=True)
+                self._stream_finished = True
+                return
             station_id = m.StationId(report.source_id)
             cfg = self._station_configs.get(station_id)
             if cfg is None:
@@ -238,7 +251,11 @@ class CenterProcess:
             has_completed_frame = (station_id in self._stations_with_frames) or (
                 report.completed_time_ns != 0
             )
-            if not report.finite_end_reached:
+            if report.finite_end_reached:
+                self._ended_stations.add(station_id)
+                if self._station_configs and self._ended_stations >= set(self._station_configs):
+                    self._stream_finished = True
+            else:
                 self._stations_with_frames.add(station_id)
             now = self._next_now(int(report.completed_time_ns) if has_completed_frame else None)
             progress = progress_report_from_proto(
@@ -293,7 +310,7 @@ class CenterProcess:
         )
         self._started = True
         try:
-            while True:
+            while not self._stream_finished:
                 msg = self.client.receive()
                 if msg is None:
                     break

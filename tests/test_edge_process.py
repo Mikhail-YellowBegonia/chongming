@@ -506,3 +506,78 @@ class EdgeProcessTests(unittest.TestCase):
         self.assertEqual(len(progress_reports), 3)
         self.assertTrue(progress_reports[-1].finite_end_reached)
         self.assertEqual(progress_reports[-1].completed_time_ns, 100_000_000)
+
+    def test_h264_stream_decoder_select_frame_across_multi_gop_p_frames(self) -> None:
+        ffmpeg = _ffmpeg_path()
+        if ffmpeg is None:
+            self.skipTest("ffmpeg is not available")
+        w, h = 64, 48
+        raw = bytearray()
+        expected_x: list[float] = []
+        # 6 frames encoded with -g 3 (2 GOPs of 3 frames each: I,P,P, I,P,P).
+        for idx in range(6):
+            arr = np.zeros((h, w, 3), dtype=np.uint8)
+            x0 = 6 + idx * 8
+            arr[18:28, x0 : x0 + 6] = 255
+            raw.extend(arr.tobytes())
+            expected_x.append(x0 + 2.5)
+        proc = subprocess.run(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "-s",
+                f"{w}x{h}",
+                "-r",
+                "25",
+                "-i",
+                "pipe:0",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-g",
+                "3",
+                "-bf",
+                "0",
+                "-crf",
+                "18",
+                "-f",
+                "h264",
+                "pipe:1",
+            ],
+            input=bytes(raw),
+            capture_output=True,
+            check=True,
+        )
+        nals = split_annex_b_nals(proc.stdout)
+        # Re-group Annex B NALs into per-frame access units starting at AUD(9) or slice/IDR(1/5),
+        # keeping parameter sets (SPS=7, PPS=8) attached to the IDR access unit.
+        units: list[list[bytes]] = []
+        pending_headers: list[bytes] = []
+        for nal in nals:
+            nal_type = nal[0] & 0x1F
+            if nal_type in {6, 7, 8, 9}:
+                pending_headers.append(nal)
+                continue
+            units.append([*pending_headers, nal])
+            pending_headers.clear()
+        self.assertEqual(len(units), 6)
+
+        decoder = H264StreamDecoder(width_px=w, height_px=h, ffmpeg_bin=ffmpeg)
+        decoded_centroids: list[float] = []
+        for idx, au_nals in enumerate(units):
+            is_idr = any((nal[0] & 0x1F) == 5 for nal in au_nals)
+            au_payload = b"".join(b"\x00\x00\x00\x01" + nal for nal in au_nals)
+            raw_rgb = decoder.decode(au_payload, is_keyframe=is_idr)
+            rgb = np.frombuffer(raw_rgb, dtype=np.uint8).reshape((h, w, 3))
+            xs = np.nonzero(rgb[:, :, 0] > 180)[1]
+            self.assertGreater(len(xs), 0, f"missing bright box at frame {idx}")
+            decoded_centroids.append(float(np.mean(xs)))
+        for actual, expected in zip(decoded_centroids, expected_x, strict=True):
+            self.assertAlmostEqual(actual, expected, delta=1.5)

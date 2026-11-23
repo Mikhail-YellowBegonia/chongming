@@ -88,6 +88,6 @@ jobs:
             - name: Check Rust workspace
               if: ${{ hashFiles('Cargo.toml') != '' }}
               run: |
-                  cargo fmt --check
-                  cargo clippy --all-targets -- -D warnings
-                  cargo test
+                  cargo fmt --all -- --check
+                  cargo clippy --workspace --all-targets -- -D warnings
+                  cargo test --workspace

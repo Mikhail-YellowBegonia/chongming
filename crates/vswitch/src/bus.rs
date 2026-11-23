@@ -20,8 +20,8 @@ use crate::framing::{
     PROTOCOL_VERSION,
 };
 use crate::proto::{
-    bus_message, now_wall_time_ns, BusMessage, ComponentRole, SessionAck, SessionHello,
-    TestFrameworkMessage,
+    bus_message, now_wall_time_ns, test_framework_message, BusMessage, ComponentRole, SessionAck,
+    SessionHello, TestFrameworkMessage,
 };
 
 pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -316,7 +316,7 @@ pub enum TruthEvent {
     PeerConnected(TruthPeerHandle),
     Message {
         peer_id: u64,
-        message: TestFrameworkMessage,
+        message: Box<TestFrameworkMessage>,
     },
     PeerDisconnected {
         peer_id: u64,
@@ -334,6 +334,10 @@ impl TruthPeerHandle {
     pub async fn send(&self, message: TestFrameworkMessage) -> Result<(), PeerSendError> {
         self.tx.send(message).await.map_err(|_| PeerSendError)
     }
+
+    pub fn try_send(&self, message: TestFrameworkMessage) -> Result<(), PeerSendError> {
+        self.tx.try_send(message).map_err(|_| PeerSendError)
+    }
 }
 
 pub struct TruthServer {
@@ -343,17 +347,46 @@ pub struct TruthServer {
 
 impl TruthServer {
     pub async fn bind(addr: SocketAddr, event_tx: mpsc::Sender<TruthEvent>) -> io::Result<Self> {
+        Self::bind_with_handshake(
+            addr,
+            String::new(),
+            vec![ComponentRole::Producer, ComponentRole::Scorer],
+            true,
+            event_tx,
+        )
+        .await
+    }
+
+    pub async fn bind_with_handshake(
+        addr: SocketAddr,
+        run_id: String,
+        allowed_roles: Vec<ComponentRole>,
+        allow_unhandshaken: bool,
+        event_tx: mpsc::Sender<TruthEvent>,
+    ) -> io::Result<Self> {
         let listener = TcpListener::bind(addr).await?;
         let local_addr = listener.local_addr()?;
         let next_peer_id = Arc::new(AtomicU64::new(1));
+        let allowed_roles = Arc::new(allowed_roles);
 
         let accept_handle = tokio::spawn(async move {
             while let Ok((stream, remote_addr)) = listener.accept().await {
                 let _ = stream.set_nodelay(true);
                 let peer_id = next_peer_id.fetch_add(1, Ordering::Relaxed);
+                let run_id = run_id.clone();
+                let allowed_roles = Arc::clone(&allowed_roles);
                 let event_tx = event_tx.clone();
                 tokio::spawn(async move {
-                    handle_truth_connection(stream, remote_addr, peer_id, event_tx).await;
+                    handle_truth_connection(
+                        stream,
+                        remote_addr,
+                        peer_id,
+                        run_id,
+                        allowed_roles,
+                        allow_unhandshaken,
+                        event_tx,
+                    )
+                    .await;
                 });
             }
         });
@@ -373,12 +406,84 @@ impl TruthServer {
     }
 }
 
+async fn send_truth_session_ack(
+    stream: &mut TcpStream,
+    accepted: bool,
+    reason: String,
+    run_id: String,
+) -> bool {
+    let ack_msg = TestFrameworkMessage {
+        sequence_no: 1,
+        payload: Some(test_framework_message::Payload::BusMessage(BusMessage {
+            bus_sequence_no: 1,
+            sent_wall_time_ns: now_wall_time_ns(),
+            payload: Some(bus_message::Payload::SessionAck(SessionAck {
+                accepted,
+                reason,
+                run_id,
+            })),
+        })),
+    };
+    write_length_prefixed_async(stream, &ack_msg, MAX_FRAME_BYTES)
+        .await
+        .is_ok()
+}
+
 async fn handle_truth_connection(
-    stream: TcpStream,
+    mut stream: TcpStream,
     remote_addr: SocketAddr,
     peer_id: u64,
+    run_id: String,
+    allowed_roles: Arc<Vec<ComponentRole>>,
+    allow_unhandshaken: bool,
     event_tx: mpsc::Sender<TruthEvent>,
 ) {
+    let first_msg = match timeout(
+        DEFAULT_HANDSHAKE_TIMEOUT,
+        read_length_prefixed_async::<_, TestFrameworkMessage>(&mut stream, MAX_FRAME_BYTES),
+    )
+    .await
+    {
+        Ok(Ok(Some(msg))) => msg,
+        _ => return,
+    };
+
+    let mut initial_forward: Option<TestFrameworkMessage> = None;
+    match &first_msg.payload {
+        Some(test_framework_message::Payload::BusMessage(bus_msg)) => {
+            let Some(bus_message::Payload::SessionHello(hello)) = &bus_msg.payload else {
+                let _ = send_truth_session_ack(
+                    &mut stream,
+                    false,
+                    "first BusMessage on TestFramework channel must be SessionHello".into(),
+                    run_id,
+                )
+                .await;
+                return;
+            };
+            if let Err(reason) = validate_session_hello(hello, &allowed_roles) {
+                let _ = send_truth_session_ack(&mut stream, false, reason, run_id).await;
+                return;
+            }
+            if !send_truth_session_ack(&mut stream, true, "ok".into(), run_id).await {
+                return;
+            }
+        }
+        _ if allow_unhandshaken => {
+            initial_forward = Some(first_msg);
+        }
+        _ => {
+            let _ = send_truth_session_ack(
+                &mut stream,
+                false,
+                "first message must be TestFrameworkMessage(bus_message=SessionHello)".into(),
+                run_id,
+            )
+            .await;
+            return;
+        }
+    }
+
     let (mut reader, writer) = stream.into_split();
     let (out_tx, out_rx) = mpsc::channel::<TestFrameworkMessage>(DEFAULT_PEER_QUEUE_CAPACITY);
     let handle = TruthPeerHandle {
@@ -395,11 +500,30 @@ async fn handle_truth_connection(
     }
 
     let writer_task = tokio::spawn(run_truth_writer(writer, out_rx));
+    if let Some(msg) = initial_forward {
+        if event_tx
+            .send(TruthEvent::Message {
+                peer_id,
+                message: Box::new(msg),
+            })
+            .await
+            .is_err()
+        {
+            writer_task.abort();
+            let _ = event_tx
+                .send(TruthEvent::PeerDisconnected { peer_id })
+                .await;
+            return;
+        }
+    }
     while let Ok(Some(message)) =
         read_length_prefixed_async::<_, TestFrameworkMessage>(&mut reader, MAX_FRAME_BYTES).await
     {
         if event_tx
-            .send(TruthEvent::Message { peer_id, message })
+            .send(TruthEvent::Message {
+                peer_id,
+                message: Box::new(message),
+            })
             .await
             .is_err()
         {
@@ -452,6 +576,44 @@ pub async fn connect_bus_client(
         }
         _ => Err(BusError::HandshakeRejected(
             "expected SessionAck response".into(),
+        )),
+    }
+}
+
+/// Client handshake helper for single-channel `TestFrameworkMessage` Scorer peers.
+pub async fn connect_truth_scorer_client(
+    addr: SocketAddr,
+    hello: SessionHello,
+) -> Result<(TcpStream, SessionAck), BusError> {
+    let mut stream = TcpStream::connect(addr).await?;
+    let _ = stream.set_nodelay(true);
+    let msg = TestFrameworkMessage {
+        sequence_no: 1,
+        payload: Some(test_framework_message::Payload::BusMessage(BusMessage {
+            bus_sequence_no: 1,
+            sent_wall_time_ns: now_wall_time_ns(),
+            payload: Some(bus_message::Payload::SessionHello(hello)),
+        })),
+    };
+    write_length_prefixed_async(&mut stream, &msg, MAX_FRAME_BYTES).await?;
+    let reply = read_length_prefixed_async::<_, TestFrameworkMessage>(&mut stream, MAX_FRAME_BYTES)
+        .await?
+        .ok_or_else(|| BusError::HandshakeRejected("connection closed before SessionAck".into()))?;
+    match reply.payload {
+        Some(test_framework_message::Payload::BusMessage(bus_msg)) => match bus_msg.payload {
+            Some(bus_message::Payload::SessionAck(ack)) => {
+                if ack.accepted {
+                    Ok((stream, ack))
+                } else {
+                    Err(BusError::HandshakeRejected(ack.reason))
+                }
+            }
+            _ => Err(BusError::HandshakeRejected(
+                "expected SessionAck inside TestFrameworkMessage.bus_message".into(),
+            )),
+        },
+        _ => Err(BusError::HandshakeRejected(
+            "expected TestFrameworkMessage.bus_message(SessionAck) response".into(),
         )),
     }
 }

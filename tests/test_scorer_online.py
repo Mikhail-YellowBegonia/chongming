@@ -17,6 +17,7 @@ from chongming_proto.online import common_pb2, online_pb2
 from chongming_proto.truth import truth_pb2
 from chongming_scorer.cli import main
 from chongming_scorer.online import OnlineScorerClient, OnlineScorerSubscriber, ScorerHandshakeError
+from chongming_scorer.scorer import CenterIncrementalScorer
 from chongming_scorer.storage import (
     RunOutputPackage,
     RunOutputWriter,
@@ -490,3 +491,35 @@ class OnlineScorerTests(unittest.TestCase):
             ):
                 OnlineScorerSubscriber(client, scene, mode="center").run()
             t3.join(timeout=5.0)
+
+    def test_center_scorer_ignores_zero_time_finite_end_after_positive_scene_start(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scene_dir = Path(directory) / "scene"
+            with TestSceneWriter(
+                scene_dir,
+                scenario_id="empty-end-1",
+                world_frame_id="enu",
+                clock_domain_id="clk",
+                start_time_ns=1_000_000_000,
+                end_time_ns=2_000_000_000,
+                stations=[],
+            ):
+                pass
+            scene = TestScenePackage.open(scene_dir)
+            scorer = CenterIncrementalScorer(scene, run_id="empty-run", warmup_s=0.0)
+            events = scorer.feed_bus_message(
+                online_pb2.BusMessage(
+                    bus_sequence_no=1,
+                    progress_report=online_pb2.ProgressReport(
+                        source_role=common_pb2.COMPONENT_ROLE_CENTER,
+                        source_id="center-1",
+                        session_id="sess-1",
+                        completed_time_ns=0,
+                        finite_end_reached=True,
+                    ),
+                )
+            )
+            self.assertEqual(events, [])
+            remaining_events, _report, errors = scorer.finalize()
+            self.assertEqual(remaining_events, [])
+            self.assertEqual(errors, [])

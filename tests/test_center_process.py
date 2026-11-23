@@ -914,3 +914,52 @@ class CenterProcessTests(unittest.TestCase):
         ):
             CenterProcess(client, _online_fusion_policy()).run()
         thread.join(timeout=5.0)
+
+    def test_center_process_exits_on_vswitch_unspecified_role_end_notice(self) -> None:
+        outbound: list[online_pb2.BusMessage] = []
+
+        def handler(conn: socket.socket) -> None:
+            reader = conn.makefile("rb")
+            try:
+                _ = read_length_prefixed(reader, online_pb2.BusMessage)
+                conn.sendall(
+                    encode_length_prefixed(
+                        online_pb2.BusMessage(
+                            bus_sequence_no=1,
+                            session_ack=online_pb2.SessionAck(accepted=True, run_id="end-1"),
+                        )
+                    )
+                )
+                conn.sendall(
+                    encode_length_prefixed(
+                        online_pb2.BusMessage(
+                            bus_sequence_no=2,
+                            progress_report=online_pb2.ProgressReport(
+                                source_role=common_pb2.COMPONENT_ROLE_UNSPECIFIED,
+                                source_id="vswitch",
+                                session_id="end-1",
+                                completed_time_ns=0,
+                                finite_end_reached=True,
+                            ),
+                        )
+                    )
+                )
+                msg = read_length_prefixed(reader, online_pb2.BusMessage)
+                if msg is not None:
+                    outbound.append(msg)
+                conn.shutdown(socket.SHUT_WR)
+            finally:
+                reader.close()
+
+        port, thread, errors = _start_tcp_server(handler)
+        with OnlineBusClient("127.0.0.1", port, timeout_s=5.0) as client:
+            ack = CenterProcess(
+                client,
+                _online_fusion_policy(timeout_basis=f.StreamTimeoutBasis.CAPTURE_TIME),
+            ).run()
+        thread.join(timeout=5.0)
+        self.assertEqual(errors, [])
+        self.assertTrue(ack.accepted)
+        self.assertEqual(len(outbound), 1)
+        self.assertEqual(outbound[0].WhichOneof("payload"), "progress_report")
+        self.assertTrue(outbound[0].progress_report.finite_end_reached)

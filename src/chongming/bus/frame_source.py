@@ -93,7 +93,8 @@ class H264StreamDecoder:
         self._ffmpeg = ffmpeg_bin
         self._sps: bytes | None = None
         self._pps: bytes | None = None
-        self._gop_units: list[bytes] = []
+        self._gop_buf = bytearray()
+        self._gop_frame_count = 0
 
     def decode(self, payload: bytes, *, is_keyframe: bool) -> bytes:
         """Decode one Annex-B access unit into tightly packed RGB8 bytes."""
@@ -101,13 +102,16 @@ class H264StreamDecoder:
         if not nals:
             raise ValueError("H.264 FramedVideoPacket contains no Annex-B NAL units")
         saw_idr = False
+        saw_param_update = False
         picture_nals: list[bytes] = []
         for nal in nals:
             nal_type = nal[0] & 0x1F
             if nal_type == 7:
                 self._sps = b"\x00\x00\x00\x01" + nal
+                saw_param_update = True
             elif nal_type == 8:
                 self._pps = b"\x00\x00\x00\x01" + nal
+                saw_param_update = True
             elif nal_type == 9:
                 continue
             else:
@@ -116,36 +120,44 @@ class H264StreamDecoder:
                 picture_nals.append(b"\x00\x00\x00\x01" + nal)
         if not picture_nals:
             raise ValueError("H.264 FramedVideoPacket contains no video slice NAL units")
-        if saw_idr or is_keyframe:
-            self._gop_units.clear()
         if self._sps is None or self._pps is None:
             raise ValueError("H.264 stream missing SPS/PPS before coded picture")
-        self._gop_units.append(b"".join(picture_nals))
+        if saw_idr or is_keyframe or not self._gop_buf:
+            self._gop_buf = bytearray(self._sps + self._pps)
+            self._gop_frame_count = 0
+        elif saw_param_update:
+            # Refresh stream parameter header while keeping earlier GOP slices intact.
+            self._gop_buf.extend(self._sps)
+            self._gop_buf.extend(self._pps)
+        for nal_with_start_code in picture_nals:
+            self._gop_buf.extend(nal_with_start_code)
+
+        target_index = self._gop_frame_count
+        self._gop_frame_count += 1
 
         ffmpeg = self._ffmpeg or _ffmpeg_executable()
         self._ffmpeg = ffmpeg
-        bitstream = self._sps + self._pps + b"".join(self._gop_units)
+        cmd = [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-analyzeduration",
+            "0",
+            "-framerate",
+            "30",
+            "-f",
+            "h264",
+            "-i",
+            "pipe:0",
+        ]
+        if target_index > 0:
+            cmd.extend(["-vf", f"select=eq(n\\,{target_index})", "-fps_mode", "passthrough"])
+        cmd.extend(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"])
+
         result = subprocess.run(
-            [
-                ffmpeg,
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-analyzeduration",
-                "0",
-                "-framerate",
-                "30",
-                "-f",
-                "h264",
-                "-i",
-                "pipe:0",
-                "-f",
-                "rawvideo",
-                "-pix_fmt",
-                "rgb24",
-                "pipe:1",
-            ],
-            input=bitstream,
+            cmd,
+            input=bytes(self._gop_buf),
             capture_output=True,
             check=False,
         )
@@ -153,11 +165,9 @@ class H264StreamDecoder:
             detail = result.stderr.decode("utf-8", errors="replace").strip()
             raise RuntimeError(f"FFmpeg H.264 decode failed: {detail}")
         decoded = result.stdout
-        if len(decoded) < self._frame_bytes or len(decoded) % self._frame_bytes != 0:
-            raise RuntimeError(
-                f"FFmpeg decoded {len(decoded)} bytes, expected a positive multiple of {self._frame_bytes}"
-            )
-        return decoded[-self._frame_bytes :]
+        if len(decoded) != self._frame_bytes:
+            raise RuntimeError(f"FFmpeg decoded {len(decoded)} bytes, expected {self._frame_bytes}")
+        return decoded
 
 
 def decode_video_packet(

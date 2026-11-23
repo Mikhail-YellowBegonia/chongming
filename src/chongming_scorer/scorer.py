@@ -368,6 +368,8 @@ class CenterIncrementalScorer:
             report_msg = msg.progress_report
             if report_msg.source_role == common_pb2.COMPONENT_ROLE_CENTER:
                 ns = int(report_msg.completed_time_ns)
+                if report_msg.finite_end_reached and ns == 0 and self.scene.start_time_ns > 0:
+                    return []
                 self._schedule_times.add(ns)
                 if not self.defer_schedule_evaluation and ns not in self._evaluated_times:
                     ev = self._evaluate_time(ns)
