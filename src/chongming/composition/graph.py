@@ -9,24 +9,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from chongming.composition.center import CenterAssembly, declare_center
-from chongming.contracts.device import DevicePolicy
-from chongming.contracts.model import SessionId, StationConfig, StationId
+from chongming.composition.station import StationAssembly, declare_station
+from chongming.contracts.model import StationId
 from chongming.contracts.runtime import ModuleNode, RunSpec, StartupPlan
 from chongming.contracts.scene import ScenarioSpec
-from chongming.modules.device import (
-    WARMUP_HOLD_NS,
-    AuxiliaryCalibrationModule,
-    CalibrationEstimationModule,
-    CalibrationHistoryModule,
-    CalibrationStateModule,
-    DeviceModule,
-    EventSequencerModule,
-    MainDetectionModule,
-    MotionDetectionModule,
-    RayGenerationModule,
-    ReferenceRecognitionModule,
-    Tracking2DModule,
-)
+from chongming.modules.device import WARMUP_HOLD_NS, EventSequencerModule
 from chongming.modules.runtime import (
     EventTransportModule,
     EvidenceWriterModule,
@@ -44,28 +31,15 @@ from chongming.modules.scene import (
     VirtualObservationModule,
     VisibilityModule,
 )
-from chongming.modules.workbench_device import (
-    WorkbenchMotionModule,
-    WorkbenchTrackingModule,
-    image_modules,
-)
 from chongming.ports.lifecycle import ModuleBinding, ModuleLifecycle
 
-
-@dataclass(frozen=True, kw_only=True)
-class StationAssembly:
-    config: StationConfig
-    sequencer: EventSequencerModule
-    motion: MotionDetectionModule | WorkbenchMotionModule
-    tracking: Tracking2DModule | WorkbenchTrackingModule
-    detection: MainDetectionModule
-    references: ReferenceRecognitionModule
-    estimation: CalibrationEstimationModule
-    history: CalibrationHistoryModule
-    calibration_states: CalibrationStateModule
-    calibration: AuxiliaryCalibrationModule
-    rays: RayGenerationModule
-    device: DeviceModule
+__all__ = [
+    "ArchitectureAssembly",
+    "SceneAssembly",
+    "StationAssembly",
+    "declare_assembly",
+    "declare_station",
+]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -93,109 +67,6 @@ class ArchitectureAssembly:
     startup: StartupPlan
     bindings: tuple[ModuleBinding, ...]
     runner: SystemRunnerModule
-
-
-def declare_station(
-    *,
-    config: StationConfig,
-    policy: DevicePolicy,
-    image_session_id: SessionId,
-    schema_version: str = "event-v1",
-    warmup_hold_ns: int = WARMUP_HOLD_NS,
-) -> tuple[StationAssembly, tuple[ModuleBinding, ...]]:
-    """Construct one station's device pipeline and lifecycle bindings without starting it."""
-    sid = config.station_id
-    prefix = f"station/{sid}"
-    bindings: list[ModuleBinding] = []
-
-    def bind(
-        key: str,
-        module: ModuleLifecycle,
-        deps: tuple[str, ...] = (),
-    ) -> None:
-        bindings.append(
-            ModuleBinding(
-                node=ModuleNode(module_key=key, dependencies=deps, station_id=sid),
-                module=module,
-            )
-        )
-
-    sequencer = EventSequencerModule(
-        station_id=sid,
-        station_session_id=image_session_id,
-        schema_version=schema_version,
-    )
-    motion, tracking = image_modules(policy.detection, policy.tracking, sid, image_session_id)
-    detection = MainDetectionModule(detector=motion, tracker=tracking)
-    references = ReferenceRecognitionModule(policy=policy.calibration)
-    estimation = CalibrationEstimationModule(policy=policy.calibration)
-    history = CalibrationHistoryModule(
-        station_id=sid,
-        station_session_id=image_session_id,
-        station_config_digest=config.config_digest,
-    )
-    states = CalibrationStateModule(
-        policy=policy.calibration,
-        history=history,
-        sequencer=sequencer,
-    )
-    calibration = AuxiliaryCalibrationModule(
-        recognizer=references,
-        estimator=estimation,
-        states=states,
-        update_period_ns=policy.calibration.update_period_ns,
-    )
-    rays = RayGenerationModule(policy=policy.rays, sequencer=sequencer)
-    device = DeviceModule(
-        config=config,
-        station_session_id=image_session_id,
-        detector=detection,
-        calibrator=calibration,
-        history=history,
-        ray_builder=rays,
-        sequencer=sequencer,
-        warmup_hold_ns=warmup_hold_ns,
-    )
-    assembly = StationAssembly(
-        config=config,
-        sequencer=sequencer,
-        motion=motion,
-        tracking=tracking,
-        detection=detection,
-        references=references,
-        estimation=estimation,
-        history=history,
-        calibration_states=states,
-        calibration=calibration,
-        rays=rays,
-        device=device,
-    )
-    bind(f"{prefix}/sequencer", sequencer)
-    bind(f"{prefix}/motion", motion)
-    bind(f"{prefix}/tracking", tracking)
-    bind(f"{prefix}/detection", detection, (f"{prefix}/motion", f"{prefix}/tracking"))
-    bind(f"{prefix}/references", references)
-    bind(f"{prefix}/estimation", estimation)
-    bind(f"{prefix}/history", history)
-    bind(f"{prefix}/calibration-states", states, (f"{prefix}/history", f"{prefix}/sequencer"))
-    bind(
-        f"{prefix}/calibration",
-        calibration,
-        (f"{prefix}/references", f"{prefix}/estimation", f"{prefix}/calibration-states"),
-    )
-    bind(f"{prefix}/rays", rays, (f"{prefix}/sequencer",))
-    bind(
-        f"{prefix}/device",
-        device,
-        (
-            f"{prefix}/detection",
-            f"{prefix}/calibration",
-            f"{prefix}/history",
-            f"{prefix}/rays",
-            f"{prefix}/sequencer",
-        ),
-    )
-    return assembly, tuple(bindings)
 
 
 def declare_assembly(

@@ -4,9 +4,9 @@ from .center import CenterAssembly
 from .graph import (
     ArchitectureAssembly,
     SceneAssembly,
-    StationAssembly,
     declare_assembly,
 )
+from .station import StationAssembly
 
 __all__ = [
     "ArchitectureAssembly",

@@ -421,6 +421,45 @@ class ArchitectureStructureTests(unittest.TestCase):
                 text=True,
             )
 
+    def test_online_bus_and_vision_never_import_legacy_scene_or_rendering(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        src_root = repo_root / "src" / "chongming"
+        targets = [
+            *sorted((src_root / "bus").rglob("*.py")),
+            *sorted((src_root / "vision").rglob("*.py")),
+            src_root / "composition" / "center.py",
+            src_root / "composition" / "station.py",
+            src_root / "contracts" / "json_codec.py",
+            src_root / "reference.py",
+        ]
+        forbidden_prefixes = (
+            "chongming.scenarios",
+            "chongming.rendering",
+            "chongming.contracts.scene",
+            "chongming.modules.scene",
+            "chongming.preview",
+            "chongming.development",
+            "chongming.edge_runtime",
+            "chongming.center_ui",
+        )
+        for path in targets:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        for prefix in forbidden_prefixes:
+                            self.assertFalse(
+                                alias.name == prefix or alias.name.startswith(prefix + "."),
+                                f"{path}: forbidden legacy import {alias.name!r}",
+                            )
+                elif isinstance(node, ast.ImportFrom):
+                    module = node.module or ""
+                    for prefix in forbidden_prefixes:
+                        self.assertFalse(
+                            module == prefix or module.startswith(prefix + "."),
+                            f"{path}: forbidden legacy import from {module!r}",
+                        )
+
 
 if __name__ == "__main__":
     unittest.main()

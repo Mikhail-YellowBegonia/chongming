@@ -22,9 +22,8 @@ from chongming.bus.codec import (
 from chongming.contracts import fusion as f
 from chongming.contracts import model as m
 from chongming.contracts.development import CenterInputStep, CenterRegistration
+from chongming.contracts.json_codec import _decode, parse_json
 from chongming.reference import ReferenceFusionAlgorithm
-from chongming.scenarios.json_content import parse_json
-from chongming.scenarios.serialization import _decode
 from chongming_proto.online import common_pb2, online_pb2
 
 
