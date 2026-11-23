@@ -175,6 +175,22 @@ def _station_config_to_proto(station: m.StationConfig) -> online_pb2.StationConf
                 translation_a_m=_vec3(full_tf.translation_a_m),
             )
         )
+    if isinstance(station.reference_anchor, m.SurveyedReference):
+        msg.reference_anchor.CopyFrom(
+            online_pb2.SurveyedReference(
+                reference_id=station.reference_anchor.reference_id,
+                world_frame_id=str(station.reference_anchor.world_frame_id),
+                landmarks=[
+                    online_pb2.SurveyedLandmark(
+                        landmark_id=lm.landmark_id,
+                        position_enu_m=_vec3(lm.position_enu_m),
+                        covariance_enu_m2=_mat3(lm.covariance_enu_m2),
+                        visual_description=lm.visual_description,
+                    )
+                    for lm in station.reference_anchor.landmarks
+                ],
+            )
+        )
     return msg
 
 

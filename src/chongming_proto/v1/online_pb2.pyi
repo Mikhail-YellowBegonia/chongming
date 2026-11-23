@@ -107,8 +107,30 @@ class InstallationUncertainty(_message.Message):
     measurement_source: str
     def __init__(self, state_ref: _Optional[_Union[InstallationStateRef, _Mapping]] = ..., position_covariance_enu_m2: _Optional[_Union[_common_pb2.Mat3, _Mapping]] = ..., orientation_covariance_enu_rad2: _Optional[_Union[_common_pb2.Mat3, _Mapping]] = ..., fixed_extrinsic_covariance_aux_rad2: _Optional[_Union[_common_pb2.Mat3, _Mapping]] = ..., measurement_source: _Optional[str] = ...) -> None: ...
 
+class SurveyedLandmark(_message.Message):
+    __slots__ = ("landmark_id", "position_enu_m", "covariance_enu_m2", "visual_description")
+    LANDMARK_ID_FIELD_NUMBER: _ClassVar[int]
+    POSITION_ENU_M_FIELD_NUMBER: _ClassVar[int]
+    COVARIANCE_ENU_M2_FIELD_NUMBER: _ClassVar[int]
+    VISUAL_DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    landmark_id: str
+    position_enu_m: _common_pb2.Vec3
+    covariance_enu_m2: _common_pb2.Mat3
+    visual_description: str
+    def __init__(self, landmark_id: _Optional[str] = ..., position_enu_m: _Optional[_Union[_common_pb2.Vec3, _Mapping]] = ..., covariance_enu_m2: _Optional[_Union[_common_pb2.Mat3, _Mapping]] = ..., visual_description: _Optional[str] = ...) -> None: ...
+
+class SurveyedReference(_message.Message):
+    __slots__ = ("reference_id", "world_frame_id", "landmarks")
+    REFERENCE_ID_FIELD_NUMBER: _ClassVar[int]
+    WORLD_FRAME_ID_FIELD_NUMBER: _ClassVar[int]
+    LANDMARKS_FIELD_NUMBER: _ClassVar[int]
+    reference_id: str
+    world_frame_id: str
+    landmarks: _containers.RepeatedCompositeFieldContainer[SurveyedLandmark]
+    def __init__(self, reference_id: _Optional[str] = ..., world_frame_id: _Optional[str] = ..., landmarks: _Optional[_Iterable[_Union[SurveyedLandmark, _Mapping]]] = ...) -> None: ...
+
 class StationConfig(_message.Message):
-    __slots__ = ("station_id", "config_version", "config_digest", "world_frame_id", "geodetic_anchor", "main_camera_position_enu_m", "baseline_orientation_enu_from_main", "main_camera", "auxiliary_camera", "fixed_rotation_aux_from_main", "full_rigid_transform_aux_from_main", "reference_scene_version", "installation_uncertainty")
+    __slots__ = ("station_id", "config_version", "config_digest", "world_frame_id", "geodetic_anchor", "main_camera_position_enu_m", "baseline_orientation_enu_from_main", "main_camera", "auxiliary_camera", "fixed_rotation_aux_from_main", "full_rigid_transform_aux_from_main", "reference_scene_version", "installation_uncertainty", "reference_anchor")
     STATION_ID_FIELD_NUMBER: _ClassVar[int]
     CONFIG_VERSION_FIELD_NUMBER: _ClassVar[int]
     CONFIG_DIGEST_FIELD_NUMBER: _ClassVar[int]
@@ -122,6 +144,7 @@ class StationConfig(_message.Message):
     FULL_RIGID_TRANSFORM_AUX_FROM_MAIN_FIELD_NUMBER: _ClassVar[int]
     REFERENCE_SCENE_VERSION_FIELD_NUMBER: _ClassVar[int]
     INSTALLATION_UNCERTAINTY_FIELD_NUMBER: _ClassVar[int]
+    REFERENCE_ANCHOR_FIELD_NUMBER: _ClassVar[int]
     station_id: str
     config_version: str
     config_digest: str
@@ -135,7 +158,8 @@ class StationConfig(_message.Message):
     full_rigid_transform_aux_from_main: RigidTransform
     reference_scene_version: str
     installation_uncertainty: InstallationUncertainty
-    def __init__(self, station_id: _Optional[str] = ..., config_version: _Optional[str] = ..., config_digest: _Optional[str] = ..., world_frame_id: _Optional[str] = ..., geodetic_anchor: _Optional[_Union[GeodeticAnchor, _Mapping]] = ..., main_camera_position_enu_m: _Optional[_Union[_common_pb2.Vec3, _Mapping]] = ..., baseline_orientation_enu_from_main: _Optional[_Union[_common_pb2.Mat3, _Mapping]] = ..., main_camera: _Optional[_Union[CameraModel, _Mapping]] = ..., auxiliary_camera: _Optional[_Union[CameraModel, _Mapping]] = ..., fixed_rotation_aux_from_main: _Optional[_Union[_common_pb2.Mat3, _Mapping]] = ..., full_rigid_transform_aux_from_main: _Optional[_Union[RigidTransform, _Mapping]] = ..., reference_scene_version: _Optional[str] = ..., installation_uncertainty: _Optional[_Union[InstallationUncertainty, _Mapping]] = ...) -> None: ...
+    reference_anchor: SurveyedReference
+    def __init__(self, station_id: _Optional[str] = ..., config_version: _Optional[str] = ..., config_digest: _Optional[str] = ..., world_frame_id: _Optional[str] = ..., geodetic_anchor: _Optional[_Union[GeodeticAnchor, _Mapping]] = ..., main_camera_position_enu_m: _Optional[_Union[_common_pb2.Vec3, _Mapping]] = ..., baseline_orientation_enu_from_main: _Optional[_Union[_common_pb2.Mat3, _Mapping]] = ..., main_camera: _Optional[_Union[CameraModel, _Mapping]] = ..., auxiliary_camera: _Optional[_Union[CameraModel, _Mapping]] = ..., fixed_rotation_aux_from_main: _Optional[_Union[_common_pb2.Mat3, _Mapping]] = ..., full_rigid_transform_aux_from_main: _Optional[_Union[RigidTransform, _Mapping]] = ..., reference_scene_version: _Optional[str] = ..., installation_uncertainty: _Optional[_Union[InstallationUncertainty, _Mapping]] = ..., reference_anchor: _Optional[_Union[SurveyedReference, _Mapping]] = ...) -> None: ...
 
 class FramedVideoPacket(_message.Message):
     __slots__ = ("station_id", "station_session_id", "camera_role", "frame_id", "frame_index", "capture_time", "station_config_digest", "width_px", "height_px", "codec", "pixel_format", "row_stride_bytes", "is_keyframe", "payload")

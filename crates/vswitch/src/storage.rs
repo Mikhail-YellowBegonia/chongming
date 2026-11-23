@@ -17,7 +17,7 @@ use crate::pbzst::{iter_pb_zst, PbZstError, PbZstReader, PbZstWriter, DEFAULT_ZS
 use crate::proto::{
     BusMessage, CameraDistortion, CameraIntrinsics, CameraModel, FrameIndexEntry, GeodeticAnchor,
     InstallationStateRef, InstallationUncertainty, Mat3, RayEvent, RigidTransform, SparseVoxelGrid,
-    StationConfig, TruthFrame, Vec3,
+    StationConfig, SurveyedLandmark, SurveyedReference, TruthFrame, Vec3,
 };
 
 pub const TEST_SCENE_FORMAT: &str = "chongming-test-scene-v1";
@@ -585,6 +585,46 @@ fn installation_uncertainty_to_json(u: &InstallationUncertainty) -> Value {
     Value::Object(m)
 }
 
+fn surveyed_landmark_to_json(lm: &SurveyedLandmark) -> Value {
+    let mut m = Map::new();
+    if !lm.landmark_id.is_empty() {
+        m.insert("landmark_id".into(), Value::from(lm.landmark_id.as_str()));
+    }
+    if let Some(p) = &lm.position_enu_m {
+        m.insert("position_enu_m".into(), vec3_to_json(p));
+    }
+    if let Some(cov) = &lm.covariance_enu_m2 {
+        m.insert("covariance_enu_m2".into(), mat3_to_json(cov));
+    }
+    if !lm.visual_description.is_empty() {
+        m.insert(
+            "visual_description".into(),
+            Value::from(lm.visual_description.as_str()),
+        );
+    }
+    Value::Object(m)
+}
+
+fn surveyed_reference_to_json(r: &SurveyedReference) -> Value {
+    let mut m = Map::new();
+    if !r.reference_id.is_empty() {
+        m.insert("reference_id".into(), Value::from(r.reference_id.as_str()));
+    }
+    if !r.world_frame_id.is_empty() {
+        m.insert(
+            "world_frame_id".into(),
+            Value::from(r.world_frame_id.as_str()),
+        );
+    }
+    if !r.landmarks.is_empty() {
+        m.insert(
+            "landmarks".into(),
+            Value::Array(r.landmarks.iter().map(surveyed_landmark_to_json).collect()),
+        );
+    }
+    Value::Object(m)
+}
+
 /// Convert `StationConfig` to JSON matching `MessageToDict(..., preserving_proto_field_name=True)`.
 pub fn station_config_to_json(s: &StationConfig) -> Value {
     let mut m = Map::new();
@@ -644,6 +684,9 @@ pub fn station_config_to_json(s: &StationConfig) -> Value {
             "installation_uncertainty".into(),
             installation_uncertainty_to_json(iu),
         );
+    }
+    if let Some(ra) = &s.reference_anchor {
+        m.insert("reference_anchor".into(), surveyed_reference_to_json(ra));
     }
     Value::Object(m)
 }
@@ -800,6 +843,41 @@ fn installation_uncertainty_from_json(v: &Value) -> Result<InstallationUncertain
     })
 }
 
+fn surveyed_landmark_from_json(v: &Value) -> Result<SurveyedLandmark, StorageError> {
+    let obj = v
+        .as_object()
+        .ok_or_else(|| StorageError::InvalidManifest("expected SurveyedLandmark object".into()))?;
+    Ok(SurveyedLandmark {
+        landmark_id: json_str(obj, "landmark_id"),
+        position_enu_m: obj.get("position_enu_m").map(vec3_from_json).transpose()?,
+        covariance_enu_m2: obj
+            .get("covariance_enu_m2")
+            .map(mat3_from_json)
+            .transpose()?,
+        visual_description: json_str(obj, "visual_description"),
+    })
+}
+
+fn surveyed_reference_from_json(v: &Value) -> Result<SurveyedReference, StorageError> {
+    let obj = v
+        .as_object()
+        .ok_or_else(|| StorageError::InvalidManifest("expected SurveyedReference object".into()))?;
+    let landmarks = match obj.get("landmarks") {
+        Some(arr) => arr
+            .as_array()
+            .ok_or_else(|| StorageError::InvalidManifest("expected landmarks array".into()))?
+            .iter()
+            .map(surveyed_landmark_from_json)
+            .collect::<Result<Vec<_>, _>>()?,
+        None => Vec::new(),
+    };
+    Ok(SurveyedReference {
+        reference_id: json_str(obj, "reference_id"),
+        world_frame_id: json_str(obj, "world_frame_id"),
+        landmarks,
+    })
+}
+
 /// Parse a `StationConfig` JSON object produced by `MessageToDict(..., preserving_proto_field_name=True)`.
 pub fn station_config_from_json(v: &Value) -> Result<StationConfig, StorageError> {
     let obj = v
@@ -842,6 +920,10 @@ pub fn station_config_from_json(v: &Value) -> Result<StationConfig, StorageError
         installation_uncertainty: obj
             .get("installation_uncertainty")
             .map(installation_uncertainty_from_json)
+            .transpose()?,
+        reference_anchor: obj
+            .get("reference_anchor")
+            .map(surveyed_reference_from_json)
             .transpose()?,
     })
 }
@@ -1759,5 +1841,36 @@ mod tests {
         assert!(manifest["files"].get("center_output.pb.zst").is_some());
         assert!(manifest["files"].get("voxels.pb.zst").is_some());
         assert!(manifest["files"].get("edge_events.pb.zst").is_none());
+    }
+
+    #[test]
+    fn station_config_reference_anchor_json_roundtrip() {
+        let mut st = sample_station();
+        st.reference_anchor = Some(SurveyedReference {
+            reference_id: "board-1".into(),
+            world_frame_id: "enu".into(),
+            landmarks: vec![SurveyedLandmark {
+                landmark_id: "board-corner-0".into(),
+                position_enu_m: Some(Vec3 {
+                    x: 1.0,
+                    y: 2.0,
+                    z: 0.0,
+                }),
+                covariance_enu_m2: Some(Mat3 {
+                    values: vec![1e-6, 0.0, 0.0, 0.0, 1e-6, 0.0, 0.0, 0.0, 1e-6],
+                }),
+                visual_description: "".into(),
+            }],
+        });
+        let json = station_config_to_json(&st);
+        let ra_obj = json.get("reference_anchor").unwrap().as_object().unwrap();
+        let lm_obj = ra_obj["landmarks"][0].as_object().unwrap();
+        assert!(!lm_obj.contains_key("visual_description"));
+        assert!(!lm_obj["position_enu_m"]
+            .as_object()
+            .unwrap()
+            .contains_key("z"));
+        let decoded = station_config_from_json(&json).unwrap();
+        assert_eq!(decoded, st);
     }
 }

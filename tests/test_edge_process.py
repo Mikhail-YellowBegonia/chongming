@@ -477,7 +477,6 @@ class EdgeProcessTests(unittest.TestCase):
             process = EdgeProcess(
                 client,
                 {m.StationId("s1"): _device_policy()},
-                local_configs={m.StationId("s1"): config},
                 warmup_hold_ns=0,
             )
             ack = process.run()

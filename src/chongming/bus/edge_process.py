@@ -95,9 +95,13 @@ class EdgeProcess:
             raise ValueError(f"received StationConfig for unconfigured station {sid!r}")
         local = self._local_configs.get(sid)
         anchor = (
-            local.reference_anchor
-            if local is not None and str(local.config_digest) == pb_config.config_digest
-            else None
+            None
+            if pb_config.HasField("reference_anchor")
+            else (
+                local.reference_anchor
+                if local is not None and str(local.config_digest) == pb_config.config_digest
+                else None
+            )
         )
         config = station_config_from_proto(pb_config, reference_anchor=anchor)
         existing = self._configs.get(sid)
