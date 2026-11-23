@@ -1,1 +1,1 @@
-"""Virtual-scene geometry queries and Godot image generation."""
+"""Godot passive viewer assets."""

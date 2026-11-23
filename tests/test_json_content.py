@@ -9,7 +9,7 @@ import unittest
 from decimal import Decimal, FloatOperation, localcontext
 from itertools import product
 
-from chongming.scenarios.json_content import (
+from chongming.contracts.json_codec import (
     MAX_SAFE_INTEGER,
     JsonValue,
     canonical_json,

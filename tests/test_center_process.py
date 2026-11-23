@@ -29,8 +29,8 @@ from chongming.composition.center import reference_policy
 from chongming.contracts import device as d
 from chongming.contracts import fusion as f
 from chongming.contracts import model as m
+from chongming.contracts.json_codec import dump_json as _json
 from chongming.modules.device import OPENCV_CALIBRATION_ESTIMATOR_ID
-from chongming.scenarios.run import _json
 from chongming_proto.online import (
     common_pb2,
     encode_length_prefixed,

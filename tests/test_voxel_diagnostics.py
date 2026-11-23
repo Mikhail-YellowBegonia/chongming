@@ -6,11 +6,11 @@ import unittest
 from dataclasses import replace
 from unittest.mock import patch
 
+from chongming.bus.codec import sparse_voxel_grid_from_proto, sparse_voxel_grid_to_proto
 from chongming.contracts import fusion as f
 from chongming.contracts import model as m
 from chongming.modules.fusion_geometry import VoxelCandidateModule
 from chongming.reference import ReferenceFusionAlgorithm
-from chongming.visualization import center_fusion_event
 from chongming.voxel_diagnostics import VoxelDiagnostics
 from tests import test_fusion_geometry as geometry_tests
 from tests import test_reference_fusion as reference_tests
@@ -171,11 +171,25 @@ class ReferenceVoxelTests(unittest.TestCase):
             self.assertIsNone(disabled.voxel_diagnostics.snapshot)
             if enabled.voxel_diagnostics.snapshot is not None:
                 snapshots.append(enabled.voxel_diagnostics.snapshot)
-                converted = center_fusion_event(
-                    actual, voxel_space=enabled.voxel_diagnostics.snapshot
+                sealed = [
+                    w for batch in actual.batches for w in batch.window_update.sealed_windows
+                ][-1]
+                roundtripped = sparse_voxel_grid_from_proto(
+                    sparse_voxel_grid_to_proto(
+                        center_session_id=m.SessionId("voxel-diag-test"),
+                        world_frame_id=m.WorldFrameId("demo-enu"),
+                        window_start_ns=sealed.key.start_ns,
+                        window_end_ns=sealed.key.end_ns,
+                        snapshot=enabled.voxel_diagnostics.snapshot,
+                    )
                 )
-                self.assertIs(converted.voxel_space, enabled.voxel_diagnostics.snapshot)
-                self.assertEqual(len(converted.measurements), len(actual.measurements))
+                expected_snap = enabled.voxel_diagnostics.snapshot
+                self.assertEqual(roundtripped.scored_voxels, expected_snap.scored_voxels)
+                self.assertEqual(
+                    roundtripped.search_box_min_enu_m, expected_snap.search_box_min_enu_m
+                )
+                self.assertEqual(roundtripped.voxel_step_enu_m, expected_snap.voxel_step_enu_m)
+                self.assertEqual(roundtripped.max_score, expected_snap.max_score)
         self.assertTrue(snapshots)
         self.assertTrue(any(snapshot.scored_voxels for snapshot in snapshots))
 
@@ -209,8 +223,8 @@ class ReferenceVoxelTests(unittest.TestCase):
         steps = self.fixture.steps()
         for step in steps[:-1]:
             algorithm.process(step)
-        horizon = self.fixture.registration.policy.windows.width_ns * 4
         final = steps[-1]
+        horizon = max(final.time.time_ns, self.fixture.registration.policy.windows.width_ns * 4)
         progress = tuple(
             replace(
                 item,

@@ -17,8 +17,8 @@ import numpy as np
 from chongming.contracts import device as d
 from chongming.contracts import model as m
 from chongming.contracts.device import ImagePolicy
+from chongming.contracts.json_codec import _decode
 from chongming.modules.workbench_device import image_modules
-from chongming.scenarios.serialization import _decode
 from chongming_proto.online import common_pb2, online_pb2
 from chongming_proto.truth import truth_pb2
 from chongming_scorer.metrics import DetectionMetrics, assignment
@@ -436,28 +436,42 @@ class WorkbenchStateTests(unittest.TestCase):
             tracker.process(fourth)
 
     def test_composition_uses_workbench_modules_for_explicit_workbench_policy(self) -> None:
-        from chongming.composition.graph import declare_assembly
+        from chongming.composition.station import declare_station
         from chongming.modules.workbench_device import (
             WorkbenchMotionModule,
             WorkbenchTrackingModule,
         )
-        from tests.fixtures import architecture_specs
+        from tests.test_center_process import _station_config_and_aux
 
-        spec, run = architecture_specs()
+        config, _ = _station_config_and_aux("station-west", (-20.0, -40.0, 4.0))
         p = policies()
-        stations = tuple(
-            replace(
-                station,
-                device_policy=replace(
-                    station.device_policy, detection=p.detection, tracking=p.tracking
-                ),
-            )
-            for station in run.stations
+        station_policy = d.DevicePolicy(
+            detection=p.detection,
+            tracking=p.tracking,
+            calibration=d.CalibrationPolicy(
+                estimator_id="opencv_pnp_ransac_v1",
+                update_period_ns=1_000_000_000,
+                stale_after_ns=5_000_000_000,
+                recovery_success_count=2,
+                minimum_reference_count=4,
+                maximum_reprojection_rmse_px=2.0,
+                maximum_rotation_only_parallax_px=5.0,
+            ),
+            rays=d.RayGenerationPolicy(
+                uncertainty_model_id="tangent_gaussian_v1",
+                fallback_centroid_covariance_px2=((0.25, 0.0), (0.0, 0.25)),
+                unmodelled_high_frequency_jitter_covariance_rad2=None,
+                unmodelled_relative_flex_covariance_rad2=None,
+                residual_independence_basis=None,
+            ),
         )
-        assembly = declare_assembly(spec, replace(run, stations=stations))
-        for station in assembly.stations:
-            self.assertIsInstance(station.motion, WorkbenchMotionModule)
-            self.assertIsInstance(station.tracking, WorkbenchTrackingModule)
+        station, _ = declare_station(
+            config=config,
+            policy=station_policy,
+            image_session_id=m.SessionId("sess-west"),
+        )
+        self.assertIsInstance(station.motion, WorkbenchMotionModule)
+        self.assertIsInstance(station.tracking, WorkbenchTrackingModule)
 
     def test_explicit_profile_sets_workbench_parameters_without_opening_windows(self) -> None:
         from unittest.mock import patch

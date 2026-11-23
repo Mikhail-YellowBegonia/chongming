@@ -36,18 +36,17 @@ class DistributionTests(unittest.TestCase):
 name = "chongming"
 version = "0.0.0"
 [project.scripts]
-chongming-center = "chongming.development:main"
+chongming-center-bus = "chongming.bus.center_process:main"
 """
         self.sources.update(
             {
                 "src/chongming/__init__.py": b"",
                 "src/chongming/py.typed": b"",
-                "src/chongming/development.py": b"def main(): pass\n",
-                "src/chongming/web/preview.html": b"<html></html>\n",
+                "src/chongming/bus/__init__.py": b"",
+                "src/chongming/bus/center_process.py": b"def main(): pass\n",
                 "src/chongming/rendering/godot/project.godot": b"config_version=5\n",
                 "src/chongming/rendering/godot/worker.gd": b"extends Node\n",
                 "src/chongming/rendering/godot/worker.tscn": b"[gd_scene format=3]\n",
-                "src/chongming/rendering/godot/terrain.gdshader": b"shader_type spatial;\n",
                 "src/chongming/rendering/godot/ui.gd": b"extends Control\n",
                 "src/chongming/rendering/godot/visualization.gd": b"extends RefCounted\n",
                 "src/chongming_proto/__init__.py": b"",
@@ -75,7 +74,7 @@ chongming-center = "chongming.development:main"
                 f"{self.metadata_root}WHEEL": b"Wheel-Version: 1.0\n",
                 f"{self.metadata_root}RECORD": b"",
                 f"{self.metadata_root}entry_points.txt": (
-                    b"[console_scripts]\nchongming-center = chongming.development:main\n"
+                    b"[console_scripts]\nchongming-center-bus = chongming.bus.center_process:main\n"
                 ),
                 f"{self.metadata_root}licenses/COPYING": self.sources["COPYING"],
             }
@@ -126,14 +125,14 @@ chongming-center = "chongming.development:main"
         self.assertFalse(any(name.startswith(("src/", "tests/", "scripts/")) for name in bundle))
 
     def test_source_resource_missing_from_wheel_is_rejected(self) -> None:
-        del self.wheel["chongming/rendering/godot/terrain.gdshader"]
+        del self.wheel["chongming/rendering/godot/worker.tscn"]
         with self.assertRaisesRegex(ValueError, "differ from the sdist"):
             check_wheel(self.sources, self.wheel, self.version)
 
     def test_required_resource_missing_from_both_archives_is_rejected(self) -> None:
-        del self.sources["src/chongming/web/preview.html"]
-        del self.wheel["chongming/web/preview.html"]
-        with self.assertRaisesRegex(ValueError, "missing.*preview.html"):
+        del self.sources["src/chongming/rendering/godot/worker.gd"]
+        del self.wheel["chongming/rendering/godot/worker.gd"]
+        with self.assertRaisesRegex(ValueError, "missing.*worker.gd"):
             check_wheel(self.sources, self.wheel, self.version)
 
     def test_visualization_resources_are_required_even_if_both_archives_omit_them(self) -> None:

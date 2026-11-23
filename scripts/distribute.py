@@ -137,11 +137,9 @@ def check_wheel(sources: dict[str, bytes], wheel: dict[str, bytes], version: str
         {
             "chongming/__init__.py",
             "chongming/py.typed",
-            "chongming/web/preview.html",
             "chongming/rendering/godot/project.godot",
             "chongming/rendering/godot/worker.gd",
             "chongming/rendering/godot/worker.tscn",
-            "chongming/rendering/godot/terrain.gdshader",
             "chongming/rendering/godot/ui.gd",
             "chongming/rendering/godot/visualization.gd",
             "chongming_proto/__init__.py",
