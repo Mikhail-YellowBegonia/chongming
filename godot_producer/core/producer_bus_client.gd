@@ -184,7 +184,7 @@ func _send_framed(peer: StreamPeerTCP, payload: PackedByteArray, timeout_ms: int
 		peer.poll()
 		var st := peer.get_status()
 		if st != StreamPeerTCP.STATUS_CONNECTED:
-			_last_error = "TCP disconnected while writing (%d/%d bytes)" % [sent, total]
+			_last_error = "TCP disconnected while writing (%d/%d bytes, status=%d)" % [sent, total, st]
 			return false
 		var chunk := framed if sent == 0 else framed.slice(sent, total)
 		var res := peer.put_partial_data(chunk)

@@ -326,6 +326,11 @@ async fn record_then_replay_integrated_lockstep_with_scorer_and_viewer() {
     assert_eq!(rec_manifest["encoding_preset"]["maxrate_kbps"], 6000);
     assert_eq!(rec_manifest["encoding_preset"]["bufsize_kbps"], 12000);
     assert!(rec_manifest["encoding_preset"]["target_bitrate_kbps"].is_null());
+    assert_eq!(rec_manifest["targets"]["tgt-1"]["target_class"], "uav");
+    assert_eq!(
+        rec_manifest["targets"]["tgt-1"]["body_aabb_diagonal_m"],
+        3.0
+    );
 
     let s1_video = &rec_manifest["video"]["video/s1-main.mp4"];
     assert_eq!(s1_video["station_id"], "s1");

@@ -4,6 +4,7 @@ extends RefCounted
 ## 4-byte big-endian length-prefixed framing for `chongming.v1`.
 
 const PROTOCOL_VERSION := "chongming.v1"
+const EVENT_SCHEMA_VERSION := "event-v1"
 const MAX_FRAME_BYTES := 64 * 1024 * 1024
 
 const WIRE_VARINT := 0

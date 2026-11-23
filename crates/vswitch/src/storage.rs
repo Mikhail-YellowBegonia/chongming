@@ -1253,6 +1253,29 @@ impl TestSceneWriter {
         Ok(())
     }
 
+    pub fn record_targets_from_truth(&mut self, frame: &TruthFrame) {
+        for tgt in &frame.targets {
+            if self.config.targets_meta.contains_key(&tgt.target_id) {
+                continue;
+            }
+            let mut meta = Map::new();
+            meta.insert(
+                "target_class".into(),
+                Value::from(tgt.target_class.as_str()),
+            );
+            meta.insert(
+                "bounding_radius_m".into(),
+                Value::from(tgt.bounding_radius_m),
+            );
+            if let Some(diag) = tgt.body_aabb_diagonal_m {
+                meta.insert("body_aabb_diagonal_m".into(), Value::from(diag));
+            }
+            self.config
+                .targets_meta
+                .insert(tgt.target_id.clone(), Value::Object(meta));
+        }
+    }
+
     pub fn add_virtual_ray(&mut self, ray: &RayEvent) -> Result<(), StorageError> {
         self.ensure_open()?;
         self.virtual_rays_writer

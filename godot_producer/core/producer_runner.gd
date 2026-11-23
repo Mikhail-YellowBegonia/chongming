@@ -199,7 +199,9 @@ func run(
 								pose["pos_enu_m"],
 								tgt["position_enu_m"],
 								str(tgt["target_id"]),
-								angular_var
+								angular_var,
+								st["installation_uncertainty"]["state_ref"],
+								start_time_ns
 							)
 							if not client.send_ray_event(ray_msg):
 								client.close()
@@ -263,7 +265,9 @@ static func _build_virtual_ray(
 	cam_pos_enu: Array,
 	target_pos_enu: Array,
 	target_id: String,
-	angular_var: float
+	angular_var: float,
+	installation_state_ref: Dictionary = {},
+	baseline_start_ns: int = -1
 ) -> Dictionary:
 	var direction := ScalarMath.vec3_normalize(
 		ScalarMath.vec3_sub(target_pos_enu, cam_pos_enu)
@@ -275,11 +279,19 @@ static func _build_virtual_ray(
 		"solution_id": "truth-baseline",
 	}
 	var exp_ns := int(capture_time["exposure_start_ns"])
-	var proc_time := {"clock_domain_id": clock_domain_id, "time_ns": exp_ns}
-	var interval := {"clock_domain_id": clock_domain_id, "start_ns": exp_ns, "end_ns": exp_ns}
+	var cal_ns := exp_ns if baseline_start_ns < 0 else baseline_start_ns
+	var cal_capture := {
+		"clock_domain_id": clock_domain_id,
+		"exposure_start_ns": cal_ns,
+		"exposure_end_ns": cal_ns,
+		"clock_uncertainty_ns": 0,
+		"rolling_shutter_model": "none",
+	}
+	var proc_time := {"clock_domain_id": clock_domain_id, "time_ns": cal_ns}
+	var interval := {"clock_domain_id": clock_domain_id, "start_ns": cal_ns, "end_ns": null}
 	return {
 		"envelope": {
-			"schema_version": ProtoWire.PROTOCOL_VERSION,
+			"schema_version": ProtoWire.EVENT_SCHEMA_VERSION,
 			"event_type": ProtoWire.EVENT_TYPE_RAY,
 			"station_id": station_id,
 			"station_session_id": station_session_id,
@@ -296,7 +308,7 @@ static func _build_virtual_ray(
 			"state_version": 1,
 			"last_trusted_time": proc_time,
 			"solution_accepted_time": proc_time,
-			"solution_reference_capture_time": capture_time,
+			"solution_reference_capture_time": cal_capture,
 			"solution_valid_interval": interval,
 			"usable_interval": interval,
 			"reason_codes": ["virtual_truth_ray"],
@@ -304,16 +316,20 @@ static func _build_virtual_ray(
 		"ray_origin_enu_m": cam_pos_enu,
 		"ray_direction_enu_unit": direction,
 		"uncertainty": {
-			"model": "virtual_truth_pinhole",
+			"model": "tangent_gaussian_v1",
 			"tangent_u_enu_unit": tangents[0],
 			"tangent_v_enu_unit": tangents[1],
 			"independent_angular_covariance_rad2": [angular_var, 0.0, 0.0, angular_var],
 			"independent_origin_covariance_m2": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-			"shared_installation_state_ref": {
-				"station_id": station_id,
-				"config_digest": config_digest,
-				"state_version": "0",
-			},
+			"shared_installation_state_ref": (
+				installation_state_ref
+				if not installation_state_ref.is_empty()
+				else {
+					"station_id": station_id,
+					"config_digest": config_digest,
+					"state_version": "1",
+				}
+			),
 			"shared_calibration_solution_ref": cal_ref,
 		},
 		"detection_score": 1.0,
