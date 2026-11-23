@@ -144,7 +144,6 @@ def check_wheel(sources: dict[str, bytes], wheel: dict[str, bytes], version: str
             "chongming/rendering/godot/terrain.gdshader",
             "chongming/rendering/godot/ui.gd",
             "chongming/rendering/godot/visualization.gd",
-            "chongming/rendering/godot/evaluation.gd",
             "chongming_proto/__init__.py",
             "chongming_proto/py.typed",
             "chongming_proto/online.py",

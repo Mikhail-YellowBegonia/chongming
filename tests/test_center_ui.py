@@ -367,7 +367,7 @@ func _ui_exchange(request: Dictionary, trailer: PackedByteArray) -> PackedByteAr
         return reply
     var document: Dictionary = JSON.parse_string(reply.get_string_from_utf8())
     document.commands.append({"type": "test_run", "idle_redraws": _idle_redraws, "update_count": _visualization.update_count,
-        "last_update": _visualization.last_update, "evaluation": _visualization.evaluation.summary(),
+        "last_update": _visualization.last_update,
         "measurements": _visualization.measurements.values(), "track_count": _visualization.tracks.size(),
         "truths": _visualization.truth_by_time.values(), "diagnostic_text": _ui._diagnostics.text,
         "info_text": _ui._info.text, "station_text": _ui._station_states.text,
@@ -467,7 +467,6 @@ class CenterUiRoundTripTests(unittest.TestCase):
                 self.assertTrue(session.closed)
                 self.assertIsNone(renderer._socket)
                 self.assertEqual(reports[0]["update_count"], 0)
-                self.assertEqual(reports[0]["evaluation"]["center"]["outputs"], 0)
                 self.assertEqual(reports[0]["track_count"], 0)
                 self.assertTrue(all(all(report["controls"]) for report in reports))
                 increments = [state for state in states if "algorithm_output" in state]
@@ -481,16 +480,11 @@ class CenterUiRoundTripTests(unittest.TestCase):
                 ]
                 count = sum(len(row["measurements"]) for row in raw)
                 self.assertEqual(reports[-1]["update_count"], len(raw))
-                self.assertEqual(reports[-1]["evaluation"]["center"]["outputs"], count)
-                self.assertEqual(reports[-1]["evaluation"]["edge"]["outputs"], 0)
                 self.assertIn("模式 3", reports[-1]["info_text"])
                 self.assertIn("体素仅支持参考中心算法的无先验原始投票", reports[-1]["info_text"])
                 self.assertNotIn("辅助相机标定", reports[-1]["info_text"])
                 if run == "clean":
-                    stats = reports[-1]["evaluation"]["center"]
-                    self.assertGreater(stats["sample_count"], 0)
-                    self.assertEqual(stats["matched"], count)
-                    self.assertLess(stats["max_error"], 1e-8)
+                    self.assertGreater(count, 0)
                     self.assertGreater(reports[-1]["track_count"], 0)
                     self.assertIn("VALID", reports[-1]["station_text"])
                     historical = False
@@ -513,7 +507,6 @@ class CenterUiRoundTripTests(unittest.TestCase):
                 else:
                     self.assertEqual(count, 0)
                     self.assertEqual(reports[-1]["track_count"], 0)
-                    self.assertIsNone(reports[-1]["evaluation"]["center"]["mean_error"])
                 self.assertNotIn("SCRIPT ERROR", reports[-1]["worker_log"])
             self.assertEqual(len(workers), 2)
             self.assertNotEqual(

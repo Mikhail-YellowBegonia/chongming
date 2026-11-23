@@ -82,6 +82,7 @@ jobs:
                     tests/test_integrated_attribution.py \
                     tests/test_dynamic_scoring.py \
                     tests/test_evaluation_preview.py \
+                    tests/test_godot_viewer.py \
                     tests/test_performance.py \
                     tests/test_distribution.py
 

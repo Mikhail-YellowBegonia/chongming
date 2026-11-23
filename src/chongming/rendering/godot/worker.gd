@@ -67,6 +67,23 @@ var _looking := false
 var _free_yaw := 0.0
 var _free_pitch := 0.0
 
+# Passive V-Switch JSON push viewer mode (chongming-viewer-v1).
+const MAX_VIEWER_FRAME_BYTES := 64 * 1024 * 1024
+const VIEWER_CONNECT_TIMEOUT_MS := 5000
+var _viewer_mode := false
+var _viewer_host := "127.0.0.1"
+var _viewer_port := 0
+var _viewer_reconnect_ms := 250
+var _viewer_peer: StreamPeerTCP
+var _viewer_buffer := PackedByteArray()
+var _viewer_expected_payload := -1
+var _viewer_conn_state := "disconnected"
+var _viewer_connect_started_ms := 0
+var _viewer_next_reconnect_ms := 0
+var _viewer_reconnect_count := 0
+var _viewer_last_error := ""
+var _viewer_camera_initialized := false
+
 
 func _ready() -> void:
 	# DEBUG: Verify GPU instancing code is loaded
@@ -77,6 +94,9 @@ func _ready() -> void:
 	seed(42)
 	_parse_arguments()
 	_setup_world()
+	if _viewer_mode:
+		_start_viewer_mode()
+		return
 	var error := _server.listen(_port, "127.0.0.1")
 	if error != OK:
 		push_error("Godot renderer could not listen: %s" % error_string(error))
@@ -190,12 +210,17 @@ func _process(_delta: float) -> void:
 			var fps_text := "%d FPS" % Engine.get_frames_per_second()
 			if _use_vegetation_instancing and _vegetation_instance_count > 0:
 				fps_text += " · GPU: %d inst / %d batch" % [_vegetation_instance_count, _vegetation_batch_count]
-			if _editor_realtime:
+			if _viewer_mode:
+				fps_text += " · VIEWER"
+			elif _editor_realtime:
 				fps_text += " · EDIT"
 			else:
 				fps_text = "FREEVIEW · simulation clock"
 			_editor_fps.text = fps_text
 			_fps_elapsed = 0.0
+	if _viewer_mode:
+		_process_viewer()
+		return
 	if _peer == null:
 		if _server.is_connection_available():
 			_peer = _server.take_connection()
@@ -231,8 +256,29 @@ func _parse_arguments() -> void:
 			_token = args[index + 1]
 		elif args[index] == "--external-scene":
 			_external_scene_path = args[index + 1]
-	if _port <= 0:
-		push_error("Godot renderer requires --port")
+		elif args[index] == "--viewer":
+			_viewer_mode = true
+			var spec := args[index + 1]
+			var colon := spec.rfind(":")
+			if colon > 0:
+				_viewer_host = spec.substr(0, colon)
+				_viewer_port = int(spec.substr(colon + 1))
+			else:
+				_viewer_port = int(spec)
+		elif args[index] == "--viewer-host":
+			_viewer_mode = true
+			_viewer_host = args[index + 1]
+		elif args[index] == "--viewer-port":
+			_viewer_mode = true
+			_viewer_port = int(args[index + 1])
+		elif args[index] == "--reconnect-ms":
+			_viewer_reconnect_ms = maxi(50, int(args[index + 1]))
+	if _viewer_mode:
+		if _viewer_port <= 0 or _viewer_host.is_empty():
+			push_error("Godot Viewer requires valid --viewer <host:port> or --viewer-port")
+			get_tree().quit(2)
+	elif _port <= 0:
+		push_error("Godot renderer requires --port or --viewer")
 		get_tree().quit(2)
 
 
@@ -339,8 +385,10 @@ func _ui_exchange(request: Dictionary, trailer: PackedByteArray) -> PackedByteAr
 	_ui_state = state
 	if _ui == null:
 		_open_ui()
-	var diagnostics := _visualization.evaluation.summary()
-	diagnostics["performance"] = _visualization.performance_summary()
+	var diagnostics := {
+		"viewer_mode": false,
+		"performance": _visualization.performance_summary(),
+	}
 	_ui.show_state(state, _ui_textures, _visualization.station_states, diagnostics)
 	_refresh_visualization_controls()
 	if _visualization.update_count != previous_update_count:
@@ -560,7 +608,10 @@ func _display_editor(enabled: bool, realtime: bool) -> void:
 
 
 func _notification(what: int) -> void:
-	if what == NOTIFICATION_WM_CLOSE_REQUEST and _ui != null:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST and _viewer_mode:
+		_disconnect_viewer("")
+		get_tree().quit()
+	elif what == NOTIFICATION_WM_CLOSE_REQUEST and _ui != null:
 		# Python ends the session; Godot exits when the socket closes.
 		ui_emit({"type": "quit"})
 	elif what == NOTIFICATION_WM_CLOSE_REQUEST and _editor_active and not _editor_realtime:
@@ -570,6 +621,188 @@ func _notification(what: int) -> void:
 		_editor_gizmos.visible = false
 		_free_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 		_display_editor(false, false)
+
+
+func _start_viewer_mode() -> void:
+	if _ui == null:
+		_open_ui()
+	_ui.set_viewer_mode(true)
+	if DisplayServer.get_name() != "headless":
+		DisplayServer.window_set_title("Chongming Viewer [V-Switch]")
+	_editor_active = true
+	_editor_realtime = false
+	_editor_display.visible = true
+	_editor_fps.visible = true
+	_free_camera.make_current()
+	_free_camera.position = Vector3(120.0, 120.0, 120.0)
+	_free_camera.look_at(Vector3.ZERO, Vector3.UP)
+	_free_yaw = _free_camera.rotation.y
+	_free_pitch = _free_camera.rotation.x
+	_connect_viewer()
+	_refresh_viewer_ui()
+	_redraw_freeview()
+
+
+func _connect_viewer() -> void:
+	_viewer_buffer.clear()
+	_viewer_expected_payload = -1
+	var peer := StreamPeerTCP.new()
+	var err := peer.connect_to_host(_viewer_host, _viewer_port)
+	if err != OK:
+		_viewer_peer = null
+		_viewer_conn_state = "reconnecting"
+		_viewer_last_error = "connect failed (%s)" % error_string(err)
+		_viewer_next_reconnect_ms = Time.get_ticks_msec() + _viewer_reconnect_ms
+		return
+	_viewer_peer = peer
+	_viewer_conn_state = "connecting"
+	_viewer_connect_started_ms = Time.get_ticks_msec()
+
+
+func _disconnect_viewer(reason: String) -> void:
+	if _viewer_peer != null:
+		_viewer_peer.disconnect_from_host()
+		_viewer_peer = null
+	_viewer_buffer.clear()
+	_viewer_expected_payload = -1
+	if not reason.is_empty():
+		_viewer_last_error = reason
+		_viewer_reconnect_count += 1
+	_viewer_conn_state = "reconnecting"
+	_viewer_next_reconnect_ms = Time.get_ticks_msec() + _viewer_reconnect_ms
+
+
+func _process_viewer() -> void:
+	if _viewer_peer == null:
+		if Time.get_ticks_msec() >= _viewer_next_reconnect_ms:
+			_connect_viewer()
+			_refresh_viewer_ui()
+		return
+	_viewer_peer.poll()
+	var status := _viewer_peer.get_status()
+	if status == StreamPeerTCP.STATUS_CONNECTING:
+		if Time.get_ticks_msec() - _viewer_connect_started_ms > VIEWER_CONNECT_TIMEOUT_MS:
+			_disconnect_viewer("connect timeout")
+			_refresh_viewer_ui()
+		return
+	if status != StreamPeerTCP.STATUS_CONNECTED:
+		_disconnect_viewer("socket closed")
+		_refresh_viewer_ui()
+		return
+	if _viewer_conn_state != "connected":
+		_viewer_peer.set_no_delay(true)
+		_viewer_conn_state = "connected"
+		_viewer_last_error = ""
+		_refresh_viewer_ui()
+	var available := _viewer_peer.get_available_bytes()
+	while available > 0:
+		var packet := _viewer_peer.get_data(available)
+		if packet[0] != OK:
+			_disconnect_viewer("socket read error")
+			_refresh_viewer_ui()
+			return
+		_viewer_buffer.append_array(packet[1])
+		_viewer_peer.poll()
+		available = _viewer_peer.get_available_bytes()
+	var accepted_in_batch := _consume_viewer_frames()
+	if accepted_in_batch > 0:
+		if not _viewer_camera_initialized:
+			_focus_viewer_overview()
+		_visualization.redraw()
+		_redraw_freeview()
+		_refresh_viewer_ui()
+
+
+func _consume_viewer_frames() -> int:
+	var accepted := 0
+	while true:
+		if _viewer_expected_payload < 0:
+			if _viewer_buffer.size() < 4:
+				break
+			# Frozen Issue #53 / #57 wire framing: 4-byte big-endian (uint32 BE) payload length.
+			var frame_len := (int(_viewer_buffer[0]) << 24) \
+				| (int(_viewer_buffer[1]) << 16) \
+				| (int(_viewer_buffer[2]) << 8) \
+				| int(_viewer_buffer[3])
+			if frame_len < 2 or frame_len > MAX_VIEWER_FRAME_BYTES:
+				_disconnect_viewer("invalid frame length %d" % frame_len)
+				_refresh_viewer_ui()
+				break
+			_viewer_expected_payload = frame_len
+		if _viewer_buffer.size() < 4 + _viewer_expected_payload:
+			break
+		var payload := _viewer_buffer.slice(4, 4 + _viewer_expected_payload)
+		_viewer_buffer = _viewer_buffer.slice(4 + _viewer_expected_payload)
+		_viewer_expected_payload = -1
+		var parsed = JSON.parse_string(payload.get_string_from_utf8())
+		if not parsed is Dictionary:
+			_viewer_last_error = "malformed JSON frame"
+			continue
+		if _visualization.receive_display_frame(parsed, true):
+			accepted += 1
+			_viewer_last_error = ""
+		else:
+			_viewer_last_error = _visualization.error
+	return accepted
+
+
+func _focus_viewer_overview() -> void:
+	var points: Array = []
+	for st in _visualization.station_states.values():
+		points.append({"position": st["main_camera_position_enu_m"]})
+	if _visualization.has_truth and not _visualization.latest_truth.is_empty():
+		for target in _visualization.latest_truth.get("targets", []):
+			points.append({"position": target["position_enu_m"]})
+	for meas in _visualization.measurements.values():
+		if meas.get("position_enu_m") != null:
+			points.append({"position": meas["position_enu_m"]})
+	if points.is_empty():
+		return
+	_position_editor_overview(points)
+	_free_yaw = _free_camera.rotation.y
+	_free_pitch = _free_camera.rotation.x
+	_viewer_camera_initialized = true
+
+
+func ui_focus_viewer() -> void:
+	_viewer_camera_initialized = false
+	_focus_viewer_overview()
+	_redraw_freeview()
+
+
+func _refresh_viewer_ui() -> void:
+	if _ui == null:
+		return
+	_ui.show_viewer_state({
+		"connection_state": _viewer_conn_state,
+		"host": _viewer_host,
+		"port": _viewer_port,
+		"reconnect_count": _viewer_reconnect_count,
+		"last_error": _viewer_last_error,
+	}, _visualization)
+
+
+func viewer_snapshot() -> Dictionary:
+	return {
+		"connection_state": _viewer_conn_state,
+		"reconnect_count": _viewer_reconnect_count,
+		"last_error": _viewer_last_error,
+		"run_id": _visualization.current_run_id,
+		"mode": _visualization.current_mode,
+		"has_truth": _visualization.has_truth,
+		"update_count": _visualization.update_count,
+		"last_update_id": _visualization.last_update_id_str,
+		"last_sequence_no": _visualization.last_sequence_no_str,
+		"dropped_sequence_count": _visualization.dropped_sequence_count,
+		"display_time_ns": _visualization.display_time_ns,
+		"station_count": _visualization.station_states.size(),
+		"ray_count": _visualization.rays.size(),
+		"measurement_count": _visualization.measurements.size(),
+		"track_count": _visualization.tracks.size(),
+		"score_by_unit": _visualization.score_by_unit,
+		"has_latest_truth": not _visualization.latest_truth.is_empty(),
+		"voxel_count": _visualization._voxel_cell_count(),
+	}
 
 
 func _redraw_freeview() -> void:
@@ -653,6 +886,9 @@ func ui_select_measurement(id: String) -> void:
 
 
 func _refresh_visualization_controls() -> void:
+	if _viewer_mode:
+		_refresh_viewer_ui()
+		return
 	_ui.show_visualization(_visualization.measurements, _visualization.selection_summary(),
 		_visualization.voxel_space, _visualization.voxel_update_id)
 

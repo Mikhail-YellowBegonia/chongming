@@ -98,7 +98,6 @@ class VoxelReceiverTests(unittest.TestCase):
         self.assertEqual(reports[3]["voxel_space"]["max_score"], 0)
         self.assertEqual(len(reports[4]["voxel_space"]["scored_voxels"]), 1)
         self.assertIsNone(reports[5]["voxel_space"])
-        self.assertTrue(all(report["evaluation"] == reports[0]["evaluation"] for report in reports))
 
     def test_invalid_grids_are_rejected_before_mutating_any_cache_or_statistics(self) -> None:
         initial = layers.layer_state()
@@ -135,7 +134,6 @@ class VoxelReceiverTests(unittest.TestCase):
                 for field in (
                     "voxel_space",
                     "voxel_update",
-                    "evaluation",
                     "last_update",
                     "rays",
                     "measurements",
@@ -284,7 +282,6 @@ class VoxelGraphicsTests(unittest.TestCase):
             renderer.ui_exchange(initial)
             renderer.editor_update(scene, camera, realtime=False)
             before = renderer.ui_exchange({"version": 2})[0]
-            stats = before["evaluation"]
             selected = renderer.ui_exchange(
                 {"version": 3, "test_select": measurement["measurement_id"]}
             )[0]
@@ -322,7 +319,6 @@ class VoxelGraphicsTests(unittest.TestCase):
                 toggled = renderer.ui_exchange(
                     {"version": 5, "test_layers": {"rays": visible, "voxels": visible}}
                 )[0]
-                self.assertEqual(toggled["evaluation"], stats)
                 self.assertEqual(toggled["layers"]["rays"]["visible"], visible)
                 self.assertEqual(renderer.render(scene, camera)[0], sensor)
             boundary = renderer.ui_exchange(increment(2, transport.TIME + 1_000_000_000))[0]
@@ -337,10 +333,8 @@ class VoxelGraphicsTests(unittest.TestCase):
             self.assertTrue(gone["selection"]["expired"])
             self.assertIn("已过期，无法显示", gone["selection_text"])
             self.assertEqual(gone["layers"]["measurements"]["geometry"]["children"], [])
-            self.assertEqual(gone["evaluation"], stats)
             cleared = renderer.ui_exchange({"version": 10, "test_select": ""})[0]
             self.assertEqual(cleared["selection"]["measurement_id"], "")
-            self.assertEqual(cleared["evaluation"], stats)
 
     def test_reference_ui_exports_real_votes_and_a_new_worker_has_no_previous_grid(self) -> None:
         script = run_ui.RUN_WORKER.replace(
