@@ -42,16 +42,17 @@ chongming-edge --help
 chongming-scorer --help
 ```
 
-To build `vswitch` or run `godot_producer/`, extract the sdist and run `cargo build -p vswitch` in the source directory.
+To build `vswitch` / `edge` or run `godot_producer/`, extract the sdist and run `cargo build -p vswitch -p edge` in the source directory.
 
 ## Commands and modes
 
-| Command                | Purpose                                                                             |
-| ---------------------- | ----------------------------------------------------------------------------------- |
-| `vswitch`              | Rust hub (`record`, `replay`, `live` modes; build from `crates/vswitch/`)           |
-| `chongming-edge`       | Online edge bus client (`--policy` `DevicePolicy` JSON)                             |
-| `chongming-center-bus` | Online center bus client (`--policy` `FusionPolicy` JSON)                           |
-| `chongming-scorer`     | Independent `Test Scene` / `Run Output` verifier, offline scorer, and `--subscribe` |
+| Command                | Purpose                                                                                 |
+| ---------------------- | --------------------------------------------------------------------------------------- |
+| `vswitch`              | Rust hub (`record`, `replay`, `live` modes; build from `crates/vswitch/`)               |
+| `edge`                 | Rust online edge bus client (`--policy` `DevicePolicy` JSON; build from `crates/edge/`) |
+| `chongming-edge`       | Python online edge bus client (`--policy` `DevicePolicy` JSON)                          |
+| `chongming-center-bus` | Online center bus client (`--policy` `FusionPolicy` JSON)                               |
+| `chongming-scorer`     | Independent `Test Scene` / `Run Output` verifier, offline scorer, and `--subscribe`     |
 
 Use `--help` on any binary or script for the complete option list.
 
@@ -217,7 +218,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-Full regression including Godot Producer (`test_godot_producer_unit.py`, `test_godot_producer_e2e.py`) and Godot Viewer (`test_godot_viewer.py`) requires Godot and a graphics context:
+Full regression including Godot Producer (`test_godot_producer_unit.py`, `test_godot_producer_e2e.py`), Rust Edge (`test_rust_edge_e2e.py`), and Godot Viewer (`test_godot_viewer.py`) requires Godot, compiled `vswitch` / `edge` binaries, and a graphics context:
 
 ```sh
 nix develop --no-update-lock-file .#software --command xvfb-run -a uv run --frozen python \

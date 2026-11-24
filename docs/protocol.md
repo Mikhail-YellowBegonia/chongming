@@ -432,5 +432,5 @@ This specification tracks the Issue #49 stages:
 1. Stage 0 (Done): Shared Schema (`.proto`), wire/storage spec, and Nix Rust/`protoc` toolchain.
 2. Stage 1 (Done): Independent `chongming_scorer` package and `chongming_proto` bindings reading/writing immutable `Test Scene` and independent `Run Output` packages (`.pb.zst`).
 3. Stage 2 (Done): Rust `V-Switch` (`crates/vswitch`) and standalone Python `Edge` / `Center` / `Scorer` TCP processes using `online.proto` and `truth.proto`.
-4. Stage 3 (In progress): Passive Godot Viewer push integration (Done, Issue #57) and Godot Producer full-stack migration (Issue #58).
-5. Stage 4: Rust `Edge` validated against Issue #51 metrics, QEMU functional/cross-compile CI, and real hardware integration.
+4. Stage 3 (Done): Passive Godot Viewer push integration (Issue #57) and Godot Producer full-stack migration (Issue #58).
+5. Stage 4 (In progress): Rust `Edge` (`crates/edge`) validated against `Test Scene` / `chongming-scorer` parity; QEMU CI is dropped, and target-hardware camera `FrameSource` integration (final on-device Rust vs. C choice open) is deferred to hardware bring-up.
