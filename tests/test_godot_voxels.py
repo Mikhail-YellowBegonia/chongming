@@ -179,22 +179,25 @@ class VoxelGraphicsTests(unittest.TestCase):
             renderer.editor_update(scene, camera, realtime=False, reopen=True)
             initial = layers.layer_state()
             space = initial["algorithm_output"]["center_events"]["voxel_space"]
-            space["scored_voxels"][0]["score"] = "2"
-            space["scored_voxels"][0]["supporting_station_count"] = "2"
+            space["scored_voxels"][0]["score"] = "3"
+            space["scored_voxels"][0]["supporting_station_count"] = "3"
             space["scored_voxels"][1]["score"] = "15"
             space["scored_voxels"][1]["supporting_station_count"] = "15"
-            space["scored_voxels"].append(
-                {"grid_index": ["2", "2", "1"], "score": "1", "supporting_station_count": "1"}
+            space["scored_voxels"].extend(
+                [
+                    {"grid_index": ["2", "2", "1"], "score": "2", "supporting_station_count": "2"},
+                    {"grid_index": ["2", "1", "1"], "score": "1", "supporting_station_count": "1"},
+                ]
             )
             space["max_score"] = "15"
             report = renderer.ui_exchange(initial)[0]
             geometry = report["layers"]["voxels"]["geometry"]
             self.assertEqual(len(geometry["children"]), 2)
-            for score in (2, 15):
+            for score in (3, 15):
                 mesh = layers.named(geometry, f"Score{score}")
                 # Solid cubes: 6 faces × 2 triangles × 3 vertices = 36 vertices
                 self.assertEqual(len(mesh["vertices"]), 36, "One solid cube has 6 faces")
-                expected_alpha = 0.06 + 0.12 * (score - 2) / 13
+                expected_alpha = 0.06 + 0.12 * (score - 3) / 12
                 self.assertAlmostEqual(mesh["color"][3], expected_alpha, places=2)
                 self.assertEqual(mesh["layers"], 2)
                 self.assertEqual(mesh["shadow"], 0)
@@ -220,7 +223,7 @@ class VoxelGraphicsTests(unittest.TestCase):
                 # Check that all vertices fall within the expected voxel bounds
                 corners = {
                     (e, u, -n)
-                    for e in ((-3.0, -1.0) if score == 2 else (-1.0, 1.0))
+                    for e in ((-3.0, -1.0) if score == 3 else (-1.0, 1.0))
                     for u in (4.0, 6.0)
                     for n in (4.0, 6.0)
                 }
@@ -235,19 +238,19 @@ class VoxelGraphicsTests(unittest.TestCase):
                 search_box_max_enu_m=(2.0, 3.0, 3.5),
                 voxel_step_enu_m=(2.0, 2.0, 2.0),
                 scored_voxels=(
-                    v.ScoredVoxel(grid_index=(2, 1, 0), score=2, supporting_station_count=2),
+                    v.ScoredVoxel(grid_index=(2, 1, 0), score=3, supporting_station_count=3),
                 ),
-                max_score=2,
+                max_score=3,
             )
             report = renderer.ui_exchange(
                 increment(3, transport.TIME + 40, windows=1, space=partial)
             )[0]
-            vertices = layers.named(report["layers"]["voxels"]["geometry"], "Score2")["vertices"]
+            vertices = layers.named(report["layers"]["voxels"]["geometry"], "Score3")["vertices"]
             self.assertEqual(
                 set(map(tuple, vertices)),
                 {(e, u, -n) for e in (1.0, 2.0) for u in (2.0, 3.5) for n in (2.0, 3.0)},
             )
-            for update_id, score, alpha in ((4, 8, 0.06 + 0.12 * 6 / 13), (5, 20, 0.18)):
+            for update_id, score, alpha in ((4, 8, 0.06 + 0.12 * 5 / 12), (5, 20, 0.18)):
                 scored = replace(
                     partial,
                     scored_voxels=(

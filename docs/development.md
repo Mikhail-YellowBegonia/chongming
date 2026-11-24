@@ -471,7 +471,7 @@ Full discovery was interrupted while `test_editor_updates_native_view_without_se
 
 These remain unresolved. Assertions and runtime thresholds were not relaxed to hide them.
 
-During Issue #57 verification against `main` (`5b22ae2`), three additional pre-existing Godot graphics/integration test failures were reproduced without relaxing assertions:
+During Issue #57 verification against `main` (`5b22ae2`), three additional pre-existing Godot graphics/integration test failures were reproduced without relaxing assertions (tracked and subsequently fixed in Issue #61 by aligning the stale tests with layer-rebuild skipping, 3-vote voxel filtering, 10 s warmup-hold configuration, post-intersection alignment output, and `evaluation.gd` removal):
 
 - `tests/test_godot_visualization_layers.py::VisualizationLayerTests::test_fixed_geometry_styles_visibility_and_sensor_pixels`: toggling visibility checkboxes invokes `redraw()`, freeing and recreating `MeshInstance3D` nodes so `instance` IDs differ from the initial snapshot.
 - `tests/test_godot_voxels.py::VoxelGraphicsTests::test_solid_cells_use_raw_corners_score_alpha_and_clipped_edge_cells`: `visualization.gd::_draw_voxels()` skips `score <= 2` (since commit `a37e8f0`), whereas the test supplies a 2-vote cell and asserts two mesh groups (`1 != 2`).

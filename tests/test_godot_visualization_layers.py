@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import re
 import shutil
 import tempfile
 import time
@@ -91,10 +92,10 @@ def layer_state() -> dict[str, Any]:
                 search_box_min_enu_m=(-3.0, 0.0, 2.0),
                 search_box_max_enu_m=(3.0, 8.0, 8.0),
                 voxel_step_enu_m=(2.0, 2.0, 2.0),
-                max_score=2,
+                max_score=3,
                 scored_voxels=(
                     v.ScoredVoxel(grid_index=(0, 2, 1), score=1, supporting_station_count=1),
-                    v.ScoredVoxel(grid_index=(1, 2, 1), score=2, supporting_station_count=2),
+                    v.ScoredVoxel(grid_index=(1, 2, 1), score=3, supporting_station_count=3),
                 ),
             ),
         ),
@@ -247,6 +248,17 @@ def pixels(report: dict[str, Any]) -> np.ndarray:
     return np.frombuffer(base64.b64decode(report["capture"]), dtype=np.uint8).reshape(240, 320, 3)
 
 
+def geometry_without_instances(node: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **{
+            key: re.sub(r"@\d+$", "", value) if key == "name" else value
+            for key, value in node.items()
+            if key not in ("instance", "children")
+        },
+        "children": [geometry_without_instances(child) for child in node["children"]],
+    }
+
+
 @unittest.skipUnless(transport.GODOT, "Godot 4 with a real graphics backend is required")
 class VisualizationLayerTests(unittest.TestCase):
     def test_fixed_geometry_styles_visibility_and_sensor_pixels(self) -> None:
@@ -351,7 +363,17 @@ class VisualizationLayerTests(unittest.TestCase):
                 )
                 self.assertEqual(toggled["update_count"], 1)
                 for key in LAYERS:
-                    self.assertEqual(toggled["layers"][key]["geometry"], layers[key]["geometry"])
+                    if selected is None:
+                        self.assertEqual(
+                            toggled["layers"][key]["geometry"], layers[key]["geometry"]
+                        )
+                    elif key == selected or key == "voxels":
+                        self.assertEqual(
+                            geometry_without_instances(toggled["layers"][key]["geometry"]),
+                            geometry_without_instances(layers[key]["geometry"]),
+                        )
+                    else:
+                        self.assertEqual(toggled["layers"][key]["geometry"]["children"], [])
                 self.assertTrue(renderer.editor_update(scene, camera, realtime=False))
                 captured = renderer.ui_exchange({"version": version + 1})[0]
                 views["off" if selected is None else selected] = pixels(captured).copy()

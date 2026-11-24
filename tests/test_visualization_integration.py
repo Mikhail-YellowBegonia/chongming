@@ -84,7 +84,11 @@ class VisualizationIntegrationTests(unittest.TestCase):
         # The saved runtime graph must reflect the actual exposure schedules.
         with patch("chongming.development.load_scenario", return_value=spec):
             return CenterSession(
-                path, output, mode=4, device_policies=policies(spec.station_configs)
+                path,
+                output,
+                mode=4,
+                device_policies=policies(spec.station_configs),
+                warmup_hold_ns=0,
             )
 
     def replay_updates(
@@ -248,8 +252,10 @@ class VisualizationIntegrationTests(unittest.TestCase):
                         for snapshot in report["truths"]
                         for target in snapshot["targets"]
                     }
-                    for match in report["last_matches"]["center"]:
-                        reference = match["time_ns"]
+                    for measurement in (update.get("center_events") or {}).get("measurements", ()):
+                        if measurement.get("position_enu_m") is None:
+                            continue
+                        reference = measurement["reference_time_ns"]
                         historical |= reference != update["scenario_time_ns"]
                         expected = [-65 + 35 * (reference / 1e9), 62.0, 20.0]
                         for actual, wanted in zip(
@@ -279,12 +285,26 @@ class VisualizationIntegrationTests(unittest.TestCase):
             session = self.asynchronous_session(path, root / "run")
             session.run_ui(tick_hz=240)
             self.assertGreater(session.ray_count, 0)
-            raw = (root / "run/center-output.jsonl").read_text()
-            self.assertIn("motion_alignment_unavailable", raw)
+            measurements = [
+                measurement
+                for row in rows(root / "run/center-output.jsonl")
+                for measurement in row["measurements"]
+            ]
+            self.assertTrue(measurements)
             self.assertTrue(
-                all(not row["measurements"] for row in rows(root / "run/center-output.jsonl"))
+                all(
+                    measurement["position_enu_m"] is None
+                    and measurement["status"] == "rejected_input"
+                    and "reference_time_alignment_unavailable" in measurement["reason_codes"]
+                    for measurement in measurements
+                )
             )
-            self.assertEqual(workers[-1][1][-1]["measurements"], [])
+            self.assertTrue(
+                all(
+                    measurement["position_enu_m"] is None
+                    for measurement in workers[-1][1][-1]["measurements"]
+                )
+            )
             self.assertTrue(session.closed)
 
     def test_switching_from_image_results_to_empty_modes_and_preview_clears_every_cache(
@@ -299,7 +319,11 @@ class VisualizationIntegrationTests(unittest.TestCase):
             path = root / "scene.json"
             spec = real_scene(path)
             first = CenterSession(
-                path, root / "image", mode=4, device_policies=policies(spec.station_configs)
+                path,
+                root / "image",
+                mode=4,
+                device_policies=policies(spec.station_configs),
+                warmup_hold_ns=0,
             )
             renderer = workers[-1][0]
             exchange = renderer.ui_exchange
@@ -380,7 +404,11 @@ class VisualizationIntegrationTests(unittest.TestCase):
             save_authoring(document, path)
             output = root / "failed"
             session = CenterSession(
-                path, output, mode=4, device_policies=policies(spec.station_configs)
+                path,
+                output,
+                mode=4,
+                device_policies=policies(spec.station_configs),
+                warmup_hold_ns=0,
             )
             renderer = workers[-1][0]
             exchange = renderer.ui_exchange
