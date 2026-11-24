@@ -65,11 +65,12 @@ Within `src/chongming/`, module responsibilities are:
 
 External components live in workspace directories alongside `src/`:
 
-| Path              | Responsibility                                                           |
-| ----------------- | ------------------------------------------------------------------------ |
-| `godot_producer/` | Decoupled Godot 4.7.2 virtual scene generator and `V-Switch` record peer |
-| `crates/vswitch/` | Rust workspace (`vswitch` library and CLI binary)                        |
-| `proto/`          | Source `.proto` schemas for `common`, `online`, and `truth`              |
+| Path              | Responsibility                                                            |
+| ----------------- | ------------------------------------------------------------------------- |
+| `godot_producer/` | Decoupled Godot 4.7.2 virtual scene generator and `V-Switch` record peer  |
+| `crates/vswitch/` | Rust `V-Switch` library and CLI binary                                    |
+| `crates/edge/`    | Rust `Edge` library and CLI binary (`online.proto` / `common.proto` only) |
+| `proto/`          | Source `.proto` schemas for `common`, `online`, and `truth`               |
 
 Construction does not start business work. `ModuleShell` separates lifecycle state from implementation status (`DirectGeometryCandidateModule` remains an explicit unimplemented stub whose method raises `NotImplementedError`).
 
@@ -102,7 +103,7 @@ Scene scripts inherit `ProducerSceneContract` (`godot_producer/core/scene_contra
 
 ## Device processing
 
-`EdgeProcess` decodes H.264/raw frames from `V-Switch` (or local cameras) and processes auxiliary frames before main frames within an exposure group, separating `decode_duration_ns` from `cv_duration_ns`.
+Python `EdgeProcess` (`chongming-edge`) and Rust `EdgeProcess` (`crates/edge`) share the same `V-Switch` TCP `BusMessage` protocol and `DevicePolicy` contract: both decode H.264/raw frames from `V-Switch` (or an abstract `FrameSource`) and process auxiliary frames before main frames within an exposure group, separating `decode_duration_ns` from `cv_duration_ns`.
 
 ### Detection and local tracking
 
