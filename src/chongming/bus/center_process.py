@@ -22,9 +22,8 @@ from chongming.bus.codec import (
 from chongming.contracts import fusion as f
 from chongming.contracts import model as m
 from chongming.contracts.development import CenterInputStep, CenterRegistration
+from chongming.contracts.json_codec import _decode, parse_json
 from chongming.reference import ReferenceFusionAlgorithm
-from chongming.scenarios.json_content import parse_json
-from chongming.scenarios.serialization import _decode
 from chongming_proto.online import common_pb2, online_pb2
 
 
@@ -100,6 +99,42 @@ class CenterProcess:
         self._algorithm = ReferenceFusionAlgorithm(postintersection=postintersection)
         self._algorithm.voxel_diagnostics.enabled = voxel_diagnostics_enabled
         self._started = False
+        self._pending_station_configs: dict[m.StationId, m.StationConfig] = {}
+        self._pending_messages: list[online_pb2.BusMessage] = []
+
+    def _start_algorithm(self, *, anchor_capture_ns: int | None) -> None:
+        if self._started:
+            return
+        if anchor_capture_ns is not None and self.policy.windows.origin_ns == 0:
+            width = self.policy.windows.width_ns
+            aligned_origin = anchor_capture_ns - (width // 2)
+            self.policy = replace(
+                self.policy,
+                windows=replace(self.policy.windows, origin_ns=aligned_origin),
+            )
+            if self._capture_is_processing_clock and aligned_origin > self._last_now_ns:
+                self._last_now_ns = aligned_origin
+        self._algorithm.start(
+            CenterRegistration(
+                stations=(),
+                center_session_id=m.SessionId(self.session_id),
+                policy=self.policy,
+                clock_mapping=self.clock_mapping,
+                started_at=m.ProcessingTime(
+                    clock_domain_id=self._processing_clock_id,
+                    time_ns=self._last_now_ns,
+                ),
+            )
+        )
+        self._started = True
+        pending_stations = list(self._pending_station_configs.values())
+        self._pending_station_configs.clear()
+        for config in pending_stations:
+            self._register_station(config)
+        pending_msgs = list(self._pending_messages)
+        self._pending_messages.clear()
+        for pending in pending_msgs:
+            self._handle_message(pending)
 
     def _next_now(self, event_time_ns: int | None = None) -> m.ProcessingTime:
         if self._capture_is_processing_clock:
@@ -178,6 +213,40 @@ class CenterProcess:
     def _handle_message(self, msg: online_pb2.BusMessage) -> None:
         self._last_completed_seq = max(self._last_completed_seq, int(msg.bus_sequence_no))
         kind = msg.WhichOneof("payload")
+        if not self._started:
+            if kind == "station_config":
+                config = station_config_from_proto(msg.station_config)
+                existing = self._pending_station_configs.get(config.station_id)
+                if existing is not None and existing != config:
+                    raise ValueError(
+                        f"station registration failed: conflicting config for {config.station_id!r}"
+                    )
+                self._pending_station_configs[config.station_id] = config
+                self._station_configs[config.station_id] = config
+                return
+            if kind in {"calibration_state", "diagnostic_event"}:
+                self._pending_messages.append(msg)
+                return
+            if kind == "ray_event":
+                ct = msg.ray_event.capture_time
+                anchor_ns = (int(ct.exposure_start_ns) + int(ct.exposure_end_ns)) // 2
+                self._start_algorithm(anchor_capture_ns=anchor_ns)
+            elif kind == "progress_report":
+                report = msg.progress_report
+                is_hub_end = (
+                    report.finite_end_reached
+                    and report.source_role == common_pb2.COMPONENT_ROLE_UNSPECIFIED
+                    and m.StationId(report.source_id) not in self._station_configs
+                )
+                if not is_hub_end and m.StationId(report.source_id) not in self._station_configs:
+                    raise ValueError(
+                        f"ProgressReport received before StationConfig for station {report.source_id!r}"
+                    )
+                anchor = int(report.completed_time_ns) if report.completed_time_ns != 0 else None
+                self._start_algorithm(anchor_capture_ns=anchor)
+            else:
+                raise ValueError(f"unexpected BusMessage payload for CenterProcess: {kind!r}")
+
         if kind == "station_config":
             self._register_station(station_config_from_proto(msg.station_config))
             return
@@ -296,25 +365,13 @@ class CenterProcess:
             session_id=self.session_id,
             station_ids=self.station_ids,
         )
-        self._algorithm.start(
-            CenterRegistration(
-                stations=(),
-                center_session_id=m.SessionId(self.session_id),
-                policy=self.policy,
-                clock_mapping=self.clock_mapping,
-                started_at=m.ProcessingTime(
-                    clock_domain_id=self._processing_clock_id,
-                    time_ns=self._last_now_ns,
-                ),
-            )
-        )
-        self._started = True
         try:
             while not self._stream_finished:
                 msg = self.client.receive()
                 if msg is None:
                     break
                 self._handle_message(msg)
+            self._start_algorithm(anchor_capture_ns=None)
             self._emit_stream_end()
         finally:
             self.close()

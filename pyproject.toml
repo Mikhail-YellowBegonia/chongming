@@ -15,12 +15,8 @@ dependencies = [
 ]
 
 [project.scripts]
-chongming-preview = "chongming.preview:main"
-chongming-scene = "chongming.scenarios.run:main"
-chongming-center = "chongming.development:main"
 chongming-center-bus = "chongming.bus.center_process:main"
 chongming-edge = "chongming.bus.edge_process:main"
-chongming-osm = "chongming.scenarios.osm:main"
 chongming-scorer = "chongming_scorer.cli:main"
 
 [dependency-groups]
@@ -41,6 +37,10 @@ include = [
     "/src/chongming_proto/",
     "/src/chongming_scorer/",
     "/proto/",
+    "/godot_producer/",
+    "/crates/",
+    "/Cargo.toml",
+    "/Cargo.lock",
     "/tests/",
     "/scripts/",
     "/scenarios/",

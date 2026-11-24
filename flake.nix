@@ -71,28 +71,29 @@
         system:
         let
           pkgs = pkgsFor system;
-          preview = {
+          mkPyApp = name: {
             type = "app";
             program = lib.getExe (
               pkgs.writeShellApplication {
-                name = "chongming-preview";
+                inherit name;
                 runtimeInputs = [
                   pkgs.python312
                   pkgs.uv
-                  pkgs.godot_4_7
                   pkgs.ffmpeg
                 ];
                 runtimeEnv = runtimeEnv pkgs;
                 text = ''
-                  exec uv run --frozen chongming-preview "$@"
+                  exec uv run --frozen ${name} "$@"
                 '';
               }
             );
           };
         in
         {
-          default = preview;
-          preview = preview;
+          default = mkPyApp "chongming-center-bus";
+          center-bus = mkPyApp "chongming-center-bus";
+          edge = mkPyApp "chongming-edge";
+          scorer = mkPyApp "chongming-scorer";
         };
 
       devShellsFor =
@@ -121,7 +122,7 @@
                 ]
                 ++ lib.optional pkgs.stdenv.hostPlatform.isLinux pkgs.xvfb-run;
                 shellHook = ''
-                  echo "Python deps come from uv: run 'uv run chongming-center ...' from the repository root." >&2
+                  echo "Python deps come from uv: run 'uv run --frozen chongming-center-bus ...' from the repository root." >&2
                 '';
               }
               // runtimeEnv pkgs

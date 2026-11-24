@@ -5,8 +5,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from chongming.contracts import scene as s
-from chongming.rendering.geometry import model_aabb_diagonal
 from chongming_proto.online import common_pb2, online_pb2
 from chongming_proto.truth import truth_pb2
 from chongming_scorer.metrics import CenterSizeMetrics
@@ -20,12 +18,6 @@ from chongming_scorer.storage import (
 
 
 class CenterSizeEvaluationTests(unittest.TestCase):
-    def test_geometry_diagonal_uses_physical_model_bounds(self) -> None:
-        self.assertAlmostEqual(model_aabb_diagonal(s.SphereGeometry(1)), 2 * math.sqrt(3))
-        self.assertEqual(model_aabb_diagonal(s.BoxGeometry((1, 2, 2))), 6)
-        mesh = s.TriangleMeshGeometry(((0, 0, 0), (3, 0, 0), (0, 4, 0)), ((0, 1, 2),))
-        self.assertEqual(model_aabb_diagonal(mesh), 5)
-
     def test_precise_and_complete_miss_boundaries(self) -> None:
         metric = CenterSizeMetrics(0.7, 3)
         target: dict[str, tuple[float, ...]] = {"a": (0.0, 0.0, 0.0)}
@@ -65,7 +57,7 @@ class CenterSizeEvaluationTests(unittest.TestCase):
             root = Path(directory)
             scene_dir = root / "scene"
             run_dir = root / "run"
-            diagonal = model_aabb_diagonal(s.SphereGeometry(1))
+            diagonal = 2.0 * math.sqrt(3.0)
 
             with TestSceneWriter(
                 scene_dir,

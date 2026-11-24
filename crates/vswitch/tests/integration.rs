@@ -326,6 +326,11 @@ async fn record_then_replay_integrated_lockstep_with_scorer_and_viewer() {
     assert_eq!(rec_manifest["encoding_preset"]["maxrate_kbps"], 6000);
     assert_eq!(rec_manifest["encoding_preset"]["bufsize_kbps"], 12000);
     assert!(rec_manifest["encoding_preset"]["target_bitrate_kbps"].is_null());
+    assert_eq!(rec_manifest["targets"]["tgt-1"]["target_class"], "uav");
+    assert_eq!(
+        rec_manifest["targets"]["tgt-1"]["body_aabb_diagonal_m"],
+        3.0
+    );
 
     let s1_video = &rec_manifest["video"]["video/s1-main.mp4"];
     assert_eq!(s1_video["station_id"], "s1");
@@ -1545,7 +1550,7 @@ from chongming.bus.codec import ray_event_to_proto, station_config_to_proto
 from chongming.composition.center import reference_policy
 from chongming.contracts import device as d, model as m
 from chongming.modules.device import OPENCV_CALIBRATION_ESTIMATOR_ID
-from chongming.scenarios.run import _json
+from chongming.contracts.json_codec import dump_json as _json
 from chongming_proto.online import common_pb2
 from chongming_proto.truth import truth_pb2
 from chongming_scorer.storage import TestSceneWriter

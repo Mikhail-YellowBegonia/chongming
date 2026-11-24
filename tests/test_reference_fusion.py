@@ -3,137 +3,72 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
-import tempfile
+import math
 import unittest
 from dataclasses import asdict, replace
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from chongming.composition.center import declare_center
-from chongming.composition.development import development_run
 from chongming.contracts import fusion as f
 from chongming.contracts import model as m
-from chongming.contracts import scene as s
 from chongming.contracts.development import (
     CenterAlgorithmResult,
     CenterInputStep,
-    CenterRegistration,
 )
 from chongming.contracts.runtime import ModuleState
-from chongming.development import InputInspector
 from chongming.reference import FusionEngineAdapter, create_algorithm
-from chongming.scenarios.authoring import compile_authoring
-from chongming.scenarios.demo import demo_source
-from chongming.scenarios.serialization import load_scenario
+from tests.online_fixtures import (
+    SyntheticTarget,
+    default_clock_mapping,
+    default_fusion_policy,
+    default_registration,
+    default_station_configs,
+    generate_synthetic_steps,
+)
 
-ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_TARGET = SyntheticTarget(
+    initial_position_enu_m=(-15.0, 62.0, 20.0),
+    velocity_enu_mps=(1.0, 0.0, 0.0),
+)
+SECOND_TARGET = SyntheticTarget(
+    initial_position_enu_m=(15.0, 80.0, 35.0),
+    velocity_enu_mps=(-0.5, 0.2, 0.0),
+)
 
 
 class ReferenceFusionTests(unittest.TestCase):
     def setUp(self) -> None:
-        original = load_scenario(ROOT / "scenarios/center_clean.json")
-        self.spec = replace(original, timeline=replace(original.timeline, end_time_ns=120_000_000))
-        run = development_run(self.spec, Path("unused-reference-test-output"))
-        self.registration = CenterRegistration(
-            stations=self.spec.station_configs,
-            center_session_id=str(run.center_session_id),
-            policy=run.fusion_policy,
-            clock_mapping=run.processing_to_capture_clock,
-            started_at=m.ProcessingTime(
-                clock_domain_id=run.processing_to_capture_clock.processing_clock_domain_id,
-                time_ns=0,
-            ),
+        self.stations = default_station_configs()
+        self.policy = default_fusion_policy()
+        self.clock_mapping = default_clock_mapping()
+        self.registration = default_registration(
+            stations=self.stations,
+            policy=self.policy,
+            center_session_id="ref-test",
         )
         self.center, _ = declare_center(
-            center_session_id=run.center_session_id,
-            policy=run.fusion_policy,
-            clock_mapping=run.processing_to_capture_clock,
+            center_session_id=m.SessionId(self.registration.center_session_id),
+            policy=self.registration.policy,
+            clock_mapping=self.registration.clock_mapping,
         )
         self.adapter = FusionEngineAdapter(self.center.fusion)
         self.adapter.start(self.registration)
 
-    def steps(self, spec: s.ScenarioSpec | None = None) -> list[CenterInputStep]:
-        spec = self.spec if spec is None else spec
-        source = demo_source(spec, video_enabled=False)
-        last: dict[m.StationId, m.CaptureTime] = {}
-        configs = {config.station_id: config.config_digest for config in spec.station_configs}
-        rows = []
-        for number, generated in enumerate(source.generate(spec)):
-            now = m.ProcessingTime(
-                clock_domain_id=generated.packets.sample_time.clock_domain_id,
-                time_ns=generated.packets.sample_time.time_ns,
-            )
-            events: tuple[m.StationEvent, ...] = (
-                *generated.packets.calibration_events,
-                *generated.packets.rays,
-                *generated.packets.diagnostics,
-            )
-            sampled = set()
-            # The source harness reports completed MAIN processing even when no
-            # observation event exists. Only capture metadata enters the plugin.
-            for frame in generated.truth.camera_frames:
-                if frame.camera_role is m.CameraRole.MAIN:
-                    last[frame.station_id] = frame.capture_time
-                    sampled.add(frame.station_id)
-            progress = tuple(
-                f.StationEventTimeProgress(
-                    station_id=binding.station_id,
-                    station_session_id=binding.virtual_session_id,
-                    station_config_digest=configs[binding.station_id],
-                    completed_capture_time=last[binding.station_id],
-                    received_at=now,
-                    stream_ended=False,
-                )
-                for binding in source.station_sessions
-                if binding.station_id in sampled
-            )
-            rows.append(
-                CenterInputStep(
-                    step_no=number,
-                    time=now,
-                    solutions=generated.packets.calibration_solutions,
-                    events=tuple(
-                        m.ReceivedEvent(event=event, arrival_time=now)
-                        for event in sorted(
-                            events,
-                            key=lambda event: (
-                                event.envelope.station_id,
-                                event.envelope.sequence_no,
-                            ),
-                        )
-                    ),
-                    progress=progress,
-                    stream_ended=False,
-                )
-            )
-        now = m.ProcessingTime(
-            clock_domain_id=spec.timeline.clock_domain.clock_domain_id,
-            time_ns=spec.timeline.end_time_ns + 1,
-        )
-        progress = tuple(
-            f.StationEventTimeProgress(
-                station_id=binding.station_id,
-                station_session_id=binding.virtual_session_id,
-                station_config_digest=configs[binding.station_id],
-                completed_capture_time=last.get(binding.station_id),
-                received_at=now,
-                stream_ended=True,
-            )
-            for binding in source.station_sessions
-        )
-        rows.append(
-            CenterInputStep(
-                step_no=len(rows),
-                time=now,
-                solutions=(),
-                events=(),
-                progress=progress,
-                stream_ended=True,
-            )
+    def steps(
+        self,
+        *,
+        stations: tuple[m.StationConfig, ...] | None = None,
+        targets: tuple[SyntheticTarget, ...] = (DEFAULT_TARGET,),
+        duration_ns: int = 120_000_000,
+        **kwargs: Any,
+    ) -> list[CenterInputStep]:
+        rows, _ = generate_synthetic_steps(
+            self.stations if stations is None else stations,
+            targets,
+            duration_ns=duration_ns,
+            **kwargs,
         )
         return rows
 
@@ -350,24 +285,13 @@ class ReferenceFusionTests(unittest.TestCase):
         self.assertFalse(any(batch.measurements or batch.tracks for batch in batches))
 
     def test_empty_and_zero_sample_inputs_never_create_tracks(self) -> None:
-        for start, duration in ((0, 0.07), (1, 0.001)):
+        for start, duration_ns in ((0, 70_000_000), (1_000_000_000, 1_000_000)):
             with self.subTest(start=start):
-                document = json.loads((ROOT / "scenarios/center_clean.json").read_text())
-                document.update(duration_s=duration, targets=[])
-                for station in document["stations"]:
-                    station["start_s"] = start
-                spec = compile_authoring(document)
-                run = development_run(spec, Path("unused-reference-test-output"))
-                registration = replace(
-                    self.registration,
-                    stations=spec.station_configs,
-                    policy=run.fusion_policy,
-                    clock_mapping=run.processing_to_capture_clock,
-                )
                 algorithm = create_algorithm()
-                algorithm.start(registration)
+                algorithm.start(self.registration)
                 try:
-                    results = [algorithm.process(step) for step in self.steps(spec)]
+                    steps = self.steps(targets=(), duration_ns=duration_ns, station_start_ns=start)
+                    results = [algorithm.process(step) for step in steps]
                     self.assertFalse(
                         any(result.measurements or result.tracks for result in results)
                     )
@@ -408,50 +332,9 @@ class ReferenceFusionTests(unittest.TestCase):
         self.assertEqual(len(deleted), 1)
         self.assertLessEqual(deleted[0].event_time_ns, 4_000_000_000)
 
-    def test_default_inspector_remains_input_only(self) -> None:
-        inspector = InputInspector()
-        inspector.start(self.registration)
-        try:
-            result = inspector.process(self.steps()[0])
-            self.assertFalse(result.measurements)
-            self.assertFalse(result.tracks)
-            self.assertFalse(result.batches)
-        finally:
-            inspector.close()
-
-    def multi_document(self) -> dict[str, Any]:
-        document: dict[str, Any] = json.loads((ROOT / "scenarios/center_clean.json").read_text())
-        document["duration_s"] = 0.2
-        document["stations"].append(
-            {
-                "id": "upper",
-                "position_enu_m": [0, 0, 40],
-                "main_yaw_deg": 0,
-                "main_elevation_deg": -10,
-            }
-        )
-        document["targets"].append(
-            {
-                "id": "second-observation-source",
-                "geometry": {"type": "sphere", "radius_m": 1},
-                "motion": {
-                    "type": "constant_velocity",
-                    "position_enu_m": [15, 80, 35],
-                    "velocity_enu_mps": [-0.5, 0.2, 0],
-                },
-            }
-        )
-        return document
-
     def test_three_station_source_tracks_two_targets_and_discovers_a_late_detection(self) -> None:
-        spec = compile_authoring(self.multi_document())
-        run = development_run(spec, Path("unused-multi-source-output"))
-        registration = replace(
-            self.registration,
-            stations=spec.station_configs,
-            policy=run.fusion_policy,
-            clock_mapping=run.processing_to_capture_clock,
-        )
+        stations = default_station_configs(include_upper=True)
+        registration = replace(self.registration, stations=stations)
         starts = np.asarray(((-15.0, 62.0, 20.0), (15.0, 80.0, 35.0)))
         velocities = np.asarray(((1.0, 0.0, 0.0), (-0.5, 0.2, 0.0)))
         for hidden_steps in (0, 2):
@@ -460,7 +343,11 @@ class ReferenceFusionTests(unittest.TestCase):
                 algorithm.start(registration)
                 results = []
                 try:
-                    steps = self.steps(spec)
+                    steps = self.steps(
+                        stations=stations,
+                        targets=(DEFAULT_TARGET, SECOND_TARGET),
+                        duration_ns=200_000_000,
+                    )
                     for step in steps:
                         if step.step_no < hidden_steps:
                             # Simulate missing detections by dropping the second
@@ -472,7 +359,7 @@ class ReferenceFusionTests(unittest.TestCase):
                                     if isinstance(received.event, m.RayEvent)
                                     and received.event.envelope.station_id == station.station_id
                                 )
-                                for station in spec.station_configs
+                                for station in stations
                             }
                             step = replace(
                                 step,
@@ -532,23 +419,23 @@ class ReferenceFusionTests(unittest.TestCase):
                 self.assertNotIn("moving-sphere", encoded)
 
     def test_source_crossing_and_mutual_occlusion_keep_center_ids(self) -> None:
-        document = self.multi_document()
-        document["duration_s"] = 0.4
+        stations = default_station_configs(include_upper=True)
         crossing_time = (1_000_000 + 5 * (10**9 // 30)) / 1e9
-        for index, target in enumerate(document["targets"]):
-            sign = 1.0 if index == 0 else -1.0
-            target["geometry"]["radius_m"] = 0.05
-            target["motion"]["position_enu_m"] = [-sign * 10 * crossing_time, 70, 24]
-            target["motion"]["velocity_enu_mps"] = [sign * 10, 0, 0]
-        spec = compile_authoring(document)
-        run = development_run(spec, Path("unused-source-crossing-output"))
-        # This exact, noiseless experiment uses a strict geometric gate to
-        # separate very close rays; no true correspondence enters registration.
-        policy = replace(
-            run.fusion_policy,
-            association=replace(run.fusion_policy.association, spatial_gate_m=1e-6),
+        targets = (
+            SyntheticTarget(
+                initial_position_enu_m=(-10.0 * crossing_time, 70.0, 24.0),
+                velocity_enu_mps=(10.0, 0.0, 0.0),
+            ),
+            SyntheticTarget(
+                initial_position_enu_m=(10.0 * crossing_time, 70.0, 24.0),
+                velocity_enu_mps=(-10.0, 0.0, 0.0),
+            ),
         )
-        registration = replace(self.registration, stations=spec.station_configs, policy=policy)
+        policy = replace(
+            self.policy,
+            association=replace(self.policy.association, spatial_gate_m=1e-6),
+        )
+        registration = replace(self.registration, stations=stations, policy=policy)
         algorithm = create_algorithm()
         algorithm.start(registration)
         owners: dict[m.TrackId, float] = {}
@@ -556,7 +443,12 @@ class ReferenceFusionTests(unittest.TestCase):
         missed_updates = False
         final_positions: dict[m.TrackId, m.Vec3] = {}
         try:
-            for step in self.steps(spec):
+            for step in self.steps(
+                stations=stations,
+                targets=targets,
+                duration_ns=400_000_000,
+                skip_step_indices=(5,),
+            ):
                 if not step.stream_ended and not any(
                     isinstance(received.event, m.RayEvent) for received in step.events
                 ):
@@ -601,35 +493,21 @@ class ReferenceFusionTests(unittest.TestCase):
         )
 
     def test_asynchronous_station_joins_motion_fit_independently_of_delivery_order(self) -> None:
-        document = self.multi_document()
-        document["duration_s"] = 1.2
-        document["targets"] = document["targets"][:1]
-        spec = compile_authoring(document)
-        cameras = tuple(
-            replace(
-                camera,
-                metadata=replace(camera.metadata, nominal_frame_rate_hz=29.0),
-                exposure=replace(
-                    camera.exposure, first_exposure_start_ns=10_000_000, frame_period_ns=10**9 // 29
-                ),
-            )
-            if camera.station_id == "upper" and camera.camera_role is m.CameraRole.MAIN
-            else camera
-            for camera in spec.scene_definition.cameras
+        stations = default_station_configs(include_upper=True)
+        registration = replace(self.registration, stations=stations)
+        steps = self.steps(
+            stations=stations,
+            targets=(DEFAULT_TARGET,),
+            duration_ns=1_200_000_000,
+            station_periods_ns={"upper": (10_000_000, 10**9 // 29)},
         )
-        spec = replace(spec, scene_definition=replace(spec.scene_definition, cameras=cameras))
-        run = development_run(spec, Path("unused-asynchronous-source-output"))
-        registration = replace(
-            self.registration, stations=spec.station_configs, policy=run.fusion_policy
-        )
-        steps = self.steps(spec)
         upper_windows = {
             (
                 received.event.capture_time.exposure_start_ns
                 + received.event.capture_time.exposure_end_ns
             )
             // 2
-            // run.fusion_policy.windows.width_ns
+            // self.policy.windows.width_ns
             for step in steps
             for received in step.events
             if isinstance(received.event, m.RayEvent)
@@ -721,54 +599,45 @@ class ReferenceFusionTests(unittest.TestCase):
                 signatures.append([asdict(measurement) for measurement in measurements])
         self.assertEqual(signatures[0], signatures[1])
 
-    def noisy_spec(self) -> s.ScenarioSpec:
-        document = self.multi_document()
-        document["duration_s"] = 0.5
-        document["targets"] = document["targets"][:1]
-        document["camera_jitter"] = {
-            "angular_amplitude_deg": [0.005, 0.005, 0.005],
-            "frequency_hz": 7.0,
-            "roles": ["main"],
-        }
-        spec = compile_authoring(document)
-        intervals = tuple(
-            phase
-            for interval in spec.virtual_observations.calibration_intervals
-            for phase in (
-                replace(interval, end_time_ns=200_000_000),
-                replace(interval, start_time_ns=200_000_000, health=m.CalibrationHealth.STALE),
-            )
-        )
-        spec = replace(
-            spec,
-            virtual_observations=replace(
-                spec.virtual_observations,
-                independent_angular_covariance_rad2=((1e-8, 2e-9), (2e-9, 2e-8)),
-                independent_origin_covariance_m2=(
-                    (1e-4, 0.0, 0.0),
-                    (0.0, 1e-4, 0.0),
-                    (0.0, 0.0, 1e-4),
-                ),
-                calibration_intervals=intervals,
+    def noisy_steps(
+        self,
+        stations: tuple[m.StationConfig, ...],
+        *,
+        station_periods_ns: dict[str, tuple[int, int]] | None = None,
+    ) -> list[CenterInputStep]:
+        return self.steps(
+            stations=stations,
+            targets=(DEFAULT_TARGET,),
+            duration_ns=500_000_000,
+            station_periods_ns=station_periods_ns,
+            angular_covariance_rad2=((1e-8, 2e-9), (2e-9, 1e-8)),
+            origin_covariance_m2=(
+                (1e-4, 0.0, 0.0),
+                (0.0, 1e-4, 0.0),
+                (0.0, 0.0, 1e-4),
             ),
+            calibration_phases_ns=(
+                (0, m.CalibrationHealth.VALID, m.CalibrationUsage.VALID),
+                (100_000_000, m.CalibrationHealth.FROZEN, m.CalibrationUsage.FROZEN),
+                (200_000_000, m.CalibrationHealth.STALE, m.CalibrationUsage.STALE),
+            ),
+            jitter_rad=math.radians(0.005),
         )
-        return spec
 
     def test_noisy_source_tracks_through_frozen_and_stale_calibration(self) -> None:
-        spec = self.noisy_spec()
-        run = development_run(spec, Path("unused-noisy-source-output"))
+        stations = default_station_configs(include_upper=True)
         registration = replace(
             self.registration,
-            stations=spec.station_configs,
+            stations=stations,
             policy=replace(
-                run.fusion_policy,
-                geometry=replace(run.fusion_policy.geometry, robust_loss_definition="huber"),
+                self.policy,
+                geometry=replace(self.policy.geometry, robust_loss_definition="huber"),
             ),
         )
         algorithm = create_algorithm()
         algorithm.start(registration)
         try:
-            results = [algorithm.process(step) for step in self.steps(spec)]
+            results = [algorithm.process(step) for step in self.noisy_steps(stations)]
         finally:
             algorithm.close()
         measurements = [measurement for result in results for measurement in result.measurements]
@@ -813,27 +682,16 @@ class ReferenceFusionTests(unittest.TestCase):
         self.assertNotIn("moving-sphere", encoded)
 
     def test_noisy_asynchronous_source_keeps_the_velocity_dependence_in_tracking(self) -> None:
-        spec = self.noisy_spec()
-        cameras = tuple(
-            replace(
-                camera,
-                metadata=replace(camera.metadata, nominal_frame_rate_hz=29.0),
-                exposure=replace(
-                    camera.exposure, first_exposure_start_ns=10_000_000, frame_period_ns=10**9 // 29
-                ),
-            )
-            if camera.station_id == "upper" and camera.camera_role is m.CameraRole.MAIN
-            else camera
-            for camera in spec.scene_definition.cameras
-        )
-        spec = replace(spec, scene_definition=replace(spec.scene_definition, cameras=cameras))
-        run = development_run(spec, Path("unused-noisy-asynchronous-output"))
+        stations = default_station_configs(include_upper=True)
         algorithm = create_algorithm()
-        algorithm.start(
-            replace(self.registration, stations=spec.station_configs, policy=run.fusion_policy)
-        )
+        algorithm.start(replace(self.registration, stations=stations, policy=self.policy))
         try:
-            results = [algorithm.process(step) for step in self.steps(spec)]
+            results = [
+                algorithm.process(step)
+                for step in self.noisy_steps(
+                    stations, station_periods_ns={"upper": (10_000_000, 10**9 // 29)}
+                )
+            ]
         finally:
             algorithm.close()
         measurements = [measurement for result in results for measurement in result.measurements]
@@ -866,29 +724,29 @@ class ReferenceFusionTests(unittest.TestCase):
         self.assertIs(tracks[-1].lifecycle, m.TrackLifecycle.CONFIRMED)
 
     def test_station_silence_missing_detections_and_recovery_keep_one_track(self) -> None:
-        document = self.multi_document()
-        document["duration_s"] = 0.6
-        document["targets"] = document["targets"][:1]
-        spec = compile_authoring(document)
-        run = development_run(spec, Path("unused-station-recovery-output"))
-        width = run.fusion_policy.windows.width_ns
+        stations = default_station_configs(include_upper=True)
+        width = self.policy.windows.width_ns
         policy = replace(
-            run.fusion_policy,
+            self.policy,
             windows=replace(
-                run.fusion_policy.windows, idle_after_ns=2 * width, offline_after_ns=4 * width
+                self.policy.windows, idle_after_ns=2 * width, offline_after_ns=4 * width
             ),
             tracking=replace(
-                run.fusion_policy.tracking, coast_after_ns=3 * width, delete_after_ns=8 * width
+                self.policy.tracking, coast_after_ns=3 * width, delete_after_ns=8 * width
             ),
         )
         algorithm = create_algorithm()
-        algorithm.start(replace(self.registration, stations=spec.station_configs, policy=policy))
+        algorithm.start(replace(self.registration, stations=stations, policy=policy))
         results: list[CenterAlgorithmResult] = []
         old: m.ReceivedEvent | None = None
         late_result = None
         snapshots = []
         try:
-            for step in self.steps(spec):
+            for step in self.steps(
+                stations=stations,
+                targets=(DEFAULT_TARGET,),
+                duration_ns=600_000_000,
+            ):
                 if old is not None and late_result is None and step.time.time_ns >= 300_000_000:
                     snapshots = [
                         asdict(measurement)
@@ -1030,65 +888,6 @@ class ReferenceFusionTests(unittest.TestCase):
             )
         )
 
-    def test_multi_target_cli_delivers_two_distinct_confirmed_tracks(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            scenario = root / "multi.json"
-            scenario.write_text(json.dumps(self.multi_document()), encoding="utf-8")
-            output = root / "run"
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "chongming.development",
-                    "--scenario",
-                    str(scenario),
-                    "--output",
-                    str(output),
-                    "--run",
-                    "--tick-hz",
-                    "240",
-                    "--algorithm",
-                    "chongming.reference:create_algorithm",
-                ],
-                text=True,
-                capture_output=True,
-                timeout=60,
-                check=False,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            rows = [
-                json.loads(line)
-                for line in (output / "center-output.jsonl").read_text().splitlines()
-            ]
-            measurements = [measurement for row in rows for measurement in row["measurements"]]
-            tracks = [track for row in rows for track in row["tracks"]]
-            self.assertEqual(len(measurements), 12)
-            self.assertTrue(all(measurement["status"] == "located" for measurement in measurements))
-            self.assertEqual(len({track["track_id"] for track in tracks}), 2)
-            confirmed = [track for track in tracks if track["lifecycle"] == "confirmed"]
-            self.assertEqual(len({track["track_id"] for track in confirmed}), 2)
-            starts = np.asarray(((-15.0, 62.0, 20.0), (15.0, 80.0, 35.0)))
-            velocities = np.asarray(((1.0, 0.0, 0.0), (-0.5, 0.2, 0.0)))
-            for track in confirmed:
-                expected = starts + track["event_time_ns"] / 1e9 * velocities
-                point = np.asarray(track["position_enu_m"])
-                owner = int(np.argmin(np.linalg.norm(expected - point, axis=1)))
-                np.testing.assert_allclose(point, expected[owner], rtol=0, atol=1e-9)
-                np.testing.assert_allclose(
-                    np.asarray(track["velocity_enu_mps"]), velocities[owner], rtol=0, atol=1e-8
-                )
-            self.assertTrue(rows[-1]["stream_ended"])
-            self.assertTrue(
-                any(
-                    len(association["selected_groups"]) == 2
-                    for row in rows
-                    for batch in row["batches"]
-                    for association in batch["associations"]
-                )
-            )
-            self.assertFalse(json.loads((output / "summary.json").read_text())["shutdown_errors"])
-
     def test_online_composition_rejects_inconsistent_clock_and_frame_policy(self) -> None:
         for policy, mapping in (
             (
@@ -1111,74 +910,6 @@ class ReferenceFusionTests(unittest.TestCase):
                     policy=policy,
                     clock_mapping=mapping,
                 )
-
-    def test_reference_plugin_cli_emits_clean_measurements_tracks_and_stage_batches(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            document = json.loads((ROOT / "scenarios/center_clean.json").read_text())
-            document["duration_s"] = 0.12
-            scenario = root / "scene.json"
-            scenario.write_text(json.dumps(document), encoding="utf-8")
-            output = root / "run"
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "chongming.development",
-                    "--scenario",
-                    str(scenario),
-                    "--output",
-                    str(output),
-                    "--run",
-                    "--tick-hz",
-                    "240",
-                    "--algorithm",
-                    "chongming.reference:create_algorithm",
-                ],
-                text=True,
-                capture_output=True,
-                timeout=60,
-                check=False,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            rows = [
-                json.loads(line)
-                for line in (output / "center-output.jsonl").read_text().splitlines()
-            ]
-            self.assertTrue(rows[-1]["stream_ended"])
-            measurements = [measurement for row in rows for measurement in row["measurements"]]
-            tracks = [track for row in rows for track in row["tracks"]]
-            self.assertGreater(len(measurements), 2)
-            self.assertTrue(all(measurement["status"] == "located" for measurement in measurements))
-            self.assertTrue(any(track["lifecycle"] == "confirmed" for track in tracks))
-            for measurement in measurements:
-                expected = np.asarray((-15 + measurement["reference_time_ns"] / 1e9, 62, 20))
-                np.testing.assert_allclose(
-                    np.asarray(measurement["position_enu_m"]), expected, rtol=0, atol=1e-9
-                )
-            for track in tracks:
-                if track["lifecycle"] == "confirmed":
-                    np.testing.assert_allclose(
-                        np.asarray(track["velocity_enu_mps"]),
-                        np.asarray((1.0, 0.0, 0.0)),
-                        rtol=0,
-                        atol=1e-8,
-                    )
-            self.assertTrue(
-                any(
-                    batch["geometry"] and batch["associations"] and batch["candidates"]
-                    for row in rows
-                    for batch in row["batches"]
-                )
-            )
-            self.assertNotIn("truth_object_id", (output / "center-output.jsonl").read_text())
-            manifest = json.loads((output / "manifest.json").read_text())
-            self.assertEqual(manifest["algorithm"], "ReferenceFusionAlgorithm")
-            self.assertFalse(manifest["algorithms_complete"])
-            summary = json.loads((output / "summary.json").read_text())
-            self.assertEqual(summary["state"], "complete")
-            self.assertFalse(summary["shutdown_errors"])
-            self.assertFalse((output / "video").exists())
 
 
 if __name__ == "__main__":

@@ -698,12 +698,11 @@ def main() -> None:
     parameters: tuple[d.FrameDifferencePolicy, d.KalmanTrackingPolicy] | None = None
     if args.policy:
         from chongming.contracts.device import ImagePolicy
+        from chongming.contracts.json_codec import _decode, parse_json
         from chongming.modules.workbench_device import (
             validate_workbench_detection,
             validate_workbench_tracking,
         )
-        from chongming.scenarios.json_content import parse_json
-        from chongming.scenarios.serialization import _decode
 
         profiles: dict[str, ImagePolicy] = _decode(
             parse_json(args.policy.read_bytes()), dict[str, ImagePolicy]

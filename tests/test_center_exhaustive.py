@@ -1,13 +1,113 @@
 """Unfiltered center diagnostics retain overlapping groups and explicit failures."""
 
+import hashlib
 import unittest
 from dataclasses import replace
+from typing import Any
 
 import numpy as np
 
-from chongming.diagnose_center import intersect
+from chongming.contracts import fusion as f
+from chongming.modules.fusion import CalibrationWeightingModule
+from chongming.modules.fusion_association import CrossStationAssociationModule
+from chongming.modules.fusion_geometry import (
+    _STATION_SCORE,
+    GeometryRefinementModule,
+    _event_id,
+    _exposure_span,
+    _line_fit,
+    _reference_time,
+)
+from chongming.modules.fusion_motion import midpoint_span
 from chongming.modules.fusion_postintersection import candidate_groups
 from tests import test_fusion_geometry as fixture
+
+
+def intersect(
+    window: f.SealedObservationWindow,
+    candidates: f.CandidateBatch,
+    policy: f.FusionPolicy,
+) -> list[dict[str, Any]]:
+    """Retain raw least-squares points even when production gates reject a group."""
+    weights = CalibrationWeightingModule(rules=policy.admission.calibration_usage_rules)
+    geometry = GeometryRefinementModule(
+        center_session_id=window.key.center_session_id,
+        world_frame_id=candidates.search.world_frame_id,
+        policy=policy.geometry,
+        weights=weights,
+    )
+    association = CrossStationAssociationModule(
+        policy=policy.association, motion_policy=policy.geometry, weights=weights
+    )
+    available = {_event_id(ray): ray for ray in window.rays}
+    rows: list[dict[str, Any]] = []
+    for ids, candidate_ids in candidate_groups(candidates).items():
+        chosen = tuple(available[event_id] for event_id in ids)
+        reference = _reference_time(chosen)
+        group = f.AssociatedRayGroup(
+            hypothesis_id="exhaustive/" + hashlib.sha256(repr(ids).encode()).hexdigest(),
+            candidate_id=candidate_ids[0],
+            window=window.key,
+            reference_time_ns=reference,
+            support_exposure_span_ns=_exposure_span(chosen),
+            supporting_ray_event_ids=ids,
+            supporting_station_ids=tuple(ray.event.envelope.station_id for ray in chosen),
+            prior_track_id=None,
+            motion_alignment_model=f.MotionAlignmentModel.NARROW_WINDOW_WITHOUT_PRIOR,
+            score=float(len(chosen)),
+            score_definition=_STATION_SCORE,
+        )
+        result = geometry._refine_group(window, group, available, ())
+        reasons = ["geometry:" + reason.value for reason in result.reasons]
+        raw_position = None
+        residuals: list[float] = []
+        depths: list[float] = []
+        rank = None
+        condition = None
+        try:
+            point, errors, forward, rank, singular = _line_fit(chosen)
+        except np.linalg.LinAlgError:
+            reasons.append("raw:solver_failure")
+        else:
+            residuals, depths = errors.tolist(), forward.tolist()
+            if rank < 3:
+                reasons.append("raw:nonunique_solution")
+            else:
+                raw_position = point.tolist()
+                condition = float((singular[0] / singular[-1]) ** 2)
+            if np.any(forward < 0):
+                reasons.append("raw:nonforward_solution")
+            if np.any(point < candidates.search.min_enu_m) or np.any(
+                point > candidates.search.max_enu_m
+            ):
+                reasons.append("raw:outside_search_volume")
+            if candidates.search.forward_range_m is not None:
+                near, far = candidates.search.forward_range_m
+                if np.any(forward < near) or np.any(forward > far):
+                    reasons.append("raw:outside_forward_range")
+            if float(errors.max()) > policy.association.spatial_gate_m:
+                reasons.append("association:excessive_residual")
+        if midpoint_span(chosen) > policy.association.temporal_gate_ns:
+            reasons.append("association:temporal_gate_failed")
+        gate, _, _ = association._gate(chosen, candidates.search, reference, None)
+        if gate is not None:
+            reasons.append("association:" + gate.value)
+        rows.append(
+            {
+                "hypothesis_id": group.hypothesis_id,
+                "reference_time_ns": reference,
+                "supporting_ray_event_ids": ids,
+                "candidate_ids": sorted(set(candidate_ids)),
+                "raw_position_enu_m": raw_position,
+                "raw_rank": rank,
+                "raw_condition": condition,
+                "raw_residuals_m": residuals,
+                "raw_forward_depths_m": depths,
+                "classifications": sorted(set(reasons)),
+                "geometry_measurement": result.measurement,
+            }
+        )
+    return rows
 
 
 class ExhaustiveCenterTests(unittest.TestCase):

@@ -2,139 +2,131 @@
 
 ## Scope
 
-Chongming is a research system for small airborne targets in daylight. Fixed camera stations send observations to a local center algorithm. Synthetic scenes supply images, virtual observations, and separate truth data.
+Chongming is a research system for detecting, locating, and tracking small airborne targets with fixed daylight camera stations. Online algorithms (`Edge` and `Center`) run in standalone processes over a binary Protobuf bus (`V-Switch`), completely decoupled from scene generation, truth storage, and evaluation.
 
-## Runtime and ownership
+## Architecture and ownership
 
 ```text
-Authoring JSON and local assets
-  -> Python scene state and experiment clock
-       -> Godot sensor images -> device algorithms -> center algorithm
-       -> virtual ray events -----------------------> center algorithm
-       -> truth ------------------------------------> display and evaluation
+Godot Producer (godot_producer/)
+  |-- FramedVideoPacket (RAW RGB8) + BusMessage (StationConfig, virtual rays)
+  |-- TruthFrame + StationTargetProjection (64-bit)
+  v
+V-Switch Record (crates/vswitch/)
+  --> Immutable Test Scene (.pb.zst + H.264 MP4s)
 
-Algorithm inputs and outputs -> evidence files
-Algorithm results + time-matched truth -> Godot diagnostics
+Test Scene ---> V-Switch Replay (Lock-Step / Wall-Clock) <---> Scorer (chongming-scorer)
+                    |      ^          |
+         Video/     |      | Bus      | DisplayFrame JSON (chongming-viewer-v1)
+       Progress     v      |          v
+             chongming-edge     Godot Viewer (passive)
+                    |      ^
+                    v      |
+             chongming-center-bus
 ```
 
-Python owns experiment time, scene state, algorithm state, and evidence. Godot renders images and displays results. A persistent Godot process communicates with Python over a serialized local TCP connection. Device and center algorithms run in the Python process.
+Process responsibilities:
 
-| Mode               | Driver           | Algorithm input                                             |
-| ------------------ | ---------------- | ----------------------------------------------------------- |
-| 1: preview         | `PreviewRuntime` | No center algorithm; auxiliary calibration can be inspected |
-| 2: device test     | `CenterSession`  | Rendered main and auxiliary images                          |
-| 3: center test     | `CenterSession`  | Virtual ray events                                          |
-| 4: integrated test | `CenterSession`  | Rendered images, then actual device events                  |
+| Component              | Ownership                                                                                        |
+| ---------------------- | ------------------------------------------------------------------------------------------------ |
+| `Godot Producer`       | Scene authoring/presets, 64-bit kinematics, truth, physics raycast occlusion, raw RGB8 rendering |
+| `V-Switch` (`vswitch`) | TCP hub, `Test Scene` recording, Lock-Step / Wall-Clock replay, live relay, Run Output `.pb.zst` |
+| `chongming-edge`       | Auxiliary calibration, main image detection, 2D tracking, tangent-Gaussian ray generation        |
+| `chongming-center-bus` | Event admission, capture-clock windows, coarse voxel search, association, GLS geometry, tracking |
+| `chongming-scorer`     | Offline and online evaluation (`DetectionMetrics`, `CenterSizeMetrics`, timing, attribution)     |
+| `Godot Viewer`         | Passive `chongming-viewer-v1` TCP display client (`--viewer <host:port>`)                        |
 
-Modes 2 and 4 require explicit device policies. They render every scheduled sensor frame even when display and recording are off. Missing images fail the run.
-
-`CenterSession` is the working experiment driver. The general `SystemRunnerModule` is a stub. The reference plugin builds its own active center through `declare_center()`.
-
-One step processes one exposure group. It records raw inputs and results before adapting them for display. With a UI, it waits for Godot to accept the update before taking the next step. Reset creates a new session and output directory. Shutdown closes the algorithm, source, files, socket, and renderer.
+Wire protocols and `.pb.zst` package formats are specified in [Wire Protocol and Storage Specification](protocol.md).
 
 ## Source layout
 
-`src/` contains three packages with enforced import boundaries (verified by `tests/test_architecture.py`):
+`src/` contains three Python packages with strict import boundaries verified by [test_architecture.py](../tests/test_architecture.py):
 
 | Package                 | Responsibility                                                                               | Import boundary                                                 |
 | ----------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| `src/chongming/`        | Runtime, scenarios, device/center algorithms, and Godot adapter                              | Must never import `chongming_proto.truth` or `chongming_scorer` |
+| `src/chongming/`        | Online contracts, ports, algorithms, policy codecs, `bus/` processes, passive viewer project | Must never import `chongming_proto.truth` or `chongming_scorer` |
 | `src/chongming_proto/`  | Generated Protobuf bindings (`online` / `truth` split) and `.pb.zst` length-prefixed framing | Depends only on `proto/chongming/v1/` and standard framing      |
-| `src/chongming_scorer/` | Independent offline scorer and `Test Scene` / `Run Output` `.pb.zst` package storage         | Must never import `chongming`                                   |
+| `src/chongming_scorer/` | Independent verifier, scorer, attribution, and `Test Scene` / `Run Output` package storage   | Must never import `chongming`                                   |
 
-Wire formats and `.pb.zst` package layouts are specified in [Wire Protocol and Storage Specification](protocol.md). Within `src/chongming/`, module responsibilities are:
+Within `src/chongming/`, module responsibilities are:
 
-| Path                                       | Responsibility                                               |
-| ------------------------------------------ | ------------------------------------------------------------ |
-| `contracts/`                               | Immutable records, policies, units, and states               |
-| `ports/`                                   | Typed behavior interfaces using `Protocol`                   |
-| `modules/`                                 | Algorithms and explicit business stubs                       |
-| `composition/`                             | Dependency construction and lifecycle bindings               |
-| `scenarios/`                               | Authoring, assets, OSM import, export, and playback          |
-| `rendering/`                               | Geometry, occlusion index, Python adapter, and Godot project |
-| `development.py`, `edge_runtime.py`        | Synchronous experiment and device execution                  |
-| `calibration.py`                           | Reference recognition, pose estimation, history, and state   |
-| `reference.py`                             | Reference center plugin and engine adapter                   |
-| `preview.py`, `center_ui.py`               | Preview editing and algorithm display control                |
-| `visualization.py`, `voxel_diagnostics.py` | Read-only display conversion and raw voxel capture           |
-| `vision/`                                  | Separate frame-difference experiments and tuning tools       |
+| Path                   | Responsibility                                                      |
+| ---------------------- | ------------------------------------------------------------------- |
+| `contracts/`           | Immutable online records, policies, units, and strict JSON identity |
+| `ports/`               | Typed behavior interfaces using `Protocol`                          |
+| `modules/`             | Online device/fusion algorithms and explicit unimplemented stubs    |
+| `composition/`         | Dependency wiring (`declare_station`, `declare_center`)             |
+| `bus/`                 | TCP bus client, Protobuf codec, `EdgeProcess`, `CenterProcess`      |
+| `reference.py`         | Reference center plugin (`ReferenceFusionAlgorithm`)                |
+| `conversion/`          | Visualization contract conversions (`SparseVoxelGrid`)              |
+| `rendering/godot/`     | Passive Godot Viewer (`worker.gd`, `ui.gd`, `visualization.gd`)     |
+| `uncertainty.py`       | Covariance factorization helpers                                    |
+| `voxel_diagnostics.py` | Opt-in raw voxel vote snapshot capture                              |
+| `vision/`              | Separate frame-difference workbench and tuning tools                |
 
-Construction does not start business work. `ModuleShell` separates lifecycle state from implementation status. An unimplemented module can enter `RUNNING` with reason `algorithm_unimplemented`; its business methods raise `NotImplementedError`.
+External components live in workspace directories alongside `src/`:
+
+| Path              | Responsibility                                                           |
+| ----------------- | ------------------------------------------------------------------------ |
+| `godot_producer/` | Decoupled Godot 4.7.2 virtual scene generator and `V-Switch` record peer |
+| `crates/vswitch/` | Rust workspace (`vswitch` library and CLI binary)                        |
+| `proto/`          | Source `.proto` schemas for `common`, `online`, and `truth`              |
+
+Construction does not start business work. `ModuleShell` separates lifecycle state from implementation status (`DirectGeometryCandidateModule` remains an explicit unimplemented stub whose method raises `NotImplementedError`).
 
 ## Data contracts
 
-The online records are in [contracts/model.py](../src/chongming/contracts/model.py). They use frozen dataclasses, tuples, typed identifiers, and enums. Images use bytes or memory views with explicit dimensions, pixel format, and row stride.
+Online records live in [contracts/model.py](../src/chongming/contracts/model.py) using frozen dataclasses, tuples, typed identifiers, and enums.
 
 ### Coordinates and time
 
 - World coordinates are right-handed ENU: east, north, up, in meters.
 - Camera axes are right, down, forward. Pixel `(0, 0)` is the top-left pixel center.
 - `R_A_from_B` maps a vector from frame B to frame A. Ray directions are unit vectors.
-- Godot receives ENU as `(east, up, -north)`.
-- `CaptureTime` stores an exposure interval. The event time is its integer midpoint.
-- `ProcessingTime` describes processing or arrival. Cross-domain comparisons require an explicit clock mapping.
-
-Main and auxiliary cameras have independent sample schedules. Frames with the same exposure midpoint form a group.
+- Godot converts ENU `(E, N, U)` to scene `(E, U, -N)`.
+- `CaptureTime` stores an exposure interval; the event time is its integer midpoint `(exposure_start_ns + exposure_end_ns) // 2`.
+- `ProcessingTime` describes processing or arrival. Cross-domain comparisons require `EventClockMappingSpec`.
 
 ### Identity and truth
 
-An event ID is `(station_id, station_session_id, sequence_no)`. All device event types share one sequence per image session. Virtual events use a different session and sequence. New runs use fresh session IDs, even with the same random seed.
+An event ID is `(station_id, station_session_id, sequence_no)`. All device event types share one sequence per session. Local track IDs, center track IDs, and truth target IDs belong to separate scopes.
 
-Local track IDs, center track IDs, and truth target IDs have different scopes. They cannot be used as interchangeable associations.
+`test_architecture.py` statically and dynamically enforces that `chongming` (especially `chongming.bus` and `chongming.vision`) never imports `chongming_proto.truth` or `chongming_scorer`, and that `chongming_scorer` never imports `chongming`.
 
-`ScenarioStep` has three outputs: `video`, `packets`, and `truth`. Online ports exclude scene truth types. `SceneDefinition` stores generation parameters; `StationConfig` stores the estimates available to algorithms.
+## Scene generation (`godot_producer/`)
 
-This separation is an interface rule, not a security sandbox. Plugins are trusted Python code in the same process. `tests/test_architecture.py` enforces both this online port boundary and the package import boundary isolating `chongming` from `chongming_proto.truth` and `chongming_scorer`.
+Scene scripts inherit `ProducerSceneContract` (`godot_producer/core/scene_contract.gd`), such as `airspace_base_scene.gd`, `clean_range.tscn`, and `scenic_ridge.tscn`:
 
-## Scene generation
-
-`compile_authoring()` converts `scenario-authoring-v2` JSON into `ScenarioSpec`. The compiler uses demo defaults for omitted fields. Configuration checks reject unknown fields and unsupported features.
-
-`ScenarioModule` schedules exposures, advances the clock, samples geometry, requests images, and emits online events and truth separately. Motion, wind, clouds, and jitter use experiment time and fixed seeds. The behavior registry provides versioned constant-velocity and orbit motion without importing code from JSON.
-
-Known visibility tests the finite segment from the optical center to the target reference point. Objects behind the target do not block that segment. `OcclusionIndex` uses a CPU bounding-volume hierarchy to filter static blockers before exact proxy tests.
-
-With `occlusion_mode: "unknown"`, the scene checks the field of view but does not determine occlusion. This mode cannot supply occlusion-corrected detection scores.
-
-The renderer supports distortion-free cameras, square pixels, zero skew, a single exposure sample, and global shutter. Configured rain, transport faults, rolling shutter, sensor noise, and continuous pose drift are rejected.
+- Kinematics, virtual rays (`event-v1` / `tangent_gaussian_v1`), and `TruthFrame` projections are computed in 64-bit `float64` (`PackedFloat64Array`) before setting 32-bit `Node3D` transforms for rendering.
+- Known visibility uses Godot 3D physics raycasts against terrain/blocker colliders toward target reference points. Objects behind the target do not block the sight segment.
+- `producer_runner.gd` streams `StationConfig`, auxiliary calibration baseline updates, raw RGB8 `FramedVideoPacket`s, `TruthFrame`s, and optional virtual `RayEvent`s to `V-Switch Record`, which writes immutable `Test Scene` packages (encoding MP4s via FFmpeg using the D3b `yuv420p` preset).
 
 ## Device processing
 
-`EdgeRun` processes auxiliary frames before main frames within the same exposure group. It journals actual results and input pixel hashes.
+`EdgeProcess` decodes H.264/raw frames from `V-Switch` (or local cameras) and processes auxiliary frames before main frames within an exposure group, separating `decode_duration_ns` from `cv_duration_ns`.
 
 ### Detection and local tracking
 
-`MotionDetectionModule` converts images to grayscale and applies MOG2. Only mask value 255 is foreground. Eight-connected components pass inclusive area limits; their centroids become candidates.
+`MotionDetectionModule` converts images to grayscale and applies MOG2 (mask value 255 -> 8-connected components). `Tracking2DModule` uses constant-velocity prediction and distance-ordered greedy assignment.
 
-`Tracking2DModule` uses constant-velocity prediction and distance-ordered greedy one-to-one assignment. Velocity comes from the last two actual detections. Consecutive hits confirm a track; missing frames break the hit streak.
-
-The explicit workbench policy selects `WorkbenchMotionModule` and `WorkbenchTrackingModule` instead. These share frame difference, optional MOG2 or a pinned optional ViBe library, occupancy filtering and Kalman tracking with the native tuning workbench. They do not silently replace the legacy device policy. Configuration and scoring are documented in [Algorithm evaluation](algorithm-evaluation.md).
+The explicit `FrameDifferencePolicy` / `KalmanTrackingPolicy` selects `WorkbenchMotionModule` and `WorkbenchTrackingModule`, sharing frame difference, optional MOG2 or pinned ViBe, occupancy filtering, and Kalman tracking with `chongming.vision`. See [Algorithm evaluation](algorithm-evaluation.md).
 
 ### Auxiliary calibration
 
-The reference is a landscape A4 checkerboard with 7 by 5 squares and 6 by 4 inner corners. OpenCV detects and refines corners, with an SB detector fallback.
-
-When the full main-to-auxiliary rigid transform is available, the estimator fixes the main optical center and fits rotation. Otherwise it uses planar IPPE candidates. Positive depth, reprojection error, and an installation rotation prior filter the candidates.
+The reference is a landscape A4 checkerboard (7x5 squares, 6x4 inner corners). OpenCV detects and refines corners, with an SB detector fallback. With full auxiliary-to-main rigid transform, the estimator fixes the main optical center and fits rotation via IPPE/PnP constrained by the installation prior:
 
 ```text
 R_enu_from_main = R_enu_from_aux * R_aux_from_main
 ```
 
-The relative rotation stays fixed.
-
-`CalibrationHistoryStore` returns only solutions and states known at the main exposure time. Trusted solutions are immutable. Failed recognition retains the last solution in `FROZEN`; timeout makes it `STALE`. Recovery requires the configured number of successful observations.
+Failed recognition transitions solutions from `VALID` -> `FROZEN` -> `STALE`, requiring configured consecutive matches to recover.
 
 ### World rays
 
-`RayGenerationModule` inverts the main intrinsics, removes distortion, normalizes the camera direction, and rotates it into ENU. It uses the inverse projection Jacobian and normalization derivative to propagate pixel covariance into a two-dimensional tangent plane.
-
-Each ray separates independent angular and origin covariance from shared installation and calibration references. The fixed-center model has zero independent translation covariance.
-
-Missing centroid covariance can use an explicit policy fallback. Unknown required residual errors stop ray generation. Nonzero jitter or flex terms require a stated independence basis. Every legal main exposure reports completion.
+`RayGenerationModule` unprojects main detections into ENU unit vectors and propagates pixel covariance via the inverse projection Jacobian into tangent basis `(tangent_u_enu_unit, tangent_v_enu_unit)`, preserving independent vs shared installation/calibration uncertainty references.
 
 ## Center fusion
 
-`ReferenceFusionAlgorithm` registers online configurations and calibration solutions. `CenterFusionModule` runs these stages for sealed observation windows:
+`CenterProcess` wraps `ReferenceFusionAlgorithm` over `V-Switch`:
 
 ```text
 Admission -> exposure window -> voxel candidates -> cross-station association
@@ -143,87 +135,27 @@ Admission -> exposure window -> voxel candidates -> cross-station association
 
 ### Admission and windows
 
-Registries retain immutable snapshots. Admission checks identity, configuration, coordinate frame, exposure, calibration evidence, and uncertainty. Missing references can quarantine an event for retry; its original arrival time remains unchanged.
+Registries store immutable station configs and calibration solutions. Exposure midpoints map events into half-open windows `[origin + k * width, origin + (k + 1) * width)` aligned to `origin_ns`. Explicit `ProgressReport` messages advance watermarks even for empty frames. `timeout_basis` supports `processing_time`, `capture_time`, and `disabled` (recommended in lock-step `V-Switch` replay).
 
-Exposure midpoints select half-open windows `[start, end)`. Active station progress controls the watermark, which determines when a window can close. Explicit frame completion lets empty detections advance it. Idle and offline rules prevent a silent station from blocking all work.
+### Candidates, association, geometry, and tracking
 
-### Candidates and association
-
-The voxel search clips forward rays to the search box and range. Sparse grid traversal includes boundary-touching cells. Independent uncertainty can expand support. Each cell counts independent stations, not the number of rays from one station. Cells with identical support form a coarse candidate.
-
-Association enumerates station subsets and ray choices. A group uses at most one ray per station. Bounded exclusive search preserves unresolved alternatives. Candidate, hypothesis, or search limits produce truncation diagnostics.
-
-The optional `create_postintersection_algorithm` factory enumerates all supported station subsets before geometry, without exclusive assignment. Its minimum group size follows the geometry policy. After geometry, 3 m complete-link clusters retain quality-ranked original measurements. Suppressed measurements remain in batch diagnostics. Evidence conflicts are removed only from tracking input, with explicit exclusions; fusion scoring still includes those outputs. See [Algorithm evaluation](algorithm-evaluation.md#post-intersection-pipeline).
-
-### Geometry and uncertainty
-
-Position estimation fits the original rays in their tangent planes. For depth `d` and tangent basis `T`, independent transverse covariance is:
-
-```text
-C_perp = d^2 C_angle + T C_origin T.T
-```
-
-The solver iterates depth-dependent generalized least squares. Optional Huber weighting acts on whitened residual norms. Zero covariance directions are exact constraints in this geometry solver.
-
-Acceptance requires enough stations, a useful intersection angle, acceptable conditioning, forward depth, and bounded residuals. Failed convergence or inconsistent exact constraints do not produce a valid position.
-
-Calibration usage changes independent precision weights, shared errors stay referenced. Reported covariance is conditional on the configuration, calibration, and final weighting model.
-
-### Motion and tracking
-
-A new target without velocity information needs observations close enough in exposure time. A valid track prior can align asynchronous rays to the earliest supporting exposure.
-
-Aligned measurements retain their dependency on that prior. The tracker uses the correlated observation model below instead of treating prior velocity as new independent evidence:
-
-```text
-z + B v_prior observes [I B] x
-```
-
-Tracking uses state `[E, N, U, vE, vN, vU]`. One measurement creates a seed with unknown velocity. A later exposure initializes velocity and covariance. One-to-one assignment handles confirmation, coasting, and deletion.
-
-Process noise models constant acceleration over the prediction interval:
-
-```text
-G = [dt^2 / 2 I; dt I]
-Q = G Cov(a) G.T
-```
-
-The current tracker also clamps position variances to at least `25 m^2` in prediction and after filter updates. This hard-coded floor affects gates and reported uncertainty.
+- Coarse voxel search clips forward rays to `VoxelSearchSpec` and counts distinct supporting stations per cell.
+- Cross-station association groups at most one ray per station (or `--postintersection` enumerates subsets with 3 m complete-link deduplication).
+- Generalized least squares fits transverse planes `C_perp = d^2 C_angle + T C_origin T.T` with optional Huber loss; exact zero-covariance directions act as hard constraints.
+- Constant-velocity Kalman tracking (`[E, N, U, vE, vN, vU]`) aligns asynchronous measurements via `[I B]` motion-alignment evidence without double-counting prior velocity, and clamps position variances to at least `25 m^2`.
 
 ## Rendering and display
 
-`GodotRenderer` copies package resources into a writable temporary project. A lock serializes requests. Length-prefixed JSON describes a scene or UI state; raw RGB8 bytes carry images. The process uses the Compatibility backend and a graphics context.
+The package under [src/chongming/rendering/godot/](../src/chongming/rendering/godot/) is strictly the passive **Godot Viewer** (`--viewer <host:port>`). `V-Switch` pushes ephemeral 4-byte BE length-prefixed `chongming-viewer-v1` JSON `DisplayFrame`s with drop-on-lag backpressure.
 
-Preview keeps the latest display state and owns an edit draft. Editing acquires a token, compiles the draft, checks the file's byte hash, and atomically saves it. Algorithm modes disable editing and time jumps.
-
-`CenterRunUi` sends one acknowledged increment per algorithm call. Integer fields in visualization records use decimal strings on the wire to preserve signed 64-bit values through Godot JSON parsing. The receiver validates a private copy before changing caches.
-
-Five layers show truth, rays, measurements, tracks, and raw voxels, using a free-view-only render layer. Measurement selection highlights cached supporting rays.
-
-Rays remain for 1 s of experiment time, measurements for 3 s, and deleted tracks for 3 s. Track history holds 100 time-ordered points. Raw voxels describe the last exported sealed window, their votes count stations.
-
-Raw voxel scores 0 and 1 create no geometry. Scores 2–15 use solid faces with alpha `0.06 + 0.12 * clamp((score - 2) / 13, 0, 1)`; values above 15 clamp to the same maximum. Vertices share one grouped mesh per score, with edge cells clipped to the search box. View changes use cached data rather than rerunning the algorithm.
-
-### Error diagnostics
-
-Godot no longer computes error metrics locally (`evaluation.gd` was removed in Issue #57). When running via `V-Switch`, `chongming_scorer` streams `ScoreEvent` updates that `V-Switch` pushes to Godot Viewer as `ScoreOverlay` in `chongming-viewer-v1` (`--viewer <host:port>`).
-
-Visualization update and redraw CPU wall costs are summarized in [Visualization monitoring](visualization-monitoring.md); experiment quality and timing are in the [benchmark](benchmark-2026-11-02.md).
-
-## Evidence and playback
-
-`SceneEvidenceWriter` separates ordinary inputs from privileged truth. It stores unchanged scene fields in `truth-static.json` and references them by digest. If those fields change, a record stores them inline. The reader checks references and restores a full snapshot.
-
-Input frame hashes identify pixels but cannot recover them. Output files and interpretation are listed in [Development](development.md#evidence-and-playback).
-
-Recorded preview restores images and selected truth records, still needs Godot. At recording end it can switch to a live scene source. It is not a complete algorithm replay system.
-
-For the Issue #49 Stage 1 `.pb.zst` storage layout (`Test Scene` and `Run Output` packages) scored independently by `chongming_scorer`, see [Wire Protocol and Storage Specification](protocol.md#storage-format-d6).
+- 64-bit integers cross GDScript `JSON.parse_string()` as base-10 decimal strings.
+- Five toggleable 3D layers (`truth`, `rays`, `measurements`, `tracks`, `voxels`) display cached state without altering outputs:
+  - Rays decay after 1 s of experiment time; measurements and deleted tracks decay after 3 s; track history retains up to 100 points.
+  - Voxel votes `< 2` (or `<= 2` where gated) render as wireframe alpha `0.06..0.18`.
+- **No scoring in Godot**: `evaluation.gd` was removed; online `ScoreEvent`s come solely from `chongming-scorer` over `V-Switch`.
 
 ## Technical references
 
-- [OpenCV PnP](https://docs.opencv.org/4.x/d5/d1f/calib3d_solvePnP.html) describes the pose-estimation APIs.
+- [OpenCV PnP](https://docs.opencv.org/4.x/d5/d1f/calib3d_solvePnP.html) describes pose estimation APIs.
 - [godot-openstreetmap](https://github.com/RodZill4/godot-openstreetmap/tree/a3a9ca5c46ddcc956a7d4798ee835d749d711e42) is an MIT-licensed implementation reference, not a runtime dependency.
-- [Pixeltovoxelprojector](https://github.com/ConsistentlyInconsistentYT/Pixeltovoxelprojector) is a conceptual reference. Its [pinned license](https://github.com/ConsistentlyInconsistentYT/Pixeltovoxelprojector/blob/011722ac4e7403de4dbf764b6877a6561a0cf45c/LICENSE) has extra restrictions; do not treat it as standard Apache-2.0 code.
-
-These references do not validate this project's accuracy or performance.
+- [Pixeltovoxelprojector](https://github.com/ConsistentlyInconsistentYT/Pixeltovoxelprojector) is a conceptual reference only; its [license](https://github.com/ConsistentlyInconsistentYT/Pixeltovoxelprojector/blob/011722ac4e7403de4dbf764b6877a6561a0cf45c/LICENSE) has extra restrictions.
