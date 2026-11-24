@@ -11,8 +11,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from chongming.composition.development import development_run
-from chongming.composition.graph import declare_assembly
+from chongming.composition.center import declare_center
 from chongming.contracts import fusion as f
 from chongming.contracts import model as m
 from chongming.modules.fusion import CalibrationWeightingModule, DirectGeometryCandidateModule
@@ -23,8 +22,14 @@ from chongming.modules.fusion_geometry import (
     VoxelCandidateModule,
     _ray_voxels,
 )
-from chongming.scenarios.demo import demo_source
-from chongming.scenarios.serialization import load_scenario
+from tests.online_fixtures import (
+    DEFAULT_SEARCH,
+    SyntheticTarget,
+    default_clock_mapping,
+    default_fusion_policy,
+    default_station_configs,
+    generate_synthetic_steps,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 TIME = 1_000_000
@@ -38,29 +43,35 @@ def event_id(ray: f.AdmittedRay) -> m.EventId:
 
 class CleanFusionTests(unittest.TestCase):
     def setUp(self) -> None:
-        spec = load_scenario(ROOT / "scenarios/center_clean.json")
-        step = next(iter(demo_source(spec, video_enabled=False).generate(spec)))
-        event = step.packets.rays[0]
+        configs = default_station_configs()
+        steps, solutions = generate_synthetic_steps(
+            configs,
+            (
+                SyntheticTarget(
+                    initial_position_enu_m=(-15.0, 62.0, 20.0), velocity_enu_mps=(1.0, 0.0, 0.0)
+                ),
+            ),
+            duration_ns=40_000_000,
+        )
+        ray_event = next(rec.event for rec in steps[0].events if isinstance(rec.event, m.RayEvent))
         self.template = f.AdmittedRay(
-            event=event,
+            event=ray_event,
             arrival_time=m.ProcessingTime(
-                clock_domain_id=event.capture_time.clock_domain_id, time_ns=TIME
+                clock_domain_id=ray_event.capture_time.clock_domain_id, time_ns=TIME
             ),
             config=next(
-                config
-                for config in spec.station_configs
-                if config.station_id == event.envelope.station_id
+                config for config in configs if config.station_id == ray_event.envelope.station_id
             ),
             calibration_solution=next(
                 solution
-                for solution in step.packets.calibration_solutions
-                if solution.solution_ref == event.calibration_solution_ref
+                for solution in solutions
+                if solution.solution_ref == ray_event.calibration_solution_ref
             ),
         )
-        self.policy = development_run(spec, Path("unused-fusion-test-output")).fusion_policy
+        self.policy = default_fusion_policy()
         self.center = m.SessionId("geometry-test")
         self.search = replace(
-            spec.voxel_search,
+            DEFAULT_SEARCH,
             min_enu_m=(-3.0, -2.0, -1.0),
             max_enu_m=(3.0, 4.0, 3.0),
             step_enu_m=(1.0, 1.0, 1.0),
@@ -1056,11 +1067,15 @@ class CleanFusionTests(unittest.TestCase):
             self.geometry.refine(window, replace(association, selected_groups=(group,)), ())
 
     def test_finite_clean_source_runs_through_admission_windows_and_localization(self) -> None:
-        original = load_scenario(ROOT / "scenarios/center_clean.json")
-        spec = replace(original, timeline=replace(original.timeline, end_time_ns=100_000_000))
-        run = development_run(spec, Path("unused-fusion-test-output"))
-        center = declare_assembly(spec, run).center
-        for config in spec.station_configs:
+        configs = default_station_configs()
+        policy = default_fusion_policy()
+        clock_mapping = default_clock_mapping()
+        center, _ = declare_center(
+            center_session_id=m.SessionId("center-clean-finite"),
+            policy=policy,
+            clock_mapping=clock_mapping,
+        )
+        for config in configs:
             center.stations.register(config)
         measurements: list[m.FusionMeasurement] = []
         expected_times: set[int] = set()
@@ -1075,23 +1090,26 @@ class CleanFusionTests(unittest.TestCase):
                 self.assertEqual(len(batch.results), 1)
                 measurements.extend(result.measurement for result in batch.results)
 
-        for step in demo_source(spec, video_enabled=False).generate(spec):
-            now = m.ProcessingTime(
-                clock_domain_id=step.packets.sample_time.clock_domain_id,
-                time_ns=step.packets.sample_time.time_ns,
-            )
-            for solution in step.packets.calibration_solutions:
+        steps, _ = generate_synthetic_steps(
+            configs,
+            (
+                SyntheticTarget(
+                    initial_position_enu_m=(-15.0, 62.0, 20.0), velocity_enu_mps=(1.0, 0.0, 0.0)
+                ),
+            ),
+            duration_ns=100_000_000,
+        )
+        for step in steps:
+            if step.stream_ended:
+                continue
+            for solution in step.solutions:
                 center.calibrations.register_solution(solution)
-            events: tuple[m.StationEvent, ...] = (
-                *step.packets.calibration_events,
-                *step.packets.rays,
-                *step.packets.diagnostics,
-            )
-            for event in events:
-                outcome = center.admission.admit(m.ReceivedEvent(event=event, arrival_time=now))
+            for received in step.events:
+                outcome = center.admission.admit(received)
                 self.assertIs(outcome.record.decision, f.AdmissionDecision.ACCEPTED)
                 if outcome.admitted_ray is not None:
-                    capture, envelope = outcome.admitted_ray.event.capture_time, event.envelope
+                    capture = outcome.admitted_ray.event.capture_time
+                    envelope = received.event.envelope
                     last[
                         envelope.station_id,
                         envelope.station_session_id,
@@ -1100,8 +1118,8 @@ class CleanFusionTests(unittest.TestCase):
                     expected_times.add((capture.exposure_start_ns + capture.exposure_end_ns) // 2)
                 consume(center.windows.offer(outcome))
         now = m.ProcessingTime(
-            clock_domain_id=run.processing_to_capture_clock.processing_clock_domain_id,
-            time_ns=spec.timeline.end_time_ns + 1,
+            clock_domain_id=clock_mapping.processing_clock_domain_id,
+            time_ns=100_000_001,
         )
         for (station, session, digest), capture in last.items():
             consume(

@@ -7,7 +7,6 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from chongming.composition.development import development_run
 from chongming.contracts import fusion as f
 from chongming.contracts import model as m
 from chongming.modules.fusion_ingress import (
@@ -18,8 +17,14 @@ from chongming.modules.fusion_ingress import (
     EventWindowModule,
     StationRegistryModule,
 )
-from chongming.scenarios.demo import demo_source
-from chongming.scenarios.serialization import load_scenario
+from tests.online_fixtures import (
+    CLOCK_DOMAIN_ID,
+    SyntheticTarget,
+    default_clock_mapping,
+    default_fusion_policy,
+    default_station_configs,
+    generate_synthetic_steps,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = 1_000_000
@@ -27,21 +32,27 @@ BASE = 1_000_000
 
 class FusionIngressTests(unittest.TestCase):
     def setUp(self) -> None:
-        spec = load_scenario(ROOT / "scenarios/center_clean.json")
-        step = next(iter(demo_source(spec, video_enabled=False).generate(spec)))
-        run = development_run(spec, Path("unused-fusion-test-output"))
-        self.rays = step.packets.rays
+        configs = default_station_configs()
+        steps, solutions = generate_synthetic_steps(
+            configs,
+            (
+                SyntheticTarget(
+                    initial_position_enu_m=(-15.0, 62.0, 20.0), velocity_enu_mps=(1.0, 0.0, 0.0)
+                ),
+            ),
+            duration_ns=40_000_000,
+        )
+        policy = default_fusion_policy()
+        self.rays = tuple(rec.event for rec in steps[0].events if isinstance(rec.event, m.RayEvent))
         self.configs = tuple(
-            next(
-                config
-                for config in spec.station_configs
-                if config.station_id == ray.envelope.station_id
-            )
+            next(config for config in configs if config.station_id == ray.envelope.station_id)
             for ray in self.rays
         )
-        self.solutions = step.packets.calibration_solutions
-        self.states = step.packets.calibration_events
-        self.clock_id = spec.timeline.clock_domain.clock_domain_id
+        self.solutions = solutions
+        self.states = tuple(
+            rec.event for rec in steps[0].events if isinstance(rec.event, m.CalibrationStateEvent)
+        )
+        self.clock_id = CLOCK_DOMAIN_ID
         self.stations = StationRegistryModule()
         self.calibrations = CalibrationRegistryModule(stations=self.stations)
         for config in self.configs:
@@ -52,16 +63,16 @@ class FusionIngressTests(unittest.TestCase):
                 f.RegistryWriteStatus.REGISTERED,
             )
         self.journal = AdmissionJournalModule()
-        self.clock = EventClockMappingModule(mapping=run.processing_to_capture_clock)
+        self.clock = EventClockMappingModule(mapping=default_clock_mapping())
         self.admission = EventAdmissionModule(
-            policy=run.fusion_policy.admission,
+            policy=policy.admission,
             stations=self.stations,
             calibrations=self.calibrations,
             journal=self.journal,
             clock=self.clock,
         )
         self.window_policy = replace(
-            run.fusion_policy.windows,
+            policy.windows,
             origin_ns=BASE,
             width_ns=10,
             allowed_lateness_ns=2,
@@ -898,41 +909,43 @@ class FusionIngressTests(unittest.TestCase):
         self.assertEqual(ended.sealed_windows[-1].key.end_ns, BASE + 30)
 
     def test_finite_source_events_are_all_sealed_exactly_once(self) -> None:
-        original = load_scenario(ROOT / "scenarios/center_clean.json")
-        spec = replace(original, timeline=replace(original.timeline, end_time_ns=100_000_000))
-        run = development_run(spec, Path("unused-fusion-test-output"))
-        windows = self.windows(run.fusion_policy.windows)
+        configs = default_station_configs()
+        policy = default_fusion_policy()
+        windows = self.windows(policy.windows)
         sealed: list[f.SealedObservationWindow] = []
         admitted: list[m.EventId] = []
         last_capture: dict[tuple[m.StationId, m.SessionId, m.ConfigDigest], m.CaptureTime] = {}
-        for step in demo_source(spec, video_enabled=False).generate(spec):
-            now = m.ProcessingTime(
-                clock_domain_id=step.packets.sample_time.clock_domain_id,
-                time_ns=step.packets.sample_time.time_ns,
-            )
-            for solution in step.packets.calibration_solutions:
+        steps, _ = generate_synthetic_steps(
+            configs,
+            (
+                SyntheticTarget(
+                    initial_position_enu_m=(-15.0, 62.0, 20.0), velocity_enu_mps=(1.0, 0.0, 0.0)
+                ),
+            ),
+            duration_ns=100_000_000,
+            session_suffix="finite",
+        )
+        for step in steps:
+            if step.stream_ended:
+                continue
+            for solution in step.solutions:
                 self.assertIs(
                     self.calibrations.register_solution(solution).status,
                     f.RegistryWriteStatus.REGISTERED,
                 )
-            events: tuple[m.StationEvent, ...] = (
-                *step.packets.calibration_events,
-                *step.packets.rays,
-                *step.packets.diagnostics,
-            )
-            for event in events:
-                outcome = self.admission.admit(m.ReceivedEvent(event=event, arrival_time=now))
+            for received in step.events:
+                outcome = self.admission.admit(received)
                 self.assertIs(outcome.record.decision, f.AdmissionDecision.ACCEPTED)
                 if outcome.admitted_ray is not None:
                     admitted.append(outcome.record.event_id)
-                    envelope = event.envelope
+                    envelope = received.event.envelope
                     last_capture[
                         envelope.station_id,
                         envelope.station_session_id,
                         envelope.station_config_digest,
                     ] = outcome.admitted_ray.event.capture_time
                 sealed.extend(windows.offer(outcome).sealed_windows)
-        now = m.ProcessingTime(clock_domain_id=self.clock_id, time_ns=spec.timeline.end_time_ns + 1)
+        now = m.ProcessingTime(clock_domain_id=self.clock_id, time_ns=100_000_001)
         for (station, session, digest), capture in last_capture.items():
             sealed.extend(
                 windows.report_progress(

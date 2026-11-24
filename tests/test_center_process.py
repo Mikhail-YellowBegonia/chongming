@@ -29,8 +29,8 @@ from chongming.composition.center import reference_policy
 from chongming.contracts import device as d
 from chongming.contracts import fusion as f
 from chongming.contracts import model as m
+from chongming.contracts.json_codec import dump_json as _json
 from chongming.modules.device import OPENCV_CALIBRATION_ESTIMATOR_ID
-from chongming.scenarios.run import _json
 from chongming_proto.online import (
     common_pb2,
     encode_length_prefixed,
@@ -963,3 +963,223 @@ class CenterProcessTests(unittest.TestCase):
         self.assertEqual(len(outbound), 1)
         self.assertEqual(outbound[0].WhichOneof("payload"), "progress_report")
         self.assertTrue(outbound[0].progress_report.finite_end_reached)
+
+    def test_center_process_aligns_zero_origin_policy_to_epoch_timestamps(self) -> None:
+        s1_cfg, _ = _station_config_and_aux("s1", (0.0, 0.0, 0.0))
+        s2_cfg, _ = _station_config_and_aux("s2", (40.0, 0.0, 0.0))
+        sols = {
+            s1_cfg.station_id: _calibration_solution(s1_cfg),
+            s2_cfg.station_id: _calibration_solution(s2_cfg),
+        }
+        epoch_ns = 1_763_784_000_000_000_000
+        step_times_ns = [epoch_ns + 50_000_000, epoch_ns + 150_000_000]
+        target = (20.0, 5.0, 80.0)
+        outbound: list[online_pb2.BusMessage] = []
+
+        def handler(conn: socket.socket) -> None:
+            reader = conn.makefile("rb")
+            try:
+                _ = read_length_prefixed(reader, online_pb2.BusMessage)
+                conn.sendall(
+                    encode_length_prefixed(
+                        online_pb2.BusMessage(
+                            bus_sequence_no=1,
+                            session_ack=online_pb2.SessionAck(accepted=True, run_id="epoch-1"),
+                        )
+                    )
+                )
+                seq = 2
+                for cfg in (s1_cfg, s2_cfg):
+                    conn.sendall(
+                        encode_length_prefixed(
+                            online_pb2.BusMessage(
+                                bus_sequence_no=seq,
+                                station_config=station_config_to_proto(cfg),
+                            )
+                        )
+                    )
+                    seq += 1
+                    sol = replace(
+                        sols[cfg.station_id],
+                        accepted_time=m.ProcessingTime(clock_domain_id="clk", time_ns=epoch_ns),
+                        reference_capture_time=_capture_time(epoch_ns),
+                        valid_interval=m.TimeInterval(
+                            clock_domain_id="clk", start_ns=epoch_ns, end_ns=epoch_ns + 10**10
+                        ),
+                    )
+                    cal_ev = m.CalibrationStateEvent(
+                        envelope=m.EventEnvelope(
+                            schema_version="event-v1",
+                            event_type=m.EventType.CALIBRATION_STATE,
+                            station_id=cfg.station_id,
+                            station_session_id=sol.solution_ref.station_session_id,
+                            sequence_no=1,
+                            station_config_digest=cfg.config_digest,
+                        ),
+                        state=m.CalibrationState(
+                            station_id=cfg.station_id,
+                            station_session_id=sol.solution_ref.station_session_id,
+                            station_config_digest=cfg.config_digest,
+                            state_version=1,
+                            health=m.CalibrationHealth.VALID,
+                            solution_ref=sol.solution_ref,
+                            observed_at=m.ProcessingTime(clock_domain_id="clk", time_ns=epoch_ns),
+                            last_trusted_time=m.ProcessingTime(
+                                clock_domain_id="clk", time_ns=epoch_ns
+                            ),
+                            usable_interval=sol.valid_interval,
+                            reason_codes=(),
+                        ),
+                        solution=sol,
+                    )
+                    conn.sendall(
+                        encode_length_prefixed(
+                            online_pb2.BusMessage(
+                                bus_sequence_no=seq,
+                                calibration_state=calibration_state_event_to_proto(cal_ev),
+                            )
+                        )
+                    )
+                    seq += 1
+                for idx, t_ns in enumerate(step_times_ns):
+                    for cfg in (s1_cfg, s2_cfg):
+                        ox, oy, oz = cfg.main_camera_position_enu_m
+                        d_u, u_u, v_u = _unit_and_tangent(
+                            (target[0] - ox, target[1] - oy, target[2] - oz)
+                        )
+                        ray = m.RayEvent(
+                            envelope=m.EventEnvelope(
+                                schema_version="event-v1",
+                                event_type=m.EventType.RAY,
+                                station_id=cfg.station_id,
+                                station_session_id=m.SessionId(f"sess-{cfg.station_id}"),
+                                sequence_no=idx + 2,
+                                station_config_digest=cfg.config_digest,
+                            ),
+                            frame_id=m.FrameId(f"{cfg.station_id}-{idx}"),
+                            local_track_id=m.LocalTrackId("1"),
+                            capture_time=_capture_time(t_ns),
+                            world_frame_id=m.WorldFrameId("enu"),
+                            calibration_solution_ref=sols[cfg.station_id].solution_ref,
+                            calibration_usage=m.CalibrationUsage.VALID,
+                            calibration_evidence=m.CalibrationUseEvidence(
+                                state_version=1,
+                                last_trusted_time=m.ProcessingTime(
+                                    clock_domain_id="clk", time_ns=epoch_ns
+                                ),
+                                solution_accepted_time=m.ProcessingTime(
+                                    clock_domain_id="clk", time_ns=epoch_ns
+                                ),
+                                solution_reference_capture_time=_capture_time(epoch_ns),
+                                solution_valid_interval=m.TimeInterval(
+                                    clock_domain_id="clk",
+                                    start_ns=epoch_ns,
+                                    end_ns=epoch_ns + 10**10,
+                                ),
+                                usable_interval=m.TimeInterval(
+                                    clock_domain_id="clk",
+                                    start_ns=epoch_ns,
+                                    end_ns=epoch_ns + 10**10,
+                                ),
+                                reason_codes=(),
+                            ),
+                            ray_origin_enu_m=cfg.main_camera_position_enu_m,
+                            ray_direction_enu_unit=d_u,
+                            uncertainty=m.RayUncertainty(
+                                model="tangent_gaussian_v1",
+                                tangent_u_enu_unit=u_u,
+                                tangent_v_enu_unit=v_u,
+                                independent_angular_covariance_rad2=_eye2(1e-6),
+                                independent_origin_covariance_m2=_eye3(0.0),
+                                shared_installation_state_ref=cfg.installation_uncertainty.state_ref,
+                                shared_calibration_solution_ref=sols[cfg.station_id].solution_ref,
+                            ),
+                            detection_score=0.95,
+                            detection_score_definition=m.ScoreDefinition(
+                                definition_id="d1",
+                                kind=m.ScoreKind.RANKING,
+                                minimum=0.0,
+                                maximum=1.0,
+                                cross_station_comparison_group=None,
+                            ),
+                            track_quality=0.9,
+                            track_quality_definition=m.ScoreDefinition(
+                                definition_id="q1",
+                                kind=m.ScoreKind.RANKING,
+                                minimum=0.0,
+                                maximum=1.0,
+                                cross_station_comparison_group=None,
+                            ),
+                            quality_flags=(),
+                        )
+                        conn.sendall(
+                            encode_length_prefixed(
+                                online_pb2.BusMessage(
+                                    bus_sequence_no=seq,
+                                    ray_event=ray_event_to_proto(ray),
+                                )
+                            )
+                        )
+                        seq += 1
+                        conn.sendall(
+                            encode_length_prefixed(
+                                online_pb2.BusMessage(
+                                    bus_sequence_no=seq,
+                                    progress_report=online_pb2.ProgressReport(
+                                        source_role=common_pb2.COMPONENT_ROLE_EDGE,
+                                        source_id=str(cfg.station_id),
+                                        session_id=f"sess-{cfg.station_id}",
+                                        completed_time_ns=t_ns,
+                                        finite_end_reached=False,
+                                    ),
+                                )
+                            )
+                        )
+                        seq += 1
+                for cfg in (s1_cfg, s2_cfg):
+                    conn.sendall(
+                        encode_length_prefixed(
+                            online_pb2.BusMessage(
+                                bus_sequence_no=seq,
+                                progress_report=online_pb2.ProgressReport(
+                                    source_role=common_pb2.COMPONENT_ROLE_EDGE,
+                                    source_id=str(cfg.station_id),
+                                    session_id=f"sess-{cfg.station_id}",
+                                    completed_time_ns=step_times_ns[-1],
+                                    finite_end_reached=True,
+                                ),
+                            )
+                        )
+                    )
+                    seq += 1
+                while True:
+                    msg = read_length_prefixed(reader, online_pb2.BusMessage)
+                    if msg is None:
+                        break
+                    outbound.append(msg)
+            finally:
+                reader.close()
+
+        port, thread, errors = _start_tcp_server(handler)
+        with OnlineBusClient("127.0.0.1", port, timeout_s=5.0) as client:
+            ack = CenterProcess(
+                client,
+                _online_fusion_policy(timeout_basis=f.StreamTimeoutBasis.CAPTURE_TIME),
+            ).run()
+        thread.join(timeout=5.0)
+        self.assertEqual(errors, [])
+        self.assertTrue(ack.accepted)
+        located = [
+            msg.fusion_measurement
+            for msg in outbound
+            if msg.WhichOneof("payload") == "fusion_measurement"
+            and msg.fusion_measurement.status == common_pb2.FUSION_STATUS_LOCATED
+        ]
+        self.assertEqual(len(located), 2)
+        self.assertTrue(
+            any(
+                msg.WhichOneof("payload") == "progress_report"
+                and msg.progress_report.finite_end_reached
+                for msg in outbound
+            )
+        )

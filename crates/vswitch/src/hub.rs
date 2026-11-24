@@ -1509,8 +1509,8 @@ pub async fn run_record(
         });
     }
 
-    let mut active_producers: HashSet<u64> = HashSet::new();
-    let mut active_truth_peers: HashSet<u64> = HashSet::new();
+    let mut active_producers: HashMap<u64, PeerHandle> = HashMap::new();
+    let mut active_truth_peers: HashMap<u64, TruthPeerHandle> = HashMap::new();
     let mut seen_any_producer = false;
     let mut tracks: HashMap<(String, i32), TrackRecorder> = HashMap::new();
     let mut min_time_ns: Option<i64> = None;
@@ -1531,13 +1531,13 @@ pub async fn run_record(
             tokio::select! {
                 ev = bus_rx.recv() => {
                     if let Some(BusEvent::PeerConnected(handle)) = ev {
-                        active_producers.insert(handle.info.peer_id);
+                        active_producers.insert(handle.info.peer_id, handle);
                         seen_any_producer = true;
                     }
                 }
                 tev = truth_rx.recv() => {
                     if let Some(TruthEvent::PeerConnected(handle)) = tev {
-                        active_truth_peers.insert(handle.peer_id);
+                        active_truth_peers.insert(handle.peer_id, handle);
                     }
                 }
             }
@@ -1560,7 +1560,7 @@ pub async fn run_record(
                 let Some(ev) = ev else { break; };
                 match ev {
                     BusEvent::PeerConnected(handle) => {
-                        active_producers.insert(handle.info.peer_id);
+                        active_producers.insert(handle.info.peer_id, handle);
                     }
                     BusEvent::PeerDisconnected { peer_id, .. } => {
                         active_producers.remove(&peer_id);
@@ -1635,7 +1635,7 @@ pub async fn run_record(
                 let Some(tev) = tev else { continue; };
                 match tev {
                     TruthEvent::PeerConnected(handle) => {
-                        active_truth_peers.insert(handle.peer_id);
+                        active_truth_peers.insert(handle.peer_id, handle);
                     }
                     TruthEvent::PeerDisconnected { peer_id } => {
                         active_truth_peers.remove(&peer_id);
@@ -1648,6 +1648,7 @@ pub async fn run_record(
                             message.payload
                         {
                             update_bounds(tf.experiment_time_ns, &mut min_time_ns, &mut max_time_ns);
+                            scene_writer.record_targets_from_truth(&tf);
                             scene_writer.add_truth_frame(&tf)?;
                             if let Some(viewer) = &viewer_hub {
                                 record_update_id += 1;
@@ -1691,6 +1692,7 @@ pub async fn run_record(
                 if let Some(TruthEvent::Message { message, .. }) = tev {
                     if let Some(test_framework_message::Payload::TruthFrame(tf)) = message.payload {
                         update_bounds(tf.experiment_time_ns, &mut min_time_ns, &mut max_time_ns);
+                        scene_writer.record_targets_from_truth(&tf);
                         scene_writer.add_truth_frame(&tf)?;
                     }
                 }

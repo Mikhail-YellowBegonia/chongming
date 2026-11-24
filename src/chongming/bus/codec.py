@@ -423,6 +423,50 @@ def _calibration_ref_from_proto(
     )
 
 
+def _surveyed_reference_to_proto(ref: m.SurveyedReference) -> online_pb2.SurveyedReference:
+    return online_pb2.SurveyedReference(
+        reference_id=_non_empty(ref.reference_id, "reference_anchor.reference_id"),
+        world_frame_id=_non_empty(str(ref.world_frame_id), "reference_anchor.world_frame_id"),
+        landmarks=[
+            online_pb2.SurveyedLandmark(
+                landmark_id=_non_empty(lm.landmark_id, "landmark.landmark_id"),
+                position_enu_m=_vec3_to_proto(lm.position_enu_m, "landmark.position_enu_m"),
+                covariance_enu_m2=_mat3_to_proto(
+                    lm.covariance_enu_m2, "landmark.covariance_enu_m2"
+                ),
+                visual_description=lm.visual_description,
+            )
+            for lm in ref.landmarks
+        ],
+    )
+
+
+def _surveyed_reference_from_proto(msg: online_pb2.SurveyedReference) -> m.SurveyedReference:
+    landmarks: list[m.SurveyedLandmark] = []
+    for lm in msg.landmarks:
+        if not lm.HasField("position_enu_m"):
+            raise ValueError("SurveyedLandmark missing required field 'position_enu_m'")
+        if not lm.HasField("covariance_enu_m2"):
+            raise ValueError("SurveyedLandmark missing required field 'covariance_enu_m2'")
+        landmarks.append(
+            m.SurveyedLandmark(
+                landmark_id=_non_empty(lm.landmark_id, "landmark.landmark_id"),
+                position_enu_m=_vec3_from_proto(lm.position_enu_m, "landmark.position_enu_m"),
+                covariance_enu_m2=_mat3_from_proto(
+                    lm.covariance_enu_m2, "landmark.covariance_enu_m2"
+                ),
+                visual_description=lm.visual_description,
+            )
+        )
+    return m.SurveyedReference(
+        reference_id=_non_empty(msg.reference_id, "reference_anchor.reference_id"),
+        world_frame_id=m.WorldFrameId(
+            _non_empty(msg.world_frame_id, "reference_anchor.world_frame_id")
+        ),
+        landmarks=tuple(landmarks),
+    )
+
+
 def station_config_to_proto(config: m.StationConfig) -> online_pb2.StationConfig:
     """Convert an online StationConfig contract into Protobuf."""
     unc = config.installation_uncertainty
@@ -474,6 +518,8 @@ def station_config_to_proto(config: m.StationConfig) -> online_pb2.StationConfig
                 translation_a_m=_vec3_to_proto(tf.translation_a_m, "translation_a_m"),
             )
         )
+    if isinstance(config.reference_anchor, m.SurveyedReference):
+        msg.reference_anchor.CopyFrom(_surveyed_reference_to_proto(config.reference_anchor))
     return msg
 
 
@@ -496,15 +542,16 @@ def station_config_from_proto(
             raise ValueError(f"StationConfig missing required field {field_name!r}")
     world_id = m.WorldFrameId(_non_empty(msg.world_frame_id, "world_frame_id"))
     station_id = m.StationId(_non_empty(msg.station_id, "station_id"))
-    anchor = (
-        reference_anchor
-        if reference_anchor is not None
-        else m.SurveyedReference(
+    if reference_anchor is not None:
+        anchor: m.ReferenceAnchor = reference_anchor
+    elif msg.HasField("reference_anchor"):
+        anchor = _surveyed_reference_from_proto(msg.reference_anchor)
+    else:
+        anchor = m.SurveyedReference(
             reference_id=msg.reference_scene_version or f"{station_id}-ref",
             world_frame_id=world_id,
             landmarks=(),
         )
-    )
     full_tf = (
         m.RigidTransform(
             rotation_a_from_b=_mat3_from_proto(

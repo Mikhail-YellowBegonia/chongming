@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from chongming.composition.graph import declare_assembly
+from chongming.composition.station import declare_station
 from chongming.contracts import device as d
 from chongming.contracts import model as m
 from chongming.modules.detection import (
@@ -21,7 +21,6 @@ from chongming.modules.detection import (
     TRACKING_ALGORITHM_ID,
 )
 from chongming.modules.device import MainDetectionModule, MotionDetectionModule, Tracking2DModule
-from tests.fixtures import architecture_specs
 
 MS = 1_000_000
 
@@ -544,37 +543,48 @@ class LocalTrackingTests(unittest.TestCase):
 
 class MainDetectionTests(unittest.TestCase):
     def test_declared_modules_use_explicit_policies_without_construction_side_effects(self) -> None:
-        spec, run = architecture_specs()
-        run = replace(
-            run,
-            stations=tuple(
-                replace(
-                    station,
-                    device_policy=replace(
-                        station.device_policy,
-                        detection=detection_policy(),
-                        tracking=tracking_policy(),
-                    ),
-                )
-                for station in run.stations
+        from tests.test_center_process import _station_config_and_aux
+
+        config, _ = _station_config_and_aux("station-west", (-20.0, -40.0, 4.0))
+        station_policy = d.DevicePolicy(
+            detection=detection_policy(),
+            tracking=tracking_policy(),
+            calibration=d.CalibrationPolicy(
+                estimator_id="opencv_pnp_ransac_v1",
+                update_period_ns=1_000_000_000,
+                stale_after_ns=5_000_000_000,
+                recovery_success_count=2,
+                minimum_reference_count=4,
+                maximum_reprojection_rmse_px=2.0,
+                maximum_rotation_only_parallax_px=5.0,
+            ),
+            rays=d.RayGenerationPolicy(
+                uncertainty_model_id="tangent_gaussian_v1",
+                fallback_centroid_covariance_px2=((0.25, 0.0), (0.0, 0.25)),
+                unmodelled_high_frequency_jitter_covariance_rad2=None,
+                unmodelled_relative_flex_covariance_rad2=None,
+                residual_independence_basis=None,
             ),
         )
         with patch("chongming.modules.detection.cv2.createBackgroundSubtractorMOG2") as factory:
-            assembly = declare_assembly(spec, run)
-            factory.assert_not_called()
-        for station in assembly.stations:
-            self.assertIs(station.detection.detector, station.motion)
-            self.assertIs(station.detection.tracker, station.tracking)
-            self.assertTrue(station.motion.business_implemented)
-            source = frame(
-                station=str(station.config.station_id),
-                session=str(station.tracking.station_session_id),
+            station, _ = declare_station(
+                config=config,
+                policy=station_policy,
+                image_session_id=m.SessionId("sess-west"),
             )
-            output = station.detection.process(source)
-            self.assertEqual(output.detections.processing_status, m.ProcessingStatus.PROCESSED)
-            self.assertEqual(output.detections.reason_codes, ("background_warmup",))
-            self.assertFalse(output.detections.observations)
-            self.assertFalse(output.tracks)
+            factory.assert_not_called()
+        self.assertIs(station.detection.detector, station.motion)
+        self.assertIs(station.detection.tracker, station.tracking)
+        self.assertTrue(station.motion.business_implemented)
+        source = frame(
+            station=str(station.config.station_id),
+            session=str(station.tracking.station_session_id),
+        )
+        output = station.detection.process(source)
+        self.assertEqual(output.detections.processing_status, m.ProcessingStatus.PROCESSED)
+        self.assertEqual(output.detections.reason_codes, ("background_warmup",))
+        self.assertFalse(output.detections.observations)
+        self.assertFalse(output.tracks)
 
     def test_real_main_pipeline_keeps_predictions_out_of_detection_batches(self) -> None:
         module = MainDetectionModule(

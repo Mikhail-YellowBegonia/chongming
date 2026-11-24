@@ -66,14 +66,28 @@ jobs:
             - name: Check Protobuf bindings
               run: uv run --frozen python scripts/generate_proto.py --check
 
-            - name: Run headless Stage 1 and bus tests
+            - name: Run headless core, Stage 1, and bus tests
               run: |
                   uv run --frozen python -m unittest -v \
                     tests/test_architecture.py \
+                    tests/test_json_content.py \
                     tests/test_proto_framing.py \
                     tests/test_bus_codec.py \
                     tests/test_edge_process.py \
                     tests/test_center_process.py \
+                    tests/test_detection.py \
+                    tests/test_calibration.py \
+                    tests/test_device_pipeline.py \
+                    tests/test_device_rays.py \
+                    tests/test_fusion_ingress.py \
+                    tests/test_fusion_geometry.py \
+                    tests/test_fusion_matching.py \
+                    tests/test_fusion_motion.py \
+                    tests/test_fusion_uncertainty.py \
+                    tests/test_center_exhaustive.py \
+                    tests/test_center_postintersection.py \
+                    tests/test_voxel_diagnostics.py \
+                    tests/test_reference_fusion.py \
                     tests/test_scorer_*.py \
                     tests/test_legacy_converter.py \
                     tests/test_device_evaluation.py \
@@ -83,6 +97,7 @@ jobs:
                     tests/test_dynamic_scoring.py \
                     tests/test_evaluation_preview.py \
                     tests/test_godot_viewer.py \
+                    tests/test_godot_producer_unit.py \
                     tests/test_performance.py \
                     tests/test_distribution.py
 

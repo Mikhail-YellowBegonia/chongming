@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from chongming.scenarios.json_content import content_sha256, parse_json
+from chongming.contracts.json_codec import content_sha256, parse_json
 
 
 def main() -> None:

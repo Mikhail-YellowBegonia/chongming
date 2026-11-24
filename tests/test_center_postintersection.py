@@ -7,13 +7,13 @@ from typing import Any
 
 from chongming.contracts import fusion as f
 from chongming.contracts import model as m
+from chongming.contracts.json_codec import _decode
+from chongming.contracts.json_codec import dump_json as _json
 from chongming.modules.fusion_postintersection import (
     ExhaustiveAssociationModule,
     exclusive_tracking_inputs,
     suppress_duplicates,
 )
-from chongming.scenarios.run import _json
-from chongming.scenarios.serialization import _decode
 from tests import test_fusion_geometry as fixture
 
 

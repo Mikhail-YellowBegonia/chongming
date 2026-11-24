@@ -1,6 +1,6 @@
 # Development
 
-Run source commands from the repository root. For system behavior and data contracts, see [Design](design.md). For a nontechnical overview, see [Introduction](introduction.md).
+Run source commands from the repository root. For system behavior and data contracts, see [Design](design.md) and [Wire Protocol](protocol.md). For a nontechnical overview, see [Introduction](introduction.md).
 
 ## Environment
 
@@ -11,26 +11,23 @@ nix develop --no-update-lock-file
 uv sync --frozen
 ```
 
-The shell provides Python 3.12, uv, Godot 4.7.2 stable, FFmpeg, Ruff, Rust (`rustc`, `cargo`, `rustfmt`, `clippy`), Protocol Buffers (`protoc`), Git, and treefmt. Linux also has Xvfb. `flake.lock` pins Nix inputs; `uv.lock` pins Python dependencies. The package supports Python 3.12 through 3.14.
+The shell provides Python 3.12, uv, Godot 4.7.2 stable, FFmpeg, Ruff, Rust (`rustc`, `cargo`, `rustfmt`, `clippy`), Protocol Buffers (`protoc`), Git, and treefmt. Linux also has `xvfb-run`. `flake.lock`, `uv.lock`, and `Cargo.lock` pin dependencies. The package supports Python 3.12 through 3.14.
 
-Use `uv run --frozen` for Python commands. Use the shell's `ruff`, not `uv run ruff`, on NixOS. Do not update dependencies, lock files, or tools without approval. First setup may need network access. The shell supplies native libraries required by Python wheels; using `.venv/bin/python` outside it can fail.
+Use `uv run --frozen` for Python commands. Use the shell's `ruff`, not `uv run ruff`, on NixOS. Do not update dependencies, lock files, or tools without approval. Build the Rust `V-Switch` binary with `cargo build -p vswitch`.
 
 ### Graphics
 
-Actual runs need a graphics session and OpenGL 3.3, even without `--ui` or video. `CHONGMING_GODOT` selects the required Godot executable. `CHONGMING_FFMPEG` selects FFmpeg for video export and playback. The Nix shell sets both.
+Godot Producer recording and the passive Godot Viewer require a graphics session and OpenGL 3.3. `CHONGMING_GODOT` selects the Godot executable and `CHONGMING_FFMPEG` selects FFmpeg. The Nix shell sets both.
 
 For Linux without a desktop, use software rendering:
 
 ```sh
-nix develop --no-update-lock-file .#software --command xvfb-run -a uv run --frozen chongming-scene \
-  --scenario scenarios/empty.json --output results/software-example --no-video
+nix develop --no-update-lock-file .#software --command xvfb-run -a ...
 ```
-
-The output directory must not exist. Godot `--headless` uses a dummy renderer.
 
 ### Install a release
 
-A user archive contains a wheel, source archive, hashed dependency list, scenarios, and documentation. Check its hash against a trusted release source. If all release files are present, run `sha256sum -c SHA256SUMS` before extraction.
+A user archive contains a wheel, source archive, hashed dependency list, scenarios/policies, and documentation. Check its hash against a trusted release source (`sha256sum -c SHA256SUMS`) before extraction.
 
 Inside the extracted user directory, with one release version present:
 
@@ -40,99 +37,106 @@ uv pip install --python .venv/bin/python --require-hashes --no-deps --requiremen
 uv pip install --python .venv/bin/python --no-deps ./chongming-*-py3-none-any.whl
 uv pip check --python .venv/bin/python
 source .venv/bin/activate
-chongming-center --scenario scenarios/center_clean.json --check
+chongming-center-bus --help
+chongming-edge --help
+chongming-scorer --help
 ```
 
-Use direct commands after activation, without the source workflow's `uv run` prefix. Godot and FFmpeg remain external requirements. On NixOS, use the source development shell to supply native libraries.
-
-To follow source links or run development commands, extract the sdist and use its source directory and documentation.
-
-## First run
-
-Validate a bundled scenario:
-
-```sh
-uv run --frozen chongming-center --scenario scenarios/center_clean.json --check
-```
-
-Open the preview:
-
-```sh
-uv run --frozen chongming-preview --scenario scenarios/review.json
-```
-
-After closing it, start a center test with the reference algorithm and Godot diagnostics:
-
-```sh
-uv run --frozen chongming-center --scenario scenarios/center_clean.json \
-  --output results/center-ui --ui
-```
+To build `vswitch` or run `godot_producer/`, extract the sdist and run `cargo build -p vswitch` in the source directory.
 
 ## Commands and modes
 
-| Command             | Purpose                                                   |
-| ------------------- | --------------------------------------------------------- |
-| `chongming-preview` | Scene preview, editing, and browser workbench             |
-| `chongming-center`  | Configuration checks and modes 2, 3, and 4                |
-| `chongming-scene`   | Finite scene export with evidence                         |
-| `chongming-osm`     | Offline OSM import                                        |
-| `chongming-scorer`  | Independent `Test Scene` / `Run Output` verifier & scorer |
+| Command                | Purpose                                                                             |
+| ---------------------- | ----------------------------------------------------------------------------------- |
+| `vswitch`              | Rust hub (`record`, `replay`, `live` modes; build from `crates/vswitch/`)           |
+| `chongming-edge`       | Online edge bus client (`--policy` `DevicePolicy` JSON)                             |
+| `chongming-center-bus` | Online center bus client (`--policy` `FusionPolicy` JSON)                           |
+| `chongming-scorer`     | Independent `Test Scene` / `Run Output` verifier, offline scorer, and `--subscribe` |
 
-Use `--help` for the complete option list. `python -m chongming` starts the preview.
+Use `--help` on any binary or script for the complete option list.
 
-| Center mode | Input                           | Default center algorithm                                 | Required policy           |
-| ----------- | ------------------------------- | -------------------------------------------------------- | ------------------------- |
-| 2           | Rendered images                 | None                                                     | Per-station device policy |
-| 3           | Virtual rays                    | `InputInspector` in CLI; reference algorithm with `--ui` | No device policy          |
-| 4           | Rendered images through devices | Reference algorithm                                      | Per-station device policy |
+### Test Scene recording and replay
 
-Mode 3 is the default. `InputInspector` checks input and produces no positions. To run reference fusion in the CLI:
+1. **Record a `Test Scene`** from Godot Producer (`godot_producer/`):
 
-```sh
-uv run --frozen chongming-center --scenario scenarios/center_clean.json \
-  --algorithm chongming.reference:create_algorithm \
-  --output results/center-reference --run --tick-hz 10
-```
+   Start `vswitch record` (example addresses):
 
-For device or integrated tests, supply a policy file matching every station. Replace the policy path below with a real file:
+   ```sh
+   ./target/debug/vswitch record \
+     --output-scene results/clean-range-scene \
+     --scenario-id clean-range \
+     --world-frame-id demo-enu \
+     --clock-domain-id sim-clock \
+     --bus-bind 127.0.0.1:7000 \
+     --truth-bind 127.0.0.1:7001
+   ```
 
-```sh
-uv run --frozen chongming-center --mode 4 --scenario scenarios/center_clean.json \
-  --device-policy /path/to/device-policy.json --check
-uv run --frozen chongming-center --mode 4 --scenario scenarios/center_clean.json \
-  --device-policy /path/to/device-policy.json --output results/integrated-ui --ui
-```
+   Then launch Godot Producer pointing at those sockets (`clean_range.tscn` or `scenic_ridge.tscn`):
 
-Use mode 2 for device-only tests. It rejects `--algorithm`. Mode 3 rejects device policies. `--check` also validates the selected mode's policy requirements.
+   ```sh
+   "$CHONGMING_GODOT" --path godot_producer -- \
+     --scene-tscn res://scenes/clean_range.tscn \
+     --bus 127.0.0.1:7000 --truth 127.0.0.1:7001 --steps 30
+   ```
 
-`--video` enables sensor display and evidence recording. Modes 2 and 4 still render algorithm input when it is absent. `--tick-hz` controls wall-clock pacing in `(0, 240]`.
+   Wait for `vswitch record` to finish encoding videos and writing hashes, then verify the immutable scene:
 
-Without `--ui` or `--run`, the CLI starts paused:
+   ```sh
+   uv run --frozen chongming-scorer verify-scene results/clean-range-scene --verify-videos
+   ```
 
-| Command                   | Action                                                  |
-| ------------------------- | ------------------------------------------------------- |
-| `step`                    | Process one exposure group                              |
-| `run 10` or `run`         | Process a fixed count or run to finite end              |
-| `video on` or `video off` | Change display and recording between steps              |
-| `status`                  | Show current state                                      |
-| `reset`                   | Close the old session and create a new output directory |
-| `quit`                    | Close resources and exit                                |
+2. **Replay in lock-step (`integrated`, `edge`, or `center`)** with optional passive `Godot Viewer` and online scorer:
 
-During `run`, Ctrl+C requests a stop after the current step.
+   ```sh
+   ./target/debug/vswitch replay \
+     --scene results/clean-range-scene \
+     --run-output results/clean-range-run \
+     --run-id run-1 \
+     --mode integrated \
+     --stepping lock-step \
+     --bus-bind 127.0.0.1:7000 \
+     --truth-bind 127.0.0.1:7001 \
+     --viewer-bind 127.0.0.1:7002 \
+     --wait-scorer
+   ```
 
-### Preview controls
+   Connect peers:
 
-The preview opens Godot and a browser workbench at `http://127.0.0.1:8765/`. `--port` changes the port; `--no-browser` suppresses browser launch. Closing Godot or pressing Ctrl+C ends the session.
+   ```sh
+   uv run --frozen chongming-edge --host 127.0.0.1 --port 7000 --policy <device-policy.json>
+   uv run --frozen chongming-center-bus --host 127.0.0.1 --port 7000 --policy <fusion-policy.json> --timeout-basis capture_time
+   uv run --frozen chongming-scorer subscribe --host 127.0.0.1 --port 7001 --scene results/clean-range-scene --output results/clean-range-run
+   "$CHONGMING_GODOT" --path src/chongming/rendering/godot -- --viewer 127.0.0.1:7002
+   ```
 
-`--render-fps` limits preview production and pixel requests without changing exposure timestamps. `--no-video` stops preview pixel requests.
+   Then score offline if desired:
 
-Use the toolbar to play, pause, step, reset, seek, or select a station. In free view, hold the right mouse button to look around; use WASD to move, Q/E to move vertically, and Shift for faster motion.
+   ```sh
+   uv run --frozen chongming-scorer inspect-run results/clean-range-run
+   uv run --frozen chongming-scorer score --scene results/clean-range-scene --run results/clean-range-run
+   ```
 
-Editing requires an explicit `--scenario` file. It pauses the experiment and acquires an edit token. Submit compiles and saves the draft only if the file has not changed outside the editor. Cancel reloads the file; closing discards the draft. The built-in demo and recorded playback do not support persistent editing.
+3. **Live hardware mode** (`Edge -> V-Switch Live -> Center`, no truth or scene):
+
+   ```sh
+   ./target/debug/vswitch live --bus-bind 127.0.0.1:7000 --viewer-bind 127.0.0.1:7002
+   ```
+
+Note that `EventWindowPolicy.timeout_basis` supports `processing_time` (wall-clock default), `capture_time`, and `disabled`. Lock-step TCP replay over `V-Switch` should use `capture_time` or `disabled` so real-time pauses do not mark stations idle or offline.
+
+4. **Legacy JSONL conversion**:
+
+   ```sh
+   uv run --frozen python scripts/convert_legacy_recording.py test-scene \
+     --recording <legacy-recording-dir> --output <test-scene-dir> --link-video
+   uv run --frozen python scripts/convert_legacy_recording.py run-output \
+     --scene <test-scene-dir> --output <run-output-dir> --mode integrated \
+     --device-dir <legacy-device-dir> --center-dir <legacy-center-dir>
+   ```
 
 ## Device policy
 
-A policy file maps each station ID to a complete [DevicePolicy](../src/chongming/contracts/device.py). Station IDs must match the scenario exactly. The loader rejects duplicate keys, unknown fields, invalid values, and unsupported algorithms. This one-station template below shows the structure.
+A policy file maps each station ID to a complete [DevicePolicy](../src/chongming/contracts/device.py), or uses `FrameDifferencePolicy` / `KalmanTrackingPolicy` workbench settings (see [scenarios/policies/](../scenarios/policies/)). Station IDs must match the active `StationConfig`s exactly. The loader rejects duplicate keys, unknown fields, invalid values, and unsupported algorithms.
 
 ```json
 {
@@ -187,350 +191,72 @@ A policy file maps each station ID to a complete [DevicePolicy](../src/chongming
 }
 ```
 
-Background parameters must be explicit. Learning rate is in `[0, 1]`; automatic rate `-1` is not supported. Detection and tracking algorithm IDs and score definitions must match the implementation.
+Background parameters must be explicit. Learning rate is in `[0, 1]`; automatic rate `-1` is not supported. Ray error terms are symmetric positive semidefinite 2x2 matrices; nonzero residual terms require an explicit `residual_independence_basis`.
 
-Ray error terms are symmetric positive semidefinite 2 by 2 matrices, in `px^2` or `rad^2` as named. `null` means unknown; zero means a stated zero-error assumption. The detector does not supply centroid covariance, so ray generation needs a pixel fallback and known residual terms. Nonzero residuals require an explicit basis for independence from each other and from pixel error.
+### JSON content identity
 
-## Scenarios
-
-Edit `scenario-authoring-v2`. See [authoring.py](../src/chongming/scenarios/authoring.py) for accepted fields and [scene contracts](../src/chongming/contracts/scene.py) for compiled types.
-
-| Example                                                          | Purpose                                           |
-| ---------------------------------------------------------------- | ------------------------------------------------- |
-| `scenarios/center_clean.json`                                    | Two-station, single-target center test            |
-| `scenarios/empty.json`, `scenarios/constant_velocity.json`       | Empty scene and straight target motion            |
-| `scenarios/review.json`, `scenarios/photography.json`            | Preview and visual effects                        |
-| `scenarios/heightfield.json`, `scenarios/heightfield_asset.json` | Inline and external height grids                  |
-| `scenarios/osm.json`, `scenarios/osm_landscape.json`             | Synthetic map fixtures                            |
-| `scenarios/truck_town.json`                                      | External Godot scene; requires a separate project |
-| `scenarios/aircraft_model_test.json`                             | Bundled aircraft geometry                         |
-
-A name such as `center_clean` does not establish a clean image background. Omitted fields can retain demo targets, objects, vegetation, or wind. Use empty arrays and `wind: null` when those elements must be absent.
-
-| Field                                                 | Meaning                                                                             |
-| ----------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| `format`, `scenario_id`                               | Format and scene identity                                                           |
-| `random_seed`                                         | Fixed at 42; may be omitted                                                         |
-| `duration_s`, `fps`                                   | Positive duration; default 24 s and 30 Hz                                           |
-| `stations`                                            | One to four unique IDs, ENU positions, optional yaw/elevation, rate, and start time |
-| `targets`                                             | Unique IDs, geometry, and motion                                                    |
-| `world_objects`, `vegetation`, `wind`                 | Scene objects and wind settings                                                     |
-| `terrain`                                             | Flat ground or a heightfield                                                        |
-| `search`                                              | ENU minimum, maximum, and voxel step                                                |
-| `environment`, `clouds`, `camera_jitter`, `rendering` | Supported visual effects and pose perturbations                                     |
-| `camera_position_offset_enu_m`                        | Real camera displacement; does not change online installation estimates             |
-| `occlusion_mode`                                      | `known` for geometric occlusion, or `unknown` for field-of-view checks only         |
-| `osm`                                                 | Local landscape reference and optional vegetation policy                            |
-
-Positions are east, north, up in meters. Yaw is zero north and positive east. Main images are 1920 by 1080; auxiliary images are 640 by 480. Station rates are 1 through 60 Hz. Use `--check` after editing.
-
-### Target geometry and motion
-
-Authoring accepts spheres (`radius_m`), boxes (`half_extents_m`), and aircraft. Aircraft use an internal mesh or `model: "f86"` / `"la11"`; arbitrary model paths are not accepted. Python reads bundled GLB geometry for both logic and rendering. Target appearance replaces GLB materials and textures.
-
-A complete constant-velocity motion value is:
-
-```json
-{
-  "type": "constant_velocity",
-  "position_enu_m": [-15, 62, 20],
-  "velocity_enu_mps": [1, 0, 0]
-}
-```
-
-An orbit uses `center_enu_m`, positive `radius_m` and `period_s`, and optional `phase_rad` and `vertical_amplitude_m`. With phase `p = phase_rad + 2*pi*t/period_s`, position is:
-
-```text
-E = center_E + radius * sin(p)
-N = center_N + radius * cos(p)
-U = center_U + vertical_amplitude * sin(2*p)
-```
-
-The preview editor supports basic position and constant-velocity changes. Edit orbit parameters in JSON.
-
-### Local assets
-
-JSON asset references use a local URI and a content digest:
-
-```json
-{
-  "uri": "assets/ridge.json",
-  "content_sha256": "6744c8b5dd9c1494b5828de16938651560686bd7b9e155a1a3fd73acfce4bd03"
-}
-```
-
-Relative paths resolve from the scenario directory. Absolute paths and host-free `file:` URIs are accepted; remote URLs, queries, and fragments are not.
-
-Use the project's content hash:
-
-```sh
-uv run --frozen python scripts/hash_json.py scenarios/assets/ridge.json
-```
-
-[json_content.py](../src/chongming/scenarios/json_content.py) defines compact UTF-8 JSON with sorted object keys. Array order and string code points remain unchanged. Equivalent integer notation and signed zero normalize to one value. Integers must fit `±(2**53 - 1)`; decimal values must survive the specified binary64 conversion and spelling rule. Duplicate keys, non-finite numbers, precision loss, and invalid Unicode are rejected. Formatting alone does not change the content hash. Source downloads, archives, images, and editor conflict checks use byte hashes for different purposes.
-
-### OSM and elevation
-
-`chongming-osm` reads fixed local OSM XML 0.6; `--source-url` records provenance. Convert PBF before import and retain the source hash and conversion command.
-
-For the bundled synthetic fixture, choose fresh output paths:
-
-```sh
-uv run --frozen chongming-osm scenarios/assets/osm_demo.osm \
-  --config scenarios/assets/osm_import.json \
-  --source-url 'repository:scenarios/assets/osm_demo.osm (synthetic fixture)' \
-  --data-date 2026-10-20 --license CC0-1.0 \
-  --attribution 'Synthetic fixture, CC0-1.0; not an OpenStreetMap extract' \
-  --output output/osm/demo.buildings.json --cleaned-output output/osm/demo.cleaned.osm
-```
-
-The report includes the imported content hash, input byte hashes, diagnostics, and counts. Put its content hash and asset path in `osm.asset`.
-
-The importer projects WGS84 through ECEF into local ENU. It supports simple building extrusion, roads, tree points, and selected land-cover polygons. It reports unsupported buildings, bridges, tunnels, and missing relation members.
-
-Optional HGT elevation needs `--dem-hgt`, tile name, source URL/date, license, and attribution. Supported grids are 1201 or 3601 samples per side, with EGM96 heights.
-
-### Fixed test assets
-
-The flake pins the Hannover asset archive by URL and byte hash. It is not part of the source tree. To prepare it, use a new archive link and an absent extraction directory:
-
-```sh
-mkdir -p tmp
-nix build --no-update-lock-file .#hannover-500m --out-link tmp/hannover-500m-archive
-tar -xzf tmp/hannover-500m-archive -C scenarios/assets
-```
-
-Use `scenarios/external/hannover.json` with the extracted asset. The directory is ignored by Git. Root-level Hannover experiment scenarios may reference other local paths; check each before use.
-
-The preview option `--landscape-asset /path/to/landscape-dem.json` is for a fixed Hannover editor preset, not arbitrary maps. It checks a pinned content digest. Use `osm.asset` for other landscapes.
-
-Keep original downloads, import reports, commands, and license records. `scripts/pack_local_asset.py` builds deterministic archives. Publishing an asset or updating a pinned flake input requires separate maintainer approval.
-
-### External Godot scenes
-
-Prepare and pin an external project before use. For the [Truck Town demo](https://github.com/godotengine/godot-demo-projects/tree/master/3d/truck_town):
-
-```sh
-CHONGMING_GODOT_EXTERNAL_PROJECT=/path/to/godot-demo-projects/3d/truck_town \
-CHONGMING_GODOT_EXTERNAL_SCENE=res://town/model/town_model.gltf \
-uv run --frozen chongming-scene --scenario scenarios/truck_town.json \
-  --output results/truck-town
-```
-
-Both variables are required. The worker copies resources to a temporary project and imports them; it does not run the external project's UI or vehicle logic. Record the external commit and asset hashes. `--check` does not validate resource import.
-
-External geometry does not supply Python occlusion truth. The example uses `unknown` occlusion; comparisons are limited to the same fixed recording and its known conditions.
+[json_codec.py](../src/chongming/contracts/json_codec.py) defines compact UTF-8 canonical JSON with sorted object keys and binary64 safe-integer validation (`scripts/hash_json.py`).
 
 ## Algorithm development
 
-[Source layout](design.md#source-layout) lists module ownership. `ports.development.CenterAlgorithm` defines the center plugin:
+[Source layout](design.md#source-layout) lists module ownership. `ports.development.CenterAlgorithm` defines the center plugin (`start(registration)`, `process(step)`, `close()`), implemented by `reference.create_algorithm()` (`ReferenceFusionAlgorithm`). Pass `--postintersection` or `--voxel-diagnostics` to `chongming-center-bus` as needed; see [Algorithm evaluation](algorithm-evaluation.md).
 
-| Method                | Contract                                                                      |
-| --------------------- | ----------------------------------------------------------------------------- |
-| `start(registration)` | Register stations, center session, policy, clock mapping, and start time      |
-| `process(step)`       | Consume solutions, received events, completion progress, and finite-end state |
-| `close()`             | Release resources; allow repeated cleanup                                     |
-
-Pass a trusted no-argument factory with `--algorithm module:factory`. Return `CenterAlgorithmResult` with `measurements`, `tracks`, and full stage `batches`, not a tuple of two lists. Register each step's solutions before processing events that refer to them, as the reference adapter does. Keep truth and generation settings out of online inputs.
-
-`reference.create_algorithm()` is the reference factory. `FusionEngineAdapter` wraps an existing engine. The same plugin can run in modes 3 and 4. Voxel display is specific to the reference plugin.
-
-`composition/center.py::reference_policy()` owns default thresholds. It uses at least two stations, coarse voxels, least squares, and track-based motion alignment. New targets require exposure midpoints within 1 ms. Window width comes from the shortest configured camera period. Change detailed policies through Python assembly and save the actual policy with the run; authoring `search` only controls the search volume and step.
-
-The `vision/` frame-difference pipeline is separate from the MOG2 device implementation. Its OpenCV tuning windows are unavailable with the default headless OpenCV dependency.
-
-## Evidence and playback
-
-Experiment output directories must not exist. Keep one directory per run.
-
-| File                                                                    | Content                                                    |
-| ----------------------------------------------------------------------- | ---------------------------------------------------------- |
-| `authoring.json`                                                        | Input authoring document when saved by the entry point     |
-| `scenario.json`                                                         | Compiled diagnostic scene in finite scene exports          |
-| `manifest.json`                                                         | Mode, actual policy, sessions, renderer, and provenance    |
-| `online.jsonl`                                                          | Ordinary frame metadata, events, and skipped-image records |
-| `truth.jsonl`, `truth-static.json`                                      | Privileged truth and shared scene fields                   |
-| `timing.jsonl`, `summary.json`                                          | Stage timing and final state                               |
-| `edge-output.jsonl`                                                     | Modes 2/4: pixel hashes and actual device results          |
-| `center-registration.json`, `center-input.jsonl`, `center-output.jsonl` | Modes 3/4: registered configuration, inputs, and results   |
-| `video/camera-*.mp4`, `video.json`                                      | Optional encoded video and stream metadata                 |
-
-`complete` means the finite run ended, not that localization succeeded. `algorithms_complete: false` records unfinished general system components. Check `status == "located"` before using a measurement position. Top-level measurements and tracks also appear in stage batches.
-
-Use stage reason codes to diagnose missing output: warmup, absent calibration, unknown ray error, insufficient stations, motion alignment, association ambiguity, search truncation, or geometric rejection. Do not lower gates merely to obtain positions.
-
-The evidence writer stores stable fields once and stores changed fields inline. Use `read_truth_records()` in `scenarios/run.py` to restore snapshots and verify static references.
-
-Export and preview a recording:
-
-```sh
-uv run --frozen chongming-scene --scenario scenarios/empty.json --output results/recording-demo
-uv run --frozen chongming-preview --recording results/recording-demo --playback-fps 30
-```
-
-Keep the authoring file, referenced assets, online/truth/timing files, static truth, video files, and `video.json`. `--recording` excludes `--scenario` and camera-offset editing. Playback does not restore complete center events, still starts Godot, and can switch to live generation at the end. `chongming-center` has no recording input option.
-
-For a run with no video export, add `--no-video` to `chongming-scene`. `--render-every N` samples pixels from each camera's exposure sequence without dropping logical exposures.
-
-### Issue #49 Stage 1 packages (`chongming_proto` and `chongming_scorer`)
-
-Immutable `Test Scene` and independent `Run Output` `.pb.zst` packages (specified in [Wire Protocol and Storage Specification](protocol.md)) are scored by the independent `chongming_scorer` package (`chongming-scorer`), replacing the legacy `chongming.evaluate_*` and `chongming.benchmark_*` entry points. `chongming_scorer` never imports `chongming`, and `chongming` never imports `chongming_proto.truth` or `chongming_scorer`:
-
-```sh
-uv run --frozen python scripts/generate_proto.py --check
-uv run --frozen chongming-scorer verify-scene <test-scene-dir>
-uv run --frozen chongming-scorer inspect-run <run-output-dir>
-uv run --frozen chongming-scorer score --scene <test-scene-dir> --run <run-output-dir>
-uv run --frozen chongming-scorer subscribe --host 127.0.0.1 --port <vswitch-port> --scene <test-scene-dir> --output <score-output-dir>
-```
-
-To migrate a legacy JSONL recording or run output into the Stage 1 directory layout for offline verification:
-
-```sh
-uv run --frozen python scripts/convert_legacy_recording.py test-scene \
-  --recording <legacy-recording-dir> --output <test-scene-dir> --link-video
-uv run --frozen python scripts/convert_legacy_recording.py run-output \
-  --scene <test-scene-dir> --output <run-output-dir> --mode integrated \
-  --device-dir <legacy-device-dir> --center-dir <legacy-center-dir>
-```
-
-### Issue #49 online bus processes (`chongming-edge` and `chongming-center-bus`)
-
-Standalone Stage 2 TCP bus processes connect to `V-Switch` using 4-byte length-prefixed `chongming.v1.BusMessage` frames with explicit `DevicePolicy` and `FusionPolicy` JSON files (without changing legacy `chongming-center`):
-
-```sh
-uv run --frozen chongming-edge --host 127.0.0.1 --port <vswitch-port> --policy <device-policy.json>
-uv run --frozen chongming-center-bus --host 127.0.0.1 --port <vswitch-port> --policy <fusion-policy.json> --timeout-basis capture_time
-```
-
-Note that `EventWindowPolicy.timeout_basis` supports `processing_time` (wall-clock default), `capture_time`, and `disabled`. Lock-step TCP replay over `V-Switch` should use `capture_time` or `disabled` so real-time pauses do not mark stations idle or offline.
+`composition/center.py::reference_policy()` builds default fusion policies for explicit search volumes, clock domains, and window widths.
 
 ## Checks
 
-In the development shell (or `nix develop --no-update-lock-file .#ci`, as used by `.github/workflows/checks.yml`):
+In the CI shell (`nix develop --no-update-lock-file .#ci`, as used by `.github/workflows/checks.yml`):
 
 ```sh
+treefmt --no-cache --fail-on-change
 ruff check src tests scripts
-ruff format --check src tests scripts
 uv run --frozen mypy src tests
 uv run --frozen python scripts/generate_proto.py --check
-uv run --frozen python -m unittest -v \
-  tests/test_architecture.py \
-  tests/test_proto_framing.py \
-  tests/test_bus_codec.py \
-  tests/test_edge_process.py \
-  tests/test_center_process.py \
-  tests/test_scorer_*.py \
-  tests/test_legacy_converter.py \
-  tests/test_device_evaluation.py \
-  tests/test_center_size_evaluation.py \
-  tests/test_difficulty_evaluation.py \
-  tests/test_integrated_attribution.py \
-  tests/test_dynamic_scoring.py \
-  tests/test_evaluation_preview.py \
-  tests/test_godot_viewer.py \
-  tests/test_performance.py \
-  tests/test_distribution.py
-for scenario in scenarios/*.json; do
-  uv run --frozen chongming-center --scenario "$scenario" --check
-done
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
-CI runs `treefmt --no-cache --fail-on-change`, Ruff, mypy, `scripts/generate_proto.py --check`, and the headless Stage 1 test suite above (`VisualizationPerformanceTests` in `tests/test_performance.py` is skipped when Godot is absent). `.github/workflows/checks.yml` also reserves conditional Rust checks (`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`) that activate once a root `Cargo.toml` is added.
-
-The scenario loop reports missing local assets; it does not download or repair them. `scenarios/external/` needs separate asset preparation.
-
-Run relevant component tests first. Pure center tests include `tests.test_fusion_ingress`, `test_fusion_geometry`, `test_fusion_matching`, `test_fusion_motion`, `test_fusion_uncertainty`, and `test_fusion_tracking`. Device tests include `tests.test_detection`, `test_device_pipeline`, and `test_device_rays`.
-
-Full regression needs Godot and graphics:
+Full regression including Godot Producer (`test_godot_producer_unit.py`, `test_godot_producer_e2e.py`) and Godot Viewer (`test_godot_viewer.py`) requires Godot and a graphics context:
 
 ```sh
 nix develop --no-update-lock-file .#software --command xvfb-run -a uv run --frozen python \
-  -m unittest discover -s tests -v
+  -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-Godot tests cover actual rendering, update acceptance, integer precision, layer isolation, and diagnostics. Configuration checks and mock tests do not replace them. Report failures and untested paths for the current revision.
-
-### Evaluation and benchmarks
-
-[Algorithm evaluation](algorithm-evaluation.md) documents the native tuning workbench, explicit device policies, saved-input center replay, model-size scoring and operational attribution. Reuse existing recordings and new output directories. The [2026-11-02 benchmark](benchmark-2026-11-02.md) records the selected frame-difference policy and three-station integrated results, including device and center timing. [Visualization monitoring](visualization-monitoring.md) separates rendering and recording costs from algorithm costs.
-
-The [2026-11-08 occupancy benchmark](benchmark-2026-11-08.md) and [2026-11-09 erosion follow-up](benchmark-2026-11-09.md) retain bounded device comparisons, full-input quality and resource-limit failures on the same recording. Their reports distinguish current verification from historical results.
-The [2026-11-10 attribution report](benchmark-2026-11-10.md) covers B1/B2/B3 and C1/C2/C3. Its [ViBe and physical-difficulty follow-up](benchmark-vibe-2026-11-10.md) records the optional official baseline and complete regression results, including failures.
-
-### Verification of the visualization and evaluation change
-
-The 2026-11-02 delivery passed 211 related device, center, replay, architecture and Godot visualization tests, full Ruff checks, and mypy for all 148 source/test files. All top-level scenario configuration checks passed. These checks do not rerun the recorded quality benchmark.
-
-Full discovery was interrupted while `test_editor_updates_native_view_without_sensor_frames_and_cancel_restores_state` waited on `PreviewRuntime._encode_queue_lock`. Full regression is therefore not reported as passing. Four other failures were reproduced in an isolated copy of upstream revision `855d126`:
-
-- `test_kalman_update_matches_known_scalar_gain_and_joseph_covariance`: existing state expectation differs from the current variance-floor behavior.
-- `test_native_generator_and_worker_cache`: the vegetation fixture calls an uninitialized instancing helper.
-- `test_read_only_package_project_uses_a_separate_working_directory`: package project path expectation differs from the writable project copy.
-- `test_explicit_landscape_and_scenario_paths_survive_a_working_directory_change`: macOS `/tmp` versus resolved `/private/tmp` path mismatch.
-
-These remain unresolved. Assertions and runtime thresholds were not relaxed to hide them.
-
-During Issue #57 verification against `main` (`5b22ae2`), three additional pre-existing Godot graphics/integration test failures were reproduced without relaxing assertions (tracked and subsequently fixed in Issue #61 by aligning the stale tests with layer-rebuild skipping, 3-vote voxel filtering, 10 s warmup-hold configuration, post-intersection alignment output, and `evaluation.gd` removal):
-
-- `tests/test_godot_visualization_layers.py::VisualizationLayerTests::test_fixed_geometry_styles_visibility_and_sensor_pixels`: toggling visibility checkboxes invokes `redraw()`, freeing and recreating `MeshInstance3D` nodes so `instance` IDs differ from the initial snapshot.
-- `tests/test_godot_voxels.py::VoxelGraphicsTests::test_solid_cells_use_raw_corners_score_alpha_and_clipped_edge_cells`: `visualization.gd::_draw_voxels()` skips `score <= 2` (since commit `a37e8f0`), whereas the test supplies a 2-vote cell and asserts two mesh groups (`1 != 2`).
-- `tests/test_visualization_integration.py::VisualizationIntegrationTests` (all 4 tests): short mode-4 runs using `real_scene()` produce `session.ray_count == 0` under current device/warmup defaults.
+Note on historical test state: `tests/test_fusion_tracking.py::TrackingTests::test_kalman_update_matches_known_scalar_gain_and_joseph_covariance` remains an unresolved failure (`3.480769` vs `3.42`) introduced with the 5m variance floor (`98d9b98`).
 
 ### Formatting
 
-`nix fmt` uses treefmt with nixfmt, Ruff, and Prettier. Limit formatting to changed files when possible:
-
-```sh
-nix fmt -- README.md AGENTS.md docs/introduction.md docs/design.md docs/development.md
-```
-
-The CI command is:
+`nix fmt` uses `treefmt` with `nixfmt`, `ruff`, `rustfmt`, and `prettier`. Check formatting with:
 
 ```sh
 nix develop --no-update-lock-file .#ci --command treefmt --no-cache --fail-on-change
 ```
 
-This command writes changes and fails if formatting changed a file; it is not read-only. Review the diff. Lock files, generated output, and Godot source files are outside the configured formatters.
-
-### Performance experiments
-
-Use `scripts/benchmark_scene.py` or the `review_*` scripts with separate output paths. Record the scene, assets, resolution, code and dependency versions, hardware, driver, renderer, and cold/warm samples.
-
-`gpu_ms` is worker wall time for scene updates, drawing, synchronization, and readback. It is not a hardware GPU timer. `gpu_submissions` counts pixel requests. Check image correctness before comparing throughput.
-
 ## Local release
 
-The release tool builds local files only. It does not publish them.
+The release tool builds local archives only and does not publish them:
 
 ```sh
 uv run --frozen python scripts/distribute.py build --output dist/release
 uv run --frozen python scripts/distribute.py check --output dist/release --render
 ```
 
-Use a dedicated directory containing only this version's expected artifacts:
+Artifacts produced in the output directory:
 
-- Source archive (`sdist`).
-- Wheel built from that source archive.
-- User archive with the documentation, scenarios, sdist, wheel, and requirements.
-- Hashed runtime `requirements.txt`.
-- `SHA256SUMS` for the other four files.
-
-Build stages are `sdist`, `wheel`, and `bundle`. Resume only from the same source snapshot. Check stages are `contents`, `install`, and `all`; the last also rebuilds and compares wheel contents.
-
-Checks validate paths, resources, license, entry points, hashes, and installation in an isolated environment and working directory. `--render` adds real rendering probes and needs graphics. Full mode 2/4 behavior remains the job of integration tests.
-
-Do not include local assets, experiment output, caches, or secrets in a release. Run the relevant checks after changing document paths or package resources.
+- Source archive (`sdist`, containing Python packages, `proto/`, `godot_producer/`, `crates/`, `Cargo.*`, tests, scripts, scenarios/policies, and docs).
+- Wheel built from that source archive (`chongming`, `chongming_proto`, `chongming_scorer`, and bundled Godot Viewer files).
+- User archive (documentation, scenarios, sdist, wheel, and hashed `requirements.txt`).
+- `SHA256SUMS` for the four artifacts.
 
 ## Third-party assets and licenses
 
-Code licensing is stated in the [README](../README.md#license-and-use). Dependency and asset licenses are separate. Keep source URLs, versions or dates, byte hashes, conversion commands, and license terms with external inputs. Check permission before distribution.
+Code licensing is stated in the [README](../README.md#license-and-use). Keep source URLs, versions or dates, byte hashes, conversion commands, and license terms with external inputs.
 
 ### Optional official ViBe library
 
-The optional baseline uses the [author's official repository](https://github.com/vandroogenbroeckmarc/vibe), pinned at `da0c197d36272125589180e20fdd32b6fe3ba548`. The repository grants Apache-2.0 use in its current `LICENSE`; retain that file with the sources. Source, binaries and generated results stay under ignored local directories and are not bundled in releases. No Python dependency or lock-file change is required.
-
-Download `C/vibe-background-sequential.c`, `C/vibe-background-sequential.h` and `LICENSE` from that revision into an ignored directory, preserving their paths. For example:
+The optional baseline uses the [author's official repository](https://github.com/vandroogenbroeckmarc/vibe), pinned at `da0c197d36272125589180e20fdd32b6fe3ba548` (Apache-2.0):
 
 ```sh
 revision=da0c197d36272125589180e20fdd32b6fe3ba548
@@ -543,42 +269,15 @@ nix develop --no-update-lock-file --command uv run --frozen python scripts/prepa
   --source external-projects/vibe-source --output external-projects/vibe-build
 ```
 
-The preparation script checks all three source hashes before compiling unmodified C with the Nix environment's compiler. It writes the compiler command/version, source revision and hashes, native defaults and library digest to `manifest.json`. Use a new build directory. The benchmark verifies the library digest again; changing the binary requires a new manifest and experiment directory.
+Set `CHONGMING_VIBE_TEST_LIBRARY` to the recorded library path in `manifest.json` to run `test_vibe.NativeVibeTests` (otherwise skipped).
 
-To exercise optional native tests, set `CHONGMING_VIBE_TEST_LIBRARY` to the absolute library path recorded in that manifest. Without it, native tests are explicitly skipped. Native workbench mode 4 requires a ViBe policy carrying this path and digest; an ordinary MOG2 policy does not provision a library.
+### Maps and external test assets
 
-### Plants
-
-The bundled [Shapespark Low-Poly Exterior Plants Kit](https://github.com/shapespark/shapespark-assets/tree/main/shapespark-low-poly-plants-kit) uses CC0 1.0 Universal. The [license text](../src/chongming/rendering/godot/assets/CC0-1.0.txt) remains in the package. Attribution is not required by CC0; the project records the source for provenance.
-
-The unmodified upstream `shapespark_low_poly_plants.gltf` has SHA-256:
-
-```text
-ac33eec69ab0ace22817af29a40a8cf3a4bdf5e560ffdd060a5cd9c4b9b7a2b7
-```
-
-The renderer loads embedded meshes and textures, converts card transparency to alpha scissor, and separates trunk and crown surfaces for wind deformation. It maps 30 plant nodes to 12 tree, 6 shrub, and 12 grass variants. Placement and variant selection are deterministic.
-
-`assets/impostors/Tree-*.png` are billboards rendered from the same kit. To regenerate them in a graphics session:
+The flake pins the optional `hannover-500m` archive (OSM data under ODbL 1.0; DEM derived from Mapzen/Copernicus/EU-DEM/GMTED2010/SRTM). Extract only into ignored local directories:
 
 ```sh
-"$CHONGMING_GODOT" --path src/chongming/rendering/godot \
-  --script tools/generate_vegetation_impostors.gd \
-  --rendering-method gl_compatibility --audio-driver Dummy
+mkdir -p tmp
+nix build --no-update-lock-file .#hannover-500m --out-link tmp/hannover-500m-archive
 ```
 
-This operation updates generated plant images.
-
-### Maps and elevation
-
-Bundled `osm_demo.osm`, `osm_landscape_demo.osm`, and their synthetic assets are CC0 fixtures.
-
-Real OSM data generally uses [ODbL 1.0](https://opendatacommons.org/licenses/odbl/1-0/). Preserve [OpenStreetMap contributors attribution](https://www.openstreetmap.org/copyright) and follow the [OSMF attribution guidelines](https://osmfoundation.org/wiki/Licence/Attribution_Guidelines).
-
-For Mapzen/Skadi elevation, retain the [format](https://github.com/tilezen/joerd/blob/master/docs/formats.md) and [source attribution](https://github.com/tilezen/joerd/blob/master/docs/attribution.md) records. The Hannover DEM carries:
-
-> Mapzen terrain tiles; Europe terrain produced using Copernicus data and information funded by the European Union - EU-DEM layers; global GMTED2010 and SRTM courtesy of USGS.
-
-Do not label all mixed-source elevation as public-domain SRTM. The Hannover archive distributes OSM-derived data under ODbL and retains the DEM provider terms.
-
-Godot demo project code uses MIT, but individual models and textures can have their own terms. Check their license files before using or distributing an external scene.
+Use `scripts/pack_local_asset.py` for deterministic local `.tar.gz` archives. Do not commit local assets or experiment outputs into Git or release bundles.

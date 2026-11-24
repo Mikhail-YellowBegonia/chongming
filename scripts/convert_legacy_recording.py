@@ -12,9 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from chongming.contracts import model as m
-from chongming.contracts import scene as s
-from chongming.rendering.geometry import model_aabb_diagonal
-from chongming.scenarios.serialization import load_compiled_scenario
+from chongming.contracts.json_codec import _decode
 from chongming_proto.online import common_pb2, online_pb2
 from chongming_proto.truth import truth_pb2
 from chongming_scorer.storage import RunOutputWriter, TestScenePackage, TestSceneWriter
@@ -173,6 +171,22 @@ def _station_config_to_proto(station: m.StationConfig) -> online_pb2.StationConf
             online_pb2.RigidTransform(
                 rotation_a_from_b=_mat3(full_tf.rotation_a_from_b),
                 translation_a_m=_vec3(full_tf.translation_a_m),
+            )
+        )
+    if isinstance(station.reference_anchor, m.SurveyedReference):
+        msg.reference_anchor.CopyFrom(
+            online_pb2.SurveyedReference(
+                reference_id=station.reference_anchor.reference_id,
+                world_frame_id=str(station.reference_anchor.world_frame_id),
+                landmarks=[
+                    online_pb2.SurveyedLandmark(
+                        landmark_id=lm.landmark_id,
+                        position_enu_m=_vec3(lm.position_enu_m),
+                        covariance_enu_m2=_mat3(lm.covariance_enu_m2),
+                        visual_description=lm.visual_description,
+                    )
+                    for lm in station.reference_anchor.landmarks
+                ],
             )
         )
     return msg
@@ -349,14 +363,43 @@ def _track_event_from_dict(raw: Mapping[str, Any]) -> online_pb2.TrackEvent:
     return msg
 
 
-def _target_class_label(geometry: s.GeometrySpec) -> str:
-    if isinstance(geometry, s.ExternalAssetGeometry):
-        return geometry.asset_identifier
-    if isinstance(geometry, s.SphereGeometry):
+def _geometry_aabb_diagonal(geometry: Mapping[str, Any]) -> float:
+    kind = str(geometry.get("$type", ""))
+    if kind == "SphereGeometry":
+        return 2.0 * math.sqrt(3.0) * float(geometry["radius_m"])
+    if kind == "BoxGeometry":
+        hx, hy, hz = (float(v) for v in geometry["half_extents_m"])
+        return 2.0 * math.sqrt(hx * hx + hy * hy + hz * hz)
+    if kind == "CylinderGeometry":
+        r = float(geometry["radius_m"])
+        h = float(geometry["half_height_m"])
+        return 2.0 * math.sqrt(2.0 * r * r + h * h)
+    if kind == "TriangleMeshGeometry":
+        verts = geometry["vertices"]
+        xs = [float(v[0]) for v in verts]
+        ys = [float(v[1]) for v in verts]
+        zs = [float(v[2]) for v in verts]
+        return math.sqrt(
+            (max(xs) - min(xs)) ** 2 + (max(ys) - min(ys)) ** 2 + (max(zs) - min(zs)) ** 2
+        )
+    if kind == "ExternalAssetGeometry":
+        half_extents = geometry.get("bounding_half_extents_m")
+        if half_extents is not None:
+            hx, hy, hz = (float(v) for v in half_extents)
+            return 2.0 * math.sqrt(hx * hx + hy * hy + hz * hz)
+        return 2.0 * math.sqrt(3.0) * float(geometry.get("bounding_radius_m", 1.0))
+    raise ValueError(f"Unsupported legacy geometry type in scenario.json: {kind!r}")
+
+
+def _target_class_label(geometry: Mapping[str, Any]) -> str:
+    kind = str(geometry.get("$type", ""))
+    if kind == "ExternalAssetGeometry":
+        return str(geometry["asset_identifier"])
+    if kind == "SphereGeometry":
         return "sphere"
-    if isinstance(geometry, s.BoxGeometry):
+    if kind == "BoxGeometry":
         return "box"
-    return type(geometry).__name__
+    return kind
 
 
 def convert_test_scene(
@@ -367,7 +410,9 @@ def convert_test_scene(
     link_video: bool = False,
 ) -> dict[str, Any]:
     """Convert a legacy JSONL recording directory into an immutable Test Scene package."""
-    spec = load_compiled_scenario(recording / "scenario.json", asset_root=asset_root)
+    _ = asset_root
+    raw_scenario = json.loads((recording / "scenario.json").read_text(encoding="utf-8"))
+    scenario = raw_scenario.get("scenario", raw_scenario)
     manifest = json.loads((recording / "manifest.json").read_text(encoding="utf-8"))
     video_path = recording / "video.json"
     video_info = json.loads(video_path.read_text(encoding="utf-8")) if video_path.is_file() else {}
@@ -391,30 +436,32 @@ def convert_test_scene(
     diagonals: dict[str, float] = {}
     target_classes: dict[str, str] = {}
     targets_meta: dict[str, dict[str, Any]] = {}
-    for target in spec.scene_definition.flying_objects:
-        target_id = str(target.truth_object_id)
-        diag = model_aabb_diagonal(target.geometry)
+    for target in scenario["scene_definition"]["flying_objects"]:
+        target_id = str(target["truth_object_id"])
+        geometry = target["geometry"]
+        diag = _geometry_aabb_diagonal(geometry)
         diagonals[target_id] = diag
-        cls_name = _target_class_label(target.geometry)
+        cls_name = _target_class_label(geometry)
         target_classes[target_id] = cls_name
         targets_meta[target_id] = {
             "target_class": cls_name,
             "body_aabb_diagonal_m": diag,
         }
 
-    occlusion_mode = spec.scene_definition.occlusion_mode.value
-    station_protos = [_station_config_to_proto(st) for st in spec.station_configs]
+    occlusion_mode = str(scenario["scene_definition"]["occlusion_mode"])
+    station_configs = [_decode(st, m.StationConfig) for st in scenario["station_configs"]]
+    station_protos = [_station_config_to_proto(st) for st in station_configs]
 
     with TestSceneWriter(
         output,
-        scenario_id=str(spec.scenario_id),
-        world_frame_id=str(spec.scene_definition.world.world_frame_id),
-        clock_domain_id=str(spec.timeline.clock_domain.clock_domain_id),
-        start_time_ns=int(spec.timeline.start_time_ns),
-        end_time_ns=int(spec.timeline.end_time_ns),
+        scenario_id=str(scenario["scenario_id"]),
+        world_frame_id=str(scenario["scene_definition"]["world"]["world_frame_id"]),
+        clock_domain_id=str(scenario["timeline"]["clock_domain"]["clock_domain_id"]),
+        start_time_ns=int(scenario["timeline"]["start_time_ns"]),
+        end_time_ns=int(scenario["timeline"]["end_time_ns"]),
         stations=station_protos,
         occlusion_mode=occlusion_mode,
-        random_seed=spec.random_seed,
+        random_seed=int(scenario["random_seed"]),
         targets_meta=targets_meta,
     ) as writer:
         for stream_entry in streams.values():
@@ -459,7 +506,7 @@ def convert_test_scene(
                 priv = json.loads(line)
                 sample_time = priv["sample_time"]
                 truth_frame = truth_pb2.TruthFrame(
-                    world_frame_id=str(spec.scene_definition.world.world_frame_id),
+                    world_frame_id=str(scenario["scene_definition"]["world"]["world_frame_id"]),
                     experiment_time_ns=int(sample_time["time_ns"]),
                     step_index=int(sample_time["step_no"]),
                 )

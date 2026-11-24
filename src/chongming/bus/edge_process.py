@@ -16,15 +16,13 @@ from chongming.bus.codec import (
     station_event_to_proto,
 )
 from chongming.bus.frame_source import DecodedFrame, FrameSource, VirtualBusFrameSource
-from chongming.composition.graph import StationAssembly, declare_station
+from chongming.composition.station import StationAssembly, declare_station, validate_device_policy
 from chongming.contracts import device as d
 from chongming.contracts import model as m
 from chongming.contracts.fusion import StationEventTimeProgress
-from chongming.edge_runtime import validate_device_policy
+from chongming.contracts.json_codec import _decode, parse_json
 from chongming.modules.device import WARMUP_HOLD_NS
 from chongming.ports.lifecycle import ModuleBinding
-from chongming.scenarios.json_content import parse_json
-from chongming.scenarios.serialization import _decode, load_scenario
 from chongming_proto.online import common_pb2, online_pb2
 
 
@@ -95,9 +93,13 @@ class EdgeProcess:
             raise ValueError(f"received StationConfig for unconfigured station {sid!r}")
         local = self._local_configs.get(sid)
         anchor = (
-            local.reference_anchor
-            if local is not None and str(local.config_digest) == pb_config.config_digest
-            else None
+            None
+            if pb_config.HasField("reference_anchor")
+            else (
+                local.reference_anchor
+                if local is not None and str(local.config_digest) == pb_config.config_digest
+                else None
+            )
         )
         config = station_config_from_proto(pb_config, reference_anchor=anchor)
         existing = self._configs.get(sid)
@@ -268,11 +270,6 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--instance-id", default="edge-1")
     parser.add_argument("--session-id")
     parser.add_argument("--station-id", dest="station_ids", action="append")
-    parser.add_argument(
-        "--scenario",
-        type=Path,
-        help="Optional scenario JSON supplying local StationConfig reference landmarks",
-    )
     parser.add_argument("--warmup-hold-s", type=float, default=WARMUP_HOLD_NS / 1e9)
     parser.add_argument("--timeout-s", type=float, default=30.0)
     args = parser.parse_args(argv)
@@ -280,10 +277,6 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.warmup_hold_s < 0:
         raise ValueError("warmup-hold-s must be non-negative")
     policies = load_device_policy_map(args.policy)
-    local_configs: dict[m.StationId, m.StationConfig] = {}
-    if args.scenario is not None:
-        spec = load_scenario(args.scenario)
-        local_configs = {cfg.station_id: cfg for cfg in spec.station_configs}
 
     with OnlineBusClient(args.host, args.port, timeout_s=args.timeout_s) as client:
         process = EdgeProcess(
@@ -292,7 +285,6 @@ def main(argv: Sequence[str] | None = None) -> None:
             instance_id=args.instance_id,
             session_id=args.session_id,
             station_ids=args.station_ids,
-            local_configs=local_configs,
             warmup_hold_ns=round(args.warmup_hold_s * 1e9),
         )
         process.run()

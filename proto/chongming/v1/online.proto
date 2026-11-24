@@ -66,6 +66,19 @@ message InstallationUncertainty {
   string measurement_source = 5;
 }
 
+message SurveyedLandmark {
+  string landmark_id = 1;
+  Vec3 position_enu_m = 2;
+  Mat3 covariance_enu_m2 = 3;
+  string visual_description = 4;
+}
+
+message SurveyedReference {
+  string reference_id = 1;
+  string world_frame_id = 2;
+  repeated SurveyedLandmark landmarks = 3;
+}
+
 message StationConfig {
   string station_id = 1;
   string config_version = 2;
@@ -80,6 +93,7 @@ message StationConfig {
   optional RigidTransform full_rigid_transform_aux_from_main = 11;
   string reference_scene_version = 12;
   InstallationUncertainty installation_uncertainty = 13;
+  optional SurveyedReference reference_anchor = 14;
 }
 
 // Video packet sent from V-Switch to Edge (or from Producer to V-Switch).

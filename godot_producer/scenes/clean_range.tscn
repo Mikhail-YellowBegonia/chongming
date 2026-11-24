@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scenes/clean_range.gd" id="1_clean"]
+
+[node name="CleanRangeScene" type="Node3D"]
+script = ExtResource("1_clean")

@@ -98,7 +98,14 @@ def _sample_station_config() -> m.StationConfig:
         reference_anchor=m.SurveyedReference(
             reference_id="ref-v1",
             world_frame_id=m.WorldFrameId("enu"),
-            landmarks=(),
+            landmarks=(
+                m.SurveyedLandmark(
+                    landmark_id="board-corner-0",
+                    position_enu_m=(1.0, 2.0, 0.5),
+                    covariance_enu_m2=_eye3(1e-6),
+                    visual_description="top-left checkerboard corner",
+                ),
+            ),
         ),
         reference_scene_version="ref-v1",
         installation_uncertainty=m.InstallationUncertainty(

@@ -8,18 +8,44 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from chongming.contracts import scene as s
-from chongming.scenarios.run import _json
-from chongming.scenarios.serialization import save_compiled_scenario
+from chongming.contracts.json_codec import _encode
+from chongming.contracts.json_codec import dump_json as _json
 from chongming_scorer.cli import main as scorer_main
 from chongming_scorer.storage import RunOutputPackage, TestScenePackage
 from scripts.convert_legacy_recording import convert_run_output, convert_test_scene
-from tests.test_scene_rendering import test_scene
+from tests.test_center_process import _station_config_and_aux
 
 
 class LegacyConverterTests(unittest.TestCase):
     def test_convert_legacy_recording_and_score_end_to_end(self) -> None:
-        spec = test_scene(s.SphereGeometry(1), (0.0, 50.0, 10.0))
+        west, _ = _station_config_and_aux("west", (-20.0, -40.0, 4.0))
+        east, _ = _station_config_and_aux("east", (20.0, -40.0, 4.0))
+        station_configs = (west, east)
+        clock_domain_id = "sim-clock"
+        target_id = "target-1"
+        legacy_scenario = {
+            "format": "scenario-json-v1",
+            "scenario": {
+                "scenario_id": "legacy-conv-test",
+                "random_seed": 42,
+                "timeline": {
+                    "clock_domain": {"clock_domain_id": clock_domain_id},
+                    "start_time_ns": 0,
+                    "end_time_ns": 50_000_000,
+                },
+                "scene_definition": {
+                    "world": {"world_frame_id": str(west.world_frame_id)},
+                    "occlusion_mode": "known",
+                    "flying_objects": [
+                        {
+                            "truth_object_id": target_id,
+                            "geometry": {"$type": "SphereGeometry", "radius_m": 1.0},
+                        }
+                    ],
+                },
+                "station_configs": [_encode(st) for st in station_configs],
+            },
+        }
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             legacy_rec = root / "legacy-rec"
@@ -32,10 +58,10 @@ class LegacyConverterTests(unittest.TestCase):
             (legacy_rec / "video").mkdir()
             video_file = legacy_rec / "video" / "camera-000.mp4"
             video_file.write_bytes(b"mp4-bytes")
-            save_compiled_scenario(spec, legacy_rec / "scenario.json")
+            (legacy_rec / "scenario.json").write_text(_json(legacy_scenario), encoding="utf-8")
 
-            station_id = str(spec.station_configs[0].station_id)
-            digest = str(spec.station_configs[0].config_digest)
+            station_id = str(station_configs[0].station_id)
+            digest = str(station_configs[0].config_digest)
             (legacy_rec / "manifest.json").write_text(
                 json.dumps(
                     {
@@ -72,7 +98,7 @@ class LegacyConverterTests(unittest.TestCase):
             eval_rows = []
             for idx, ns in enumerate(times):
                 cap = {
-                    "clock_domain_id": spec.timeline.clock_domain.clock_domain_id,
+                    "clock_domain_id": clock_domain_id,
                     "exposure_start_ns": ns,
                     "exposure_end_ns": ns,
                     "clock_uncertainty_ns": 0,
@@ -102,16 +128,14 @@ class LegacyConverterTests(unittest.TestCase):
                 truth_rows.append(
                     {
                         "sample_time": {
-                            "clock_domain_id": spec.timeline.clock_domain.clock_domain_id,
+                            "clock_domain_id": clock_domain_id,
                             "time_ns": ns,
                             "step_no": idx + 1,
                         },
                         "logical_scene": {
                             "flying_objects": [
                                 {
-                                    "truth_object_id": str(
-                                        spec.scene_definition.flying_objects[0].truth_object_id
-                                    ),
+                                    "truth_object_id": target_id,
                                     "model_name": "sphere",
                                     "state": {
                                         "position_enu_m": [0.0, 50.0, 10.0],
@@ -127,9 +151,7 @@ class LegacyConverterTests(unittest.TestCase):
                                 "frame_id": (fid if idx_st == 0 else f"{st.station_id}:main:{idx}"),
                                 "targets": [
                                     {
-                                        "truth_object_id": str(
-                                            spec.scene_definition.flying_objects[0].truth_object_id
-                                        ),
+                                        "truth_object_id": target_id,
                                         "projected_width_px": 12.0,
                                         "projected_height_px": 16.0,
                                         "projection": {
@@ -148,7 +170,7 @@ class LegacyConverterTests(unittest.TestCase):
                                     }
                                 ],
                             }
-                            for idx_st, st in enumerate(spec.station_configs)
+                            for idx_st, st in enumerate(station_configs)
                         ],
                     }
                 )
@@ -243,8 +265,8 @@ class LegacyConverterTests(unittest.TestCase):
                             {
                                 "center_session_id": "c-1",
                                 "measurement_id": "m-1",
-                                "clock_domain_id": spec.timeline.clock_domain.clock_domain_id,
-                                "world_frame_id": "demo-enu",
+                                "clock_domain_id": clock_domain_id,
+                                "world_frame_id": str(west.world_frame_id),
                                 "reference_time_ns": times[0],
                                 "support_exposure_span_ns": 0,
                                 "status": "located",
