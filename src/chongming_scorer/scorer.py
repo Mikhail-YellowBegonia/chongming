@@ -280,8 +280,13 @@ class EdgeIncrementalScorer:
         self._batches.append(batch)
         self._processed[station] += 1
         excluded = ns - self._origins[station] < self.warmup_ns
-        frame_projections = self.scene_index.projections_by_frame.get(frame_id)
-        has_truth_frame = bool(frame_projections) or ns in self.scene_index.truth_by_time
+        projs = self.scene_index.projections_by_frame.get(
+            frame_id
+        ) or self.scene_index.projections_by_time.get((station, ns), [])
+        truth_frame = self.scene_index.truth_by_time.get(ns)
+        has_truth_frame = bool(projs) or (
+            truth_frame is not None and not truth_frame.targets and not truth_frame.projections
+        )
         record: dict[str, Any] = {
             "station_id": station,
             "frame_id": frame_id,
@@ -301,7 +306,6 @@ class EdgeIncrementalScorer:
             self._unlabelled_frames[station] += 1
         else:
             self._labelled_frames += 1
-            projs = frame_projections or self.scene_index.projections_by_time.get((station, ns), [])
             targets: dict[str, tuple[float, ...]] = {}
             for proj in projs:
                 if proj.occlusion_status == truth_pb2.OCCLUSION_STATUS_OUT_OF_FOV:

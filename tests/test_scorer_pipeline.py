@@ -415,6 +415,7 @@ class ScorerPipelineTests(unittest.TestCase):
             linked_scene = write_scene("linked_scene", truth_mode="frame_link")
             linked_run = write_edge_run("linked_run", linked_scene, with_obs=True)
             rep_linked = score_run(linked_scene, linked_run, warmup_s=0.0)
+            self.assertEqual(rep_linked["aggregate"]["frames"], 1)
             self.assertEqual(rep_linked["aggregate"]["tp"], 1)
             self.assertEqual(rep_linked["aggregate"]["fn"], 0)
 

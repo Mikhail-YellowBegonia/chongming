@@ -403,7 +403,7 @@ Created once by `Godot Producer -> V-Switch`. Once finalized, it is **strictly r
 
 For image replay in Edge and Integrated modes, each configured station must have a main-camera frame. Replay checks video and frame indices before starting peers.
 
-A zero-record `truth.pb.zst` represents an unlabelled scene. The Viewer reports truth as unavailable and the Scorer reports `unavailable`. An explicit empty truth frame can represent a labelled negative sample.
+A zero-record `truth.pb.zst` represents an unlabelled scene. The Viewer reports truth as unavailable and the Scorer reports `unavailable`. An explicit truth frame with no targets or projections represents a labelled negative sample. Other frames need a projection for the camera being scored, which may be marked out of view.
 
 ### Independent `Run Output` package (one directory per run)
 
