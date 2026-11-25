@@ -159,6 +159,7 @@ struct ReplayRuntime {
     truth_seq: AtomicU64,
     display_update_id: u64,
     stations: Vec<StationConfig>,
+    has_truth: bool,
     latest_calibrations: HashMap<String, CalibrationStateEvent>,
     latest_truth: Option<TruthFrame>,
     latest_scores_by_unit: BTreeMap<String, ScoreEvent>,
@@ -203,16 +204,24 @@ impl ReplayRuntime {
             return;
         };
         self.display_update_id += 1;
-        let scores: Vec<ScoreEvent> = self.latest_scores_by_unit.values().cloned().collect();
+        let scores: Vec<ScoreEvent> = if self.has_truth {
+            self.latest_scores_by_unit.values().cloned().collect()
+        } else {
+            Vec::new()
+        };
         let mut frame = ViewerPushFrame::from_proto(ViewerSnapshotInput {
             run_id: &self.run_id,
             mode: self.mode.as_str(),
             update_id: self.display_update_id,
             experiment_time_ns,
-            has_truth: true,
+            has_truth: self.has_truth,
             stations: &self.stations,
             latest_calibrations: &self.latest_calibrations,
-            truth: self.latest_truth.as_ref(),
+            truth: if self.has_truth {
+                self.latest_truth.as_ref()
+            } else {
+                None
+            },
             rays: &self.step_rays,
             calibration_states: &self.step_calibration_states,
             diagnostics: &self.step_diagnostics,
@@ -635,6 +644,7 @@ pub async fn run_replay(
 
     let mut truth_frames = scene.iter_truth_frames()?.collect_all()?;
     truth_frames.sort_by_key(|tf| tf.experiment_time_ns);
+    let has_truth = !truth_frames.is_empty();
 
     let mut next_virtual_cal_seq: u64 = 1;
     let (groups, tracks): (
@@ -642,7 +652,69 @@ pub async fn run_replay(
         HashMap<String, Vec<H264AccessUnit>>,
     ) = if cfg.mode.needs_edge() {
         let entries = scene.iter_frame_index()?.collect_all()?;
+        let main_stations: HashSet<&str> = entries
+            .iter()
+            .filter(|e| e.camera_role == CameraRole::Main as i32)
+            .map(|e| e.station_id.as_str())
+            .collect();
+        if main_stations.is_empty() {
+            return Err(HubError::InvalidState(format!(
+                "Test Scene has no main-camera frames in frame_index.pb.zst for {} replay",
+                cfg.mode.as_str()
+            )));
+        }
+        let missing_stations: Vec<&str> = station_ids
+            .iter()
+            .map(String::as_str)
+            .filter(|sid| !main_stations.contains(sid))
+            .collect();
+        if !missing_stations.is_empty() {
+            let mut present: Vec<&str> = main_stations.into_iter().collect();
+            present.sort_unstable();
+            return Err(HubError::InvalidState(format!(
+                "configured station(s) {:?} have zero main-camera frames in frame_index.pb.zst; build a scene with only the station(s) that have recorded data ({:?})",
+                missing_stations, present
+            )));
+        }
+        if !stations_by_id.is_empty() {
+            let mut unknown: Vec<&str> = entries
+                .iter()
+                .map(|e| e.station_id.as_str())
+                .filter(|sid| !stations_by_id.contains_key(*sid))
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+            unknown.sort_unstable();
+            if !unknown.is_empty() {
+                return Err(HubError::InvalidState(format!(
+                    "frame_index.pb.zst references unconfigured station(s) {:?}",
+                    unknown
+                )));
+            }
+        }
         let tracks = demux_scene_tracks(&scene, &entries)?;
+        let mut indices = HashSet::new();
+        for entry in &entries {
+            if !indices.insert((&entry.video_relpath, entry.frame_index)) {
+                return Err(HubError::InvalidState(format!(
+                    "duplicate frame_index {} for {}",
+                    entry.frame_index, entry.video_relpath
+                )));
+            }
+            let track = tracks.get(&entry.video_relpath).ok_or_else(|| {
+                HubError::InvalidState(format!("missing demuxed track {}", entry.video_relpath))
+            })?;
+            let idx = usize::try_from(entry.frame_index)
+                .map_err(|_| HubError::InvalidState("frame_index overflow".into()))?;
+            if idx >= track.len() {
+                return Err(HubError::InvalidState(format!(
+                    "frame_index {} out of bounds for {} (len {})",
+                    idx,
+                    entry.video_relpath,
+                    track.len()
+                )));
+            }
+        }
         let mut grouped: BTreeMap<i64, Vec<FrameIndexEntry>> = BTreeMap::new();
         for entry in entries {
             let t = entry
@@ -766,6 +838,7 @@ pub async fn run_replay(
         truth_seq: AtomicU64::new(1),
         display_update_id: 0,
         stations: stations.clone(),
+        has_truth,
         latest_calibrations: HashMap::new(),
         latest_truth: None,
         latest_scores_by_unit: BTreeMap::new(),

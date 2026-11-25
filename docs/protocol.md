@@ -401,6 +401,10 @@ Created once by `Godot Producer -> V-Switch`. Once finalized, it is **strictly r
 - `files`: mapping from package-relative paths (`frame_index.pb.zst`, `truth.pb.zst`, `virtual_rays.pb.zst`, and video tracks) to `{"sha256": "<hex>", "bytes": <int>}`
 - `content_sha256`: SHA-256 hex digest of canonical JSON (`sort_keys=True`, compact separators) of the manifest excluding `"content_sha256"`
 
+For image replay in Edge and Integrated modes, each configured station must have a main-camera frame. Replay checks video and frame indices before starting peers.
+
+A zero-record `truth.pb.zst` represents an unlabelled scene. The Viewer reports truth as unavailable and the Scorer reports `unavailable`. An explicit truth frame with no targets or projections represents a labelled negative sample. Other frames need a projection for the camera being scored, which may be marked out of view.
+
 ### Independent `Run Output` package (one directory per run)
 
 Created fresh for every experiment run. It references the source Test Scene by path and manifest hash without copying video or truth.

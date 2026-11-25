@@ -523,3 +523,91 @@ class OnlineScorerTests(unittest.TestCase):
             remaining_events, _report, errors = scorer.finalize()
             self.assertEqual(remaining_events, [])
             self.assertEqual(errors, [])
+
+    def test_online_subscribe_unlabelled_scene_reports_unavailable_preserving_batches(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scene_dir, run_dir, _truth_frames = _build_fixture(root)
+            # Rebuild an unlabelled copy of the scene with zero-record truth.pb.zst.
+            unlabelled_scene = root / "unlabelled_scene"
+            with TestSceneWriter(
+                unlabelled_scene,
+                scenario_id="online-unlabelled",
+                world_frame_id="enu",
+                clock_domain_id="clk",
+                start_time_ns=0,
+                end_time_ns=20_000_000_000,
+                stations=[],
+            ) as sw:
+                for entry in TestScenePackage.open(scene_dir).iter_frame_index():
+                    sw.add_frame_index(entry)
+
+            run = RunOutputPackage.open(run_dir)
+            edge_msgs = list(run.iter_edge_events())
+            received_scores: list[truth_pb2.ScoreEvent] = []
+
+            def server_handler(conn: socket.socket) -> None:
+                reader = conn.makefile("rb")
+                try:
+                    _ = read_length_prefixed(reader, truth_pb2.TestFrameworkMessage)
+                    conn.sendall(
+                        encode_length_prefixed(
+                            truth_pb2.TestFrameworkMessage(
+                                sequence_no=1,
+                                bus_message=online_pb2.BusMessage(
+                                    bus_sequence_no=1,
+                                    session_ack=online_pb2.SessionAck(
+                                        accepted=True, run_id="run-unlabelled"
+                                    ),
+                                ),
+                            )
+                        )
+                    )
+
+                    def drain_scores() -> None:
+                        while True:
+                            msg = read_length_prefixed(reader, truth_pb2.TestFrameworkMessage)
+                            if msg is None:
+                                break
+                            received_scores.append(msg.score_event)
+
+                    t = threading.Thread(target=drain_scores, daemon=True)
+                    t.start()
+                    for seq, bmsg in enumerate(edge_msgs, start=2):
+                        conn.sendall(
+                            encode_length_prefixed(
+                                truth_pb2.TestFrameworkMessage(sequence_no=seq, bus_message=bmsg)
+                            )
+                        )
+                    conn.shutdown(socket.SHUT_WR)
+                    t.join(timeout=5.0)
+                finally:
+                    reader.close()
+
+            port, thread, errors = _start_tcp_server(server_handler)
+            out_dir = root / "online_unlabelled_out"
+            with contextlib.redirect_stdout(io.StringIO()):
+                main(
+                    [
+                        "subscribe",
+                        "--host",
+                        "127.0.0.1",
+                        "--port",
+                        str(port),
+                        "--scene",
+                        str(unlabelled_scene),
+                        "--output",
+                        str(out_dir),
+                        "--mode",
+                        "edge",
+                        "--warmup-s",
+                        "0",
+                    ]
+                )
+            thread.join(timeout=5.0)
+            self.assertEqual(errors, [])
+            self.assertEqual(received_scores, [])
+            report = json.loads((out_dir / "report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "unavailable")
+            self.assertIn("truth_unavailable", report["reason_codes"])
+            self.assertEqual(report["available_outputs"]["edge"]["detection_batches"], 6)

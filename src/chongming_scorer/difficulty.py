@@ -84,7 +84,7 @@ def score_frame_rows(
     ranges: dict[float, list[float]] = {}
     fp = 0
     for row in rows:
-        if row["warmup_excluded"]:
+        if row["warmup_excluded"] or not row.get("truth_available", True):
             continue
         fp += int(row["fp"])
         for target in annotate(row, gate_px)["targets"]:
@@ -138,7 +138,11 @@ def score_difficulty_strata(
     index = build_difficulty_index(scene)
     if not index:
         return None
-    scored_rows = [row for row in edge_frame_records if not row["warmup_excluded"]]
+    scored_rows = [
+        row
+        for row in edge_frame_records
+        if not row["warmup_excluded"] and row.get("truth_available", True)
+    ]
     if not scored_rows:
         return None
     for row in scored_rows:

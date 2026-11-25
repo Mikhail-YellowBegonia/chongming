@@ -17,6 +17,7 @@ from chongming_scorer.scorer import (
     EdgeIncrementalScorer,
     IntegratedIncrementalScorer,
     SceneTruthIndex,
+    build_unavailable_report,
 )
 from chongming_scorer.storage import TestScenePackage, persist_scores_output
 
@@ -252,6 +253,11 @@ class OnlineScorerSubscriber:
                 "online scorer requires non-empty run_id from SessionAck or session_id"
             )
         scorer = self._build_scorer(run_id)
+        edge_batches: list[online_pb2.DetectionBatch] = []
+        center_messages: list[online_pb2.BusMessage] = []
+        has_edge_events = False
+        has_center_output = False
+        has_voxels = False
 
         while True:
             msg = self.client.receive()
@@ -261,20 +267,76 @@ class OnlineScorerSubscriber:
             if kind == "truth_frame":
                 self._scene_index.register_truth_frame(msg.truth_frame)
             elif kind == "bus_message":
-                for event in scorer.feed_bus_message(msg.bus_message):
+                bmsg = msg.bus_message
+                bkind = bmsg.WhichOneof("payload")
+                if bkind in {
+                    "detection_batch",
+                    "calibration_state",
+                    "ray_event",
+                    "diagnostic_event",
+                }:
+                    has_edge_events = True
+                    if bkind == "detection_batch":
+                        edge_batches.append(bmsg.detection_batch)
+                elif bkind in {"fusion_measurement", "track_event"}:
+                    has_center_output = True
+                    center_messages.append(bmsg)
+                elif bkind == "sparse_voxel_grid":
+                    has_voxels = True
+                elif (
+                    bkind == "progress_report"
+                    and bmsg.progress_report.source_role == common_pb2.COMPONENT_ROLE_CENTER
+                ):
+                    has_center_output = True
+                    center_messages.append(bmsg)
+                for event in scorer.feed_bus_message(bmsg):
                     self.client.send_score_event(event)
             elif kind == "score_event":
                 raise ValueError("Scorer subscriber must not receive inbound ScoreEvent")
             else:
                 raise ValueError(f"unexpected TestFrameworkMessage payload: {kind!r}")
 
-        for event in scorer.flush_remaining():
-            self.client.send_score_event(event)
+        reason_codes: list[str] = []
+        diagnostics: list[str] = []
+        if not self._scene_index.truth_by_time:
+            reason_codes.append("truth_unavailable")
+            diagnostics.append(
+                "Test Scene truth.pb.zst contains no TruthFrame records (unlabelled sample)"
+            )
+        if self.mode in {"edge", "integrated"}:
+            if not has_edge_events:
+                reason_codes.append("edge_events_unavailable")
+                diagnostics.append("stream received no Edge events")
+            elif not edge_batches:
+                reason_codes.append("no_detection_batches")
+                diagnostics.append("stream received no DetectionBatch messages")
+        if self.mode in {"center", "integrated"} and not has_center_output:
+            reason_codes.append("center_output_unavailable")
+            diagnostics.append("stream received no Center output messages")
 
-        if isinstance(scorer, IntegratedIncrementalScorer):
-            all_scores, report = scorer.finalize()
+        if reason_codes:
+            all_scores: list[truth_pb2.ScoreEvent] = []
+            report = build_unavailable_report(
+                scene=self.scene,
+                run_id=run_id,
+                requested_mode=self.mode,
+                run_mode=self.mode,
+                reason_codes=reason_codes,
+                diagnostics=diagnostics,
+                edge_batches=edge_batches,
+                center_messages=center_messages,
+                has_edge_events=has_edge_events,
+                has_center_output=has_center_output,
+                has_voxels=has_voxels,
+            )
         else:
-            all_scores, report, _ = scorer.finalize()
+            for event in scorer.flush_remaining():
+                self.client.send_score_event(event)
+
+            if isinstance(scorer, IntegratedIncrementalScorer):
+                all_scores, report = scorer.finalize()
+            else:
+                all_scores, report, _ = scorer.finalize()
 
         if self.output_dir is not None:
             persist_scores_output(self.output_dir, all_scores, report)
