@@ -251,3 +251,223 @@ class ScorerPipelineTests(unittest.TestCase):
                 inc_int.feed_bus_message(msg)
             _, int_rep = inc_int.finalize()
             self.assertEqual(int_rep, report)
+
+    def test_unlabelled_vs_explicit_empty_truth_and_missing_prerequisites(self) -> None:
+        from chongming_scorer.scorer import score_run
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            times = (1_000_000_000, 1_040_000_000)
+
+            def write_scene(name: str, *, truth_mode: str) -> Path:
+                scene_dir = root / name
+                with TestSceneWriter(
+                    scene_dir,
+                    scenario_id=name,
+                    world_frame_id="enu",
+                    clock_domain_id="clk",
+                    start_time_ns=times[0],
+                    end_time_ns=times[-1],
+                    stations=[],
+                ) as sw:
+                    for idx, ns in enumerate(times):
+                        cap = common_pb2.CaptureTime(
+                            clock_domain_id="clk", exposure_start_ns=ns, exposure_end_ns=ns
+                        )
+                        sw.add_frame_index(
+                            truth_pb2.FrameIndexEntry(
+                                station_id="s1",
+                                station_session_id="sess-s1",
+                                camera_role=common_pb2.CAMERA_ROLE_MAIN,
+                                frame_index=idx,
+                                frame_id=f"s1-{idx}",
+                                capture_time=cap,
+                                station_config_digest="cfg",
+                                video_relpath="video/s1-main.mp4",
+                                width_px=64,
+                                height_px=64,
+                            )
+                        )
+                        if truth_mode == "explicit_empty" or (truth_mode == "partial" and idx == 0):
+                            sw.add_truth_frame(
+                                truth_pb2.TruthFrame(
+                                    world_frame_id="enu",
+                                    experiment_time_ns=ns,
+                                    step_index=idx,
+                                )
+                            )
+                return scene_dir
+
+            def write_edge_run(name: str, scene_dir: Path, *, with_obs: bool) -> Path:
+                scene = TestScenePackage.open(scene_dir)
+                run_dir = root / name
+                with RunOutputWriter(
+                    run_dir,
+                    run_id=name,
+                    mode="edge",
+                    test_scene_path=scene_dir,
+                    test_scene_sha256=scene.content_sha256,
+                ) as rw:
+                    for idx, ns in enumerate(times):
+                        cap = common_pb2.CaptureTime(
+                            clock_domain_id="clk", exposure_start_ns=ns, exposure_end_ns=ns
+                        )
+                        obs = (
+                            [
+                                online_pb2.Observation2D(
+                                    centroid_px=common_pb2.Vec2(x=12.0, y=14.0),
+                                    local_track_id="t1",
+                                )
+                            ]
+                            if (with_obs and idx == 1)
+                            else []
+                        )
+                        rw.write_edge_message(
+                            online_pb2.BusMessage(
+                                bus_sequence_no=idx + 1,
+                                detection_batch=online_pb2.DetectionBatch(
+                                    main_frame_ref=common_pb2.FrameRef(
+                                        station_id="s1",
+                                        station_session_id="sess-s1",
+                                        camera_role=common_pb2.CAMERA_ROLE_MAIN,
+                                        frame_id=f"s1-{idx}",
+                                    ),
+                                    capture_time=cap,
+                                    processing_status=common_pb2.PROCESSING_STATUS_PROCESSED,
+                                    observations=obs,
+                                    decode_duration_ns=1_000_000,
+                                    cv_duration_ns=500_000,
+                                ),
+                            )
+                        )
+                return run_dir
+
+            # 1. Unlabelled scene (zero-record truth.pb.zst): report unavailable, detections retained.
+            unlabelled_scene = write_scene("unlabelled_scene", truth_mode="none")
+            unlabelled_run = write_edge_run("unlabelled_run", unlabelled_scene, with_obs=True)
+            unlabelled_out = root / "score_unlabelled"
+            main(
+                [
+                    "score",
+                    "--scene",
+                    str(unlabelled_scene),
+                    "--run",
+                    str(unlabelled_run),
+                    "--output",
+                    str(unlabelled_out),
+                    "--warmup-s",
+                    "0",
+                ]
+            )
+            rep_unlabelled = json.loads((unlabelled_out / "report.json").read_text())
+            self.assertEqual(rep_unlabelled["status"], "unavailable")
+            self.assertIn("truth_unavailable", rep_unlabelled["reason_codes"])
+            self.assertEqual(rep_unlabelled["available_outputs"]["edge"]["detection_batches"], 2)
+            self.assertEqual(rep_unlabelled["available_outputs"]["edge"]["observations"], 1)
+            self.assertTrue((unlabelled_run / "edge_events.pb.zst").is_file())
+
+            # 2. Explicitly empty truth (TruthFrame with targets=[]): detections count as FP.
+            empty_truth_scene = write_scene("empty_truth_scene", truth_mode="explicit_empty")
+            empty_truth_run = write_edge_run("empty_truth_run", empty_truth_scene, with_obs=True)
+            empty_truth_out = root / "score_empty_truth"
+            rep_empty_truth = score_run(
+                empty_truth_scene,
+                empty_truth_run,
+                output_dir=empty_truth_out,
+                warmup_s=0.0,
+            )
+            self.assertEqual(rep_empty_truth["status"], "complete")
+            self.assertEqual(rep_empty_truth["aggregate"]["frames"], 2)
+            self.assertEqual(rep_empty_truth["aggregate"]["fp"], 1)
+            self.assertEqual(rep_empty_truth["aggregate"]["tp"], 0)
+
+            # 3. Partially labelled scene: unlabelled frame (idx=1) must NOT count as FP.
+            partial_scene = write_scene("partial_scene", truth_mode="partial")
+            partial_run = write_edge_run("partial_run", partial_scene, with_obs=True)
+            rep_partial = score_run(
+                partial_scene,
+                partial_run,
+                output_dir=root / "score_partial",
+                warmup_s=0.0,
+            )
+            self.assertEqual(rep_partial["status"], "complete")
+            self.assertEqual(rep_partial["aggregate"]["frames"], 1)
+            self.assertEqual(rep_partial["aggregate"]["fp"], 0)
+            self.assertEqual(rep_partial["stations"]["s1"]["unlabelled_frames"], 1)
+
+            # 4. Mode mismatch (edge run scored as integrated or center): explicit unavailable diagnostic.
+            rep_mismatch = score_run(
+                empty_truth_scene,
+                empty_truth_run,
+                output_dir=root / "score_mismatch_int",
+                mode="integrated",
+                warmup_s=0.0,
+            )
+            self.assertEqual(rep_mismatch["status"], "unavailable")
+            self.assertIn("center_output_unavailable", rep_mismatch["reason_codes"])
+            self.assertIn(
+                "run_mode_edge_does_not_produce_center_output", rep_mismatch["reason_codes"]
+            )
+            self.assertEqual(rep_mismatch["available_outputs"]["edge"]["observations"], 1)
+
+            # 5. Center run scored as edge: explicit unavailable diagnostic.
+            center_scene_pkg = TestScenePackage.open(empty_truth_scene)
+            center_run = root / "center_only_run"
+            with RunOutputWriter(
+                center_run,
+                run_id="center_only_run",
+                mode="center",
+                test_scene_path=empty_truth_scene,
+                test_scene_sha256=center_scene_pkg.content_sha256,
+            ) as rw:
+                rw.write_center_message(
+                    online_pb2.BusMessage(
+                        bus_sequence_no=1,
+                        progress_report=online_pb2.ProgressReport(
+                            source_role=common_pb2.COMPONENT_ROLE_CENTER,
+                            source_id="center",
+                            session_id="c1",
+                            completed_time_ns=times[0],
+                            completed_sequence_no=1,
+                            finite_end_reached=True,
+                        ),
+                    )
+                )
+            rep_center_as_edge = score_run(
+                empty_truth_scene,
+                center_run,
+                output_dir=root / "score_center_as_edge",
+                mode="edge",
+                warmup_s=0.0,
+            )
+            self.assertEqual(rep_center_as_edge["status"], "unavailable")
+            self.assertIn("edge_events_unavailable", rep_center_as_edge["reason_codes"])
+            self.assertIn(
+                "run_mode_center_does_not_produce_edge_events",
+                rep_center_as_edge["reason_codes"],
+            )
+
+            # 6. Manifest-declared missing/corrupted file still fails hard.
+            corrupt_run = root / "corrupt_run"
+            with RunOutputWriter(
+                corrupt_run,
+                run_id="corrupt_run",
+                mode="edge",
+                test_scene_path=empty_truth_scene,
+                test_scene_sha256=center_scene_pkg.content_sha256,
+            ) as rw:
+                rw.write_edge_message(
+                    online_pb2.BusMessage(
+                        bus_sequence_no=1,
+                        progress_report=online_pb2.ProgressReport(
+                            source_role=common_pb2.COMPONENT_ROLE_EDGE,
+                            source_id="s1",
+                            session_id="sess-s1",
+                            completed_time_ns=times[0],
+                            finite_end_reached=True,
+                        ),
+                    )
+                )
+            (corrupt_run / "edge_events.pb.zst").unlink()
+            with self.assertRaises(FileNotFoundError):
+                score_run(empty_truth_scene, corrupt_run, warmup_s=0.0)

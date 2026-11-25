@@ -1979,3 +1979,433 @@ dev_policy = {
             .unwrap();
     assert_eq!(online_edge_rep["aggregate"], offline_edge_rep["aggregate"]);
 }
+
+#[tokio::test]
+async fn replay_preflight_rejects_empty_missing_station_missing_video_and_bad_index() {
+    let dir = TempDir::new().unwrap();
+    let mp4_tmp = dir.path().join("s1-main.mp4");
+    let p0 = make_raw_rgb_packet("s1", 0, 0);
+    let p1 = make_raw_rgb_packet("s1", 1, 50_000_000);
+    let mut enc = VideoTrackEncoder::start(&mp4_tmp, &p0, H264EncodePreset::default()).unwrap();
+    enc.push_packet(&p0).unwrap();
+    enc.push_packet(&p1).unwrap();
+    let vmeta = enc.finish().unwrap();
+
+    // 1. Empty / zero-frame scene in Edge and Integrated modes: rejected before creating run_output.
+    let empty_scene = dir.path().join("empty_scene");
+    {
+        let sw = TestSceneWriter::create(
+            &empty_scene,
+            TestSceneConfig {
+                scenario_id: "empty-sc".into(),
+                world_frame_id: "enu".into(),
+                clock_domain_id: "clk".into(),
+                start_time_ns: 0,
+                end_time_ns: 0,
+                stations: vec![make_station("s1", 0.0)],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        sw.finalize().unwrap();
+    }
+    for mode in [ReplayMode::Edge, ReplayMode::Integrated] {
+        let run_dir = dir.path().join(format!("empty_run_{}", mode.as_str()));
+        let err = run_replay(
+            ReplayConfig {
+                mode,
+                scene_dir: empty_scene.clone(),
+                run_output_dir: run_dir.clone(),
+                run_id: "empty-1".into(),
+                truth_bind: None,
+                viewer_bind: None,
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("no main-camera frames"), "{msg}");
+        assert!(
+            !run_dir.exists(),
+            "run_output_dir must not be created on preflight failure"
+        );
+    }
+
+    // 2. Configured station s2 has zero main-camera frames: rejected with station ID & single-station hint.
+    let missing_station_scene = dir.path().join("missing_station_scene");
+    {
+        let mut sw = TestSceneWriter::create(
+            &missing_station_scene,
+            TestSceneConfig {
+                scenario_id: "miss-st-sc".into(),
+                world_frame_id: "enu".into(),
+                clock_domain_id: "clk".into(),
+                start_time_ns: 0,
+                end_time_ns: 50_000_000,
+                stations: vec![make_station("s1", 0.0), make_station("s2", 40.0)],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        sw.add_video_file(
+            &mp4_tmp,
+            "video/s1-main.mp4",
+            serde_json::to_value(&vmeta).unwrap(),
+        )
+        .unwrap();
+        for (i, t_ns) in [(0u64, 0i64), (1, 50_000_000)] {
+            sw.add_frame_index(&vswitch::proto::FrameIndexEntry {
+                station_id: "s1".into(),
+                station_session_id: "sess-s1".into(),
+                camera_role: CameraRole::Main as i32,
+                frame_index: i,
+                frame_id: format!("s1-f-{i}"),
+                capture_time: Some(CaptureTime {
+                    clock_domain_id: "clk".into(),
+                    exposure_start_ns: t_ns,
+                    exposure_end_ns: t_ns,
+                    ..Default::default()
+                }),
+                station_config_digest: "digest-s1".into(),
+                video_relpath: "video/s1-main.mp4".into(),
+                width_px: 64,
+                height_px: 48,
+            })
+            .unwrap();
+        }
+        sw.finalize().unwrap();
+    }
+    let miss_run = dir.path().join("miss_station_run");
+    let err = run_replay(
+        ReplayConfig {
+            mode: ReplayMode::Integrated,
+            scene_dir: missing_station_scene,
+            run_output_dir: miss_run.clone(),
+            run_id: "miss-1".into(),
+            truth_bind: None,
+            viewer_bind: None,
+            ..Default::default()
+        },
+        None,
+    )
+    .await
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("s2") && msg.contains("s1"), "{msg}");
+    assert!(!miss_run.exists());
+
+    // 3. Missing required video file fails boundedly.
+    let miss_vid_scene = dir.path().join("miss_vid_scene");
+    {
+        let mut sw = TestSceneWriter::create(
+            &miss_vid_scene,
+            TestSceneConfig {
+                scenario_id: "miss-vid".into(),
+                world_frame_id: "enu".into(),
+                clock_domain_id: "clk".into(),
+                start_time_ns: 0,
+                end_time_ns: 50_000_000,
+                stations: vec![make_station("s1", 0.0)],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        sw.add_video_file(
+            &mp4_tmp,
+            "video/s1-main.mp4",
+            serde_json::to_value(&vmeta).unwrap(),
+        )
+        .unwrap();
+        for (i, t_ns) in [(0u64, 0i64), (1, 50_000_000)] {
+            sw.add_frame_index(&vswitch::proto::FrameIndexEntry {
+                station_id: "s1".into(),
+                station_session_id: "sess-s1".into(),
+                camera_role: CameraRole::Main as i32,
+                frame_index: i,
+                frame_id: format!("s1-f-{i}"),
+                capture_time: Some(CaptureTime {
+                    clock_domain_id: "clk".into(),
+                    exposure_start_ns: t_ns,
+                    exposure_end_ns: t_ns,
+                    ..Default::default()
+                }),
+                station_config_digest: "digest-s1".into(),
+                video_relpath: "video/s1-main.mp4".into(),
+                width_px: 64,
+                height_px: 48,
+            })
+            .unwrap();
+        }
+        sw.finalize().unwrap();
+    }
+    std::fs::remove_file(miss_vid_scene.join("video/s1-main.mp4")).unwrap();
+    let err = run_replay(
+        ReplayConfig {
+            mode: ReplayMode::Edge,
+            scene_dir: miss_vid_scene,
+            run_output_dir: dir.path().join("miss_vid_run"),
+            run_id: "miss-vid-1".into(),
+            truth_bind: None,
+            viewer_bind: None,
+            ..Default::default()
+        },
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("missing package file"), "{err}");
+
+    // 4. Mismatched frame_index count fails boundedly.
+    let bad_idx_scene = dir.path().join("bad_idx_scene");
+    {
+        let mut sw = TestSceneWriter::create(
+            &bad_idx_scene,
+            TestSceneConfig {
+                scenario_id: "bad-idx".into(),
+                world_frame_id: "enu".into(),
+                clock_domain_id: "clk".into(),
+                start_time_ns: 0,
+                end_time_ns: 100_000_000,
+                stations: vec![make_station("s1", 0.0)],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        sw.add_video_file(
+            &mp4_tmp,
+            "video/s1-main.mp4",
+            serde_json::to_value(&vmeta).unwrap(),
+        )
+        .unwrap();
+        for (i, t_ns) in [(0u64, 0i64), (1, 50_000_000), (2, 100_000_000)] {
+            sw.add_frame_index(&vswitch::proto::FrameIndexEntry {
+                station_id: "s1".into(),
+                station_session_id: "sess-s1".into(),
+                camera_role: CameraRole::Main as i32,
+                frame_index: i,
+                frame_id: format!("s1-f-{i}"),
+                capture_time: Some(CaptureTime {
+                    clock_domain_id: "clk".into(),
+                    exposure_start_ns: t_ns,
+                    exposure_end_ns: t_ns,
+                    ..Default::default()
+                }),
+                station_config_digest: "digest-s1".into(),
+                video_relpath: "video/s1-main.mp4".into(),
+                width_px: 64,
+                height_px: 48,
+            })
+            .unwrap();
+        }
+        sw.finalize().unwrap();
+    }
+    let err = run_replay(
+        ReplayConfig {
+            mode: ReplayMode::Edge,
+            scene_dir: bad_idx_scene,
+            run_output_dir: dir.path().join("bad_idx_run"),
+            run_id: "bad-idx-1".into(),
+            truth_bind: None,
+            viewer_bind: None,
+            ..Default::default()
+        },
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("H.264 frame count mismatch"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn replay_unlabelled_scene_sets_viewer_has_truth_false_and_omits_truth_and_score() {
+    let dir = TempDir::new().unwrap();
+    let scene_dir = dir.path().join("unlabelled_scene");
+    let run_dir = dir.path().join("unlabelled_run");
+
+    let mp4_tmp = dir.path().join("s1-main.mp4");
+    let p0 = make_raw_rgb_packet("s1", 0, 0);
+    let p1 = make_raw_rgb_packet("s1", 1, 50_000_000);
+    let mut enc = VideoTrackEncoder::start(&mp4_tmp, &p0, H264EncodePreset::default()).unwrap();
+    enc.push_packet(&p0).unwrap();
+    enc.push_packet(&p1).unwrap();
+    let vmeta = enc.finish().unwrap();
+
+    {
+        let mut sw = TestSceneWriter::create(
+            &scene_dir,
+            TestSceneConfig {
+                scenario_id: "unlabelled-sc".into(),
+                world_frame_id: "enu".into(),
+                clock_domain_id: "clk".into(),
+                start_time_ns: 0,
+                end_time_ns: 50_000_000,
+                stations: vec![make_station("s1", 0.0)],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        sw.add_video_file(
+            &mp4_tmp,
+            "video/s1-main.mp4",
+            serde_json::to_value(vmeta).unwrap(),
+        )
+        .unwrap();
+        for (i, t_ns) in [(0u64, 0i64), (1, 50_000_000)] {
+            sw.add_frame_index(&vswitch::proto::FrameIndexEntry {
+                station_id: "s1".into(),
+                station_session_id: "sess-s1".into(),
+                camera_role: CameraRole::Main as i32,
+                frame_index: i,
+                frame_id: format!("s1-f-{i}"),
+                capture_time: Some(CaptureTime {
+                    clock_domain_id: "clk".into(),
+                    exposure_start_ns: t_ns,
+                    exposure_end_ns: t_ns,
+                    ..Default::default()
+                }),
+                station_config_digest: "digest-s1".into(),
+                video_relpath: "video/s1-main.mp4".into(),
+                width_px: 64,
+                height_px: 48,
+            })
+            .unwrap();
+        }
+        sw.finalize().unwrap();
+    }
+
+    let (bound_tx, bound_rx) = oneshot::channel();
+    let scene_clone = scene_dir.clone();
+    let run_clone = run_dir.clone();
+    let replay_task = tokio::spawn(run_replay(
+        ReplayConfig {
+            mode: ReplayMode::Edge,
+            stepping: SteppingMode::LockStep,
+            scene_dir: scene_clone,
+            run_output_dir: run_clone,
+            run_id: "run-unlabelled-1".into(),
+            bus_bind: "127.0.0.1:0".parse().unwrap(),
+            truth_bind: None,
+            viewer_bind: Some("127.0.0.1:0".parse().unwrap()),
+            ..Default::default()
+        },
+        Some(bound_tx),
+    ));
+
+    let addrs = bound_rx.await.unwrap();
+    let mut viewer = TcpStream::connect(addrs.viewer_addr.unwrap())
+        .await
+        .unwrap();
+    let viewer_task = tokio::spawn(async move {
+        let mut frames = Vec::new();
+        while let Ok(Some(raw)) = read_raw_frame_async(&mut viewer, MAX_FRAME_BYTES).await {
+            frames.push(serde_json::from_slice::<Value>(&raw).unwrap());
+        }
+        frames
+    });
+
+    let (mut edge_bus, _) = connect_bus_client(
+        addrs.bus_addr,
+        SessionHello {
+            protocol_version: PROTOCOL_VERSION.into(),
+            role: ComponentRole::Edge as i32,
+            instance_id: "edge-unlabelled".into(),
+            session_id: "es-unlabelled".into(),
+            station_ids: vec!["s1".into()],
+        },
+    )
+    .await
+    .unwrap();
+
+    let edge_task = tokio::spawn(async move {
+        let mut seq = 1u64;
+        while let Ok(Some(msg)) =
+            read_length_prefixed_async::<_, BusMessage>(&mut edge_bus, MAX_FRAME_BYTES).await
+        {
+            match msg.payload {
+                Some(bus_message::Payload::VideoPacket(pkt)) => {
+                    let t_ns = pkt
+                        .capture_time
+                        .as_ref()
+                        .map(|c| c.exposure_start_ns)
+                        .unwrap_or(0);
+                    for payload in [
+                        bus_message::Payload::DetectionBatch(DetectionBatch {
+                            main_frame_ref: Some(FrameRef {
+                                station_id: pkt.station_id.clone(),
+                                station_session_id: pkt.station_session_id.clone(),
+                                camera_role: CameraRole::Main as i32,
+                                frame_id: pkt.frame_id.clone(),
+                            }),
+                            capture_time: pkt.capture_time.clone(),
+                            processing_status: ProcessingStatus::Processed as i32,
+                            ..Default::default()
+                        }),
+                        bus_message::Payload::ProgressReport(ProgressReport {
+                            source_role: ComponentRole::Edge as i32,
+                            source_id: "edge-unlabelled".into(),
+                            session_id: "es-unlabelled".into(),
+                            completed_time_ns: t_ns,
+                            completed_sequence_no: seq,
+                            finite_end_reached: false,
+                        }),
+                    ] {
+                        write_length_prefixed_async(
+                            &mut edge_bus,
+                            &BusMessage {
+                                bus_sequence_no: seq,
+                                sent_wall_time_ns: now_wall_time_ns(),
+                                payload: Some(payload),
+                            },
+                            MAX_FRAME_BYTES,
+                        )
+                        .await
+                        .unwrap();
+                        seq += 1;
+                    }
+                }
+                Some(bus_message::Payload::ProgressReport(pr)) if pr.finite_end_reached => {
+                    write_length_prefixed_async(
+                        &mut edge_bus,
+                        &BusMessage {
+                            bus_sequence_no: seq,
+                            sent_wall_time_ns: now_wall_time_ns(),
+                            payload: Some(bus_message::Payload::ProgressReport(ProgressReport {
+                                source_role: ComponentRole::Edge as i32,
+                                source_id: "edge-unlabelled".into(),
+                                session_id: "es-unlabelled".into(),
+                                completed_time_ns: pr.completed_time_ns,
+                                completed_sequence_no: seq,
+                                finite_end_reached: true,
+                            })),
+                        },
+                        MAX_FRAME_BYTES,
+                    )
+                    .await
+                    .unwrap();
+                    break;
+                }
+                _ => {}
+            }
+        }
+    });
+
+    let manifest = timeout(Duration::from_secs(5), replay_task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    edge_task.await.unwrap();
+    assert_eq!(manifest["mode"], "edge");
+    let frames = viewer_task.await.unwrap();
+    assert!(!frames.is_empty());
+    for frame in &frames {
+        assert_eq!(frame["has_truth"], false);
+        assert!(frame.get("truth").is_none());
+        assert!(frame.get("score").is_none());
+    }
+}

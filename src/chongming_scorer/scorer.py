@@ -22,6 +22,89 @@ from chongming_scorer.performance import summarize_edge_timings
 from chongming_scorer.storage import RunOutputPackage, TestScenePackage
 
 
+def summarize_available_outputs(
+    *,
+    edge_batches: Sequence[online_pb2.DetectionBatch] = (),
+    center_messages: Sequence[online_pb2.BusMessage] = (),
+    has_edge_events: bool = False,
+    has_center_output: bool = False,
+    has_voxels: bool = False,
+) -> dict[str, Any]:
+    """Summarize preserved Edge/Center output streams without requiring truth."""
+    summary: dict[str, Any] = {
+        "has_edge_events": has_edge_events,
+        "has_center_output": has_center_output,
+        "has_voxels": has_voxels,
+    }
+    if edge_batches:
+        per_station: dict[str, dict[str, int]] = {}
+        for batch in edge_batches:
+            sid = batch.main_frame_ref.station_id
+            entry = per_station.setdefault(sid, {"detection_batches": 0, "observations": 0})
+            entry["detection_batches"] += 1
+            entry["observations"] += len(batch.observations)
+        summary["edge"] = {
+            "detection_batches": len(edge_batches),
+            "observations": sum(len(b.observations) for b in edge_batches),
+            "stations": {sid: per_station[sid] for sid in sorted(per_station)},
+            "timings": summarize_edge_timings(edge_batches),
+        }
+    if center_messages:
+        measurements = [
+            msg.fusion_measurement
+            for msg in center_messages
+            if msg.WhichOneof("payload") == "fusion_measurement"
+        ]
+        located = sum(
+            1
+            for meas in measurements
+            if meas.status == common_pb2.FUSION_STATUS_LOCATED and meas.HasField("position_enu_m")
+        )
+        summary["center"] = {
+            "messages": len(center_messages),
+            "fusion_measurements": len(measurements),
+            "located_measurements": located,
+        }
+    return summary
+
+
+def build_unavailable_report(
+    *,
+    scene: TestScenePackage,
+    run_id: str,
+    requested_mode: str,
+    run_mode: str,
+    reason_codes: Sequence[str],
+    diagnostics: Sequence[str],
+    edge_batches: Sequence[online_pb2.DetectionBatch] = (),
+    center_messages: Sequence[online_pb2.BusMessage] = (),
+    has_edge_events: bool = False,
+    has_center_output: bool = False,
+    has_voxels: bool = False,
+) -> dict[str, Any]:
+    """Build an explicit unavailable scoring report while preserving detection summaries."""
+    unique_codes = list(dict.fromkeys(reason_codes))
+    unique_diags = list(dict.fromkeys(diagnostics))
+    return {
+        "format": "chongming-scorer-unavailable-v1",
+        "status": "unavailable",
+        "run_id": run_id,
+        "requested_mode": requested_mode,
+        "run_mode": run_mode,
+        "test_scene_sha256": scene.content_sha256,
+        "reason": "; ".join(unique_diags),
+        "reason_codes": unique_codes,
+        "diagnostics": unique_diags,
+        "available_outputs": summarize_available_outputs(
+            edge_batches=edge_batches,
+            center_messages=center_messages,
+            has_edge_events=has_edge_events,
+            has_center_output=has_center_output,
+            has_voxels=has_voxels,
+        ),
+    }
+
+
 def build_score_event(
     run_id: str,
     experiment_time_ns: int,
@@ -140,6 +223,8 @@ class EdgeIncrementalScorer:
         }
         self._processed: dict[str, int] = dict.fromkeys(self._origins, 0)
         self._warmup_frames: dict[str, int] = dict.fromkeys(self._origins, 0)
+        self._unlabelled_frames: dict[str, int] = dict.fromkeys(self._origins, 0)
+        self._labelled_frames = 0
         self._frame_records: list[dict[str, Any]] = []
         self._per_time_errors: dict[int, list[float]] = defaultdict(list)
         self._per_time_fp: dict[int, int] = defaultdict(int)
@@ -169,6 +254,7 @@ class EdgeIncrementalScorer:
             self._station_metrics[station] = DetectionMetrics(self.gate_px, "px")
             self._processed[station] = 0
             self._warmup_frames[station] = 0
+            self._unlabelled_frames[station] = 0
         elif not self._precomputed_origins and ns < self._origins[station]:
             raise ValueError(
                 f"edge frame {frame_id!r} for station {station!r} has non-monotonic time {ns}"
@@ -187,17 +273,19 @@ class EdgeIncrementalScorer:
                 raise ValueError(
                     f"frame identity or capture time differs from scene index for {frame_id!r}"
                 )
-        elif ns not in self.scene_index.truth_by_time:
+        elif self.scene_index.truth_by_time and ns not in self.scene_index.truth_by_time:
             raise ValueError(f"edge frame {frame_id!r} has no matching truth frame")
 
         self._batches.append(batch)
         self._processed[station] += 1
         excluded = ns - self._origins[station] < self.warmup_ns
+        has_truth_frame = ns in self.scene_index.truth_by_time
         record: dict[str, Any] = {
             "station_id": station,
             "frame_id": frame_id,
             "time_ns": ns,
             "warmup_excluded": excluded,
+            "truth_available": has_truth_frame,
             "decode_ms": batch.decode_duration_ns / 1e6,
             "cv_ms": batch.cv_duration_ns / 1e6,
             "observation_count": len(batch.observations),
@@ -207,7 +295,10 @@ class EdgeIncrementalScorer:
         }
         if excluded:
             self._warmup_frames[station] += 1
+        elif not has_truth_frame:
+            self._unlabelled_frames[station] += 1
         else:
+            self._labelled_frames += 1
             projs = self.scene_index.projections_by_frame.get(
                 frame_id
             ) or self.scene_index.projections_by_time.get((station, ns), [])
@@ -275,6 +366,31 @@ class EdgeIncrementalScorer:
         """Finalize edge scoring and return sorted ScoreEvents, report dict, and frame records."""
         if not self._batches:
             raise ValueError("edge_events.pb.zst contains no DetectionBatch messages")
+        has_post_warmup = any(not row["warmup_excluded"] for row in self._frame_records)
+        if not self.scene_index.truth_by_time or (has_post_warmup and self._labelled_frames == 0):
+            reason_code = (
+                "truth_unavailable"
+                if not self.scene_index.truth_by_time
+                else "truth_frames_missing_for_evaluated_times"
+            )
+            reason = (
+                "Test Scene truth.pb.zst contains no TruthFrame records (unlabelled sample)"
+                if not self.scene_index.truth_by_time
+                else "Test Scene has no TruthFrame records for post-warmup DetectionBatch timestamps"
+            )
+            report = build_unavailable_report(
+                scene=self.scene,
+                run_id=self.run_id,
+                requested_mode="edge",
+                run_mode="edge",
+                reason_codes=[reason_code],
+                diagnostics=[reason],
+                edge_batches=self._batches,
+                has_edge_events=True,
+                has_center_output=False,
+                has_voxels=False,
+            )
+            return [], report, list(self._frame_records)
         self.flush_remaining()
         timings = summarize_edge_timings(self._batches)
         difficulty = (
@@ -282,7 +398,7 @@ class EdgeIncrementalScorer:
             if self.include_difficulty
             else None
         )
-        report: dict[str, Any] = {
+        report = {
             "format": "chongming-scorer-edge-v1",
             "status": "complete",
             "run_id": self.run_id,
@@ -303,6 +419,11 @@ class EdgeIncrementalScorer:
                     "metrics": self._station_metrics[station].summary(),
                     "processed_frames": self._processed[station],
                     "warmup_frames": self._warmup_frames[station],
+                    **(
+                        {"unlabelled_frames": self._unlabelled_frames[station]}
+                        if self._unlabelled_frames.get(station, 0) > 0
+                        else {}
+                    ),
                     **timings["stations"][station],
                 }
                 for station in sorted(self._origins)
@@ -409,6 +530,8 @@ class CenterIncrementalScorer:
             raise ValueError("center reference time outside recorded scenario")
         if ns - self.origin_ns < self.warmup_ns:
             self._excluded += 1
+            return None
+        if not self.scene_index.truth_by_time:
             return None
         truth_frame = self.scene_index.truth_by_time.get(ns)
         if truth_frame is None:
@@ -612,6 +735,27 @@ class IntegratedIncrementalScorer:
     def finalize(self) -> tuple[list[truth_pb2.ScoreEvent], dict[str, Any]]:
         """Finalize integrated scoring and build the combined report dict."""
         edge_scores, edge_report, _ = self.edge.finalize()
+        if edge_report.get("status") == "unavailable":
+            report = build_unavailable_report(
+                scene=self.scene,
+                run_id=self.run_id,
+                requested_mode="integrated",
+                run_mode="integrated",
+                reason_codes=edge_report["reason_codes"],
+                diagnostics=edge_report["diagnostics"],
+                edge_batches=[
+                    msg.detection_batch
+                    for msg in self.edge.messages
+                    if msg.WhichOneof("payload") == "detection_batch"
+                ],
+                center_messages=self.center.messages,
+                has_edge_events=bool(self.edge.messages),
+                has_center_output=bool(self.center.messages),
+                has_voxels=any(
+                    msg.WhichOneof("payload") == "sparse_voxel_grid" for msg in self.center.messages
+                ),
+            )
+            return [], report
         center_scores, center_report, center_records = self.center.finalize()
         attribution: dict[str, Any] | None = None
         if self.size_k_m is not None:
@@ -745,7 +889,66 @@ def score_run(
     run = RunOutputPackage.open(run_dir, verify_hashes=verify_hashes)
     run.verify_matches_scene(scene)
     effective_mode = run.mode if mode is None else mode
+    if effective_mode not in {"edge", "center", "integrated"}:
+        raise ValueError(f"unsupported score mode: {effective_mode!r}")
+
     scene_index = SceneTruthIndex.from_scene(scene)
+    edge_messages = list(run.iter_edge_events()) if run.has_edge_events else []
+    center_messages = list(run.iter_center_output()) if run.has_center_output else []
+    edge_batches = [
+        msg.detection_batch
+        for msg in edge_messages
+        if msg.WhichOneof("payload") == "detection_batch"
+    ]
+
+    reason_codes: list[str] = []
+    diagnostics: list[str] = []
+    if not scene_index.truth_by_time:
+        reason_codes.append("truth_unavailable")
+        diagnostics.append(
+            "Test Scene truth.pb.zst contains no TruthFrame records (unlabelled sample)"
+        )
+    if effective_mode in {"edge", "integrated"}:
+        if not run.has_edge_events:
+            reason_codes.append("edge_events_unavailable")
+            if run.mode == "center":
+                reason_codes.append("run_mode_center_does_not_produce_edge_events")
+                diagnostics.append(
+                    f"requested score mode {effective_mode!r} requires edge_events.pb.zst, "
+                    "which run mode 'center' does not produce"
+                )
+            else:
+                diagnostics.append("Run Output does not contain edge_events.pb.zst")
+        elif not edge_batches:
+            reason_codes.append("no_detection_batches")
+            diagnostics.append("edge_events.pb.zst contains no DetectionBatch messages")
+    if effective_mode in {"center", "integrated"} and not run.has_center_output:
+        reason_codes.append("center_output_unavailable")
+        if run.mode == "edge":
+            reason_codes.append("run_mode_edge_does_not_produce_center_output")
+            diagnostics.append(
+                f"requested score mode {effective_mode!r} requires center_output.pb.zst, "
+                "which run mode 'edge' does not produce"
+            )
+        else:
+            diagnostics.append("Run Output does not contain center_output.pb.zst")
+
+    if reason_codes:
+        report = build_unavailable_report(
+            scene=scene,
+            run_id=run.run_id,
+            requested_mode=effective_mode,
+            run_mode=run.mode,
+            reason_codes=reason_codes,
+            diagnostics=diagnostics,
+            edge_batches=edge_batches,
+            center_messages=center_messages,
+            has_edge_events=run.has_edge_events,
+            has_center_output=run.has_center_output,
+            has_voxels=run.has_voxels,
+        )
+        run.write_scores([], report, output_dir=output_dir)
+        return report
 
     if effective_mode == "edge":
         edge_warmup = 15.0 if warmup_s is None else warmup_s
@@ -776,35 +979,27 @@ def score_run(
         run.write_scores(scores, report, output_dir=output_dir)
         return report
 
-    if effective_mode == "integrated":
-        effective_warmup = 15.0 if warmup_s is None else warmup_s
-        if not run.has_edge_events:
-            raise FileNotFoundError("Run Output is missing edge_events.pb.zst")
-        if not run.has_center_output:
-            raise FileNotFoundError("Run Output is missing center_output.pb.zst")
-        edge_messages = list(run.iter_edge_events())
-        origins = _scan_edge_station_origins(edge_messages)
-        integrated = IntegratedIncrementalScorer(
-            scene,
-            run_id=run.run_id,
-            gate_px=gate_px,
-            size_k_px=size_k_px,
-            gate_m=gate_m,
-            size_k_m=size_k_m,
-            miss_k=miss_k,
-            warmup_s=effective_warmup,
-            warmup_origin_ns=warmup_origin_ns,
-            minimum_stations=minimum_stations,
-            scene_index=scene_index,
-            edge_station_origins=origins,
-            defer_center_schedule_evaluation=True,
-        )
-        for msg in edge_messages:
-            integrated.feed_bus_message(msg)
-        for msg in run.iter_center_output():
-            integrated.feed_bus_message(msg)
-        all_scores, combined_report = integrated.finalize()
-        run.write_scores(all_scores, combined_report, output_dir=output_dir)
-        return combined_report
-
-    raise ValueError(f"unsupported score mode: {effective_mode!r}")
+    effective_warmup = 15.0 if warmup_s is None else warmup_s
+    origins = _scan_edge_station_origins(edge_messages)
+    integrated = IntegratedIncrementalScorer(
+        scene,
+        run_id=run.run_id,
+        gate_px=gate_px,
+        size_k_px=size_k_px,
+        gate_m=gate_m,
+        size_k_m=size_k_m,
+        miss_k=miss_k,
+        warmup_s=effective_warmup,
+        warmup_origin_ns=warmup_origin_ns,
+        minimum_stations=minimum_stations,
+        scene_index=scene_index,
+        edge_station_origins=origins,
+        defer_center_schedule_evaluation=True,
+    )
+    for msg in edge_messages:
+        integrated.feed_bus_message(msg)
+    for msg in center_messages:
+        integrated.feed_bus_message(msg)
+    all_scores, combined_report = integrated.finalize()
+    run.write_scores(all_scores, combined_report, output_dir=output_dir)
+    return combined_report
