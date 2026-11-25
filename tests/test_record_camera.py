@@ -182,7 +182,7 @@ class RecordCameraTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertEqual(json.loads(verify_out.read_text())["timing_status"], "provisional")
 
-    def test_advancing_backend_timestamps_and_loopback_ntp_reach_go(self) -> None:
+    def test_advancing_backend_timestamps_and_loopback_ntp_are_provisional(self) -> None:
         with (
             tempfile.TemporaryDirectory() as tmp,
             _LoopbackNtpServer(simulated_offset_ns=4_000_000) as srv,
@@ -215,8 +215,9 @@ class RecordCameraTests(unittest.TestCase):
                 ntp_result=ntp_res,
                 expected_fps=30.0,
             )
-            self.assertEqual(report["timing_status"], "go")
+            self.assertEqual(report["timing_status"], "provisional")
             self.assertTrue(report["timestamps"]["source_timestamps_available"])
+            self.assertTrue(report["timestamps"]["unresolved_capture_latency"])
 
     def test_frame_mismatch_and_excess_ntp_offset_trigger_no_go(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -234,7 +235,7 @@ class RecordCameraTests(unittest.TestCase):
                 ntp_server=None,
             )
 
-            # Case 1: Large NTP offset with Fake-IP triggers no_go and explicit Fake-IP warning.
+            # A proxied NTP result is not a usable clock offset measurement.
             bad_ntp = NtpCheckResult(
                 available=True,
                 server="time.apple.com",
@@ -249,9 +250,9 @@ class RecordCameraTests(unittest.TestCase):
             rep_ntp = analyze_recording(
                 video_path=video_path, timestamps_path=ts_path, ntp_result=bad_ntp
             )
-            self.assertEqual(rep_ntp["timing_status"], "no_go")
+            self.assertEqual(rep_ntp["timing_status"], "provisional")
+            self.assertIsNone(rep_ntp["single_host_ntp_bound_ms"])
             self.assertTrue(any("Fake-IP" in w for w in rep_ntp["warnings"]))
-            self.assertFalse(any("provisional" in w for w in rep_ntp["warnings"]))
 
             # Case 2: Drop last CSV row so video frames != timestamp rows.
             lines = ts_path.read_text(encoding="utf-8").splitlines()

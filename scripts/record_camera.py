@@ -9,6 +9,7 @@ import itertools
 import json
 import math
 import platform
+import re
 import signal
 import socket
 import statistics
@@ -152,9 +153,12 @@ def parse_sntp_response(
     if len(payload) < 48:
         raise ValueError(f"Short NTP response ({len(payload)} bytes)")
     first_byte, stratum = payload[0], payload[1]
-    mode = first_byte & 0x07
-    if mode not in {4, 5}:
-        raise ValueError(f"Unexpected NTP mode {mode}")
+    mode, version, leap = first_byte & 0x07, (first_byte >> 3) & 0x07, first_byte >> 6
+    if mode != 4 or version not in {3, 4} or leap == 3 or not 1 <= stratum <= 15:
+        raise ValueError("NTP reply is not from a synchronized server")
+    expected_originate = build_sntp_request(t1_unix_ns)[40:48]
+    if payload[24:32] != expected_originate:
+        raise ValueError("NTP reply does not match the request timestamp")
     rx_sec, rx_frac, tx_sec, tx_frac = struct.unpack_from("!IIII", payload, 32)
     if rx_sec == 0 or tx_sec == 0:
         raise ValueError("NTP server returned zero timestamp")
@@ -162,9 +166,11 @@ def parse_sntp_response(
     t3_ns = _ntp_pair_to_unix_ns(tx_sec, tx_frac)
     offset_ns = ((t2_ns - t1_unix_ns) + (t3_ns - t4_unix_ns)) / 2.0
     rtt_ns = (t4_unix_ns - t1_unix_ns) - (t3_ns - t2_ns)
+    if t3_ns < t2_ns or rtt_ns < 0:
+        raise ValueError("NTP reply has inconsistent timestamps")
     return NtpSample(
         offset_ms=offset_ns / 1_000_000.0,
-        rtt_ms=max(0.0, rtt_ns / 1_000_000.0),
+        rtt_ms=rtt_ns / 1_000_000.0,
         stratum=stratum,
         server_ip=server_ip,
     )
@@ -205,10 +211,11 @@ def query_ntp_offset(
         try:
             with socket.socket(family, socktype, proto) as sock:
                 sock.settimeout(timeout_s)
+                sock.connect(sockaddr)
                 t1_ns = time.clock_gettime_ns(time.CLOCK_REALTIME)
                 mono_start = time.monotonic_ns()
-                sock.sendto(build_sntp_request(t1_ns), sockaddr)
-                data, _ = sock.recvfrom(512)
+                sock.send(build_sntp_request(t1_ns))
+                data = sock.recv(512)
                 mono_end = time.monotonic_ns()
                 t4_ns = t1_ns + (mono_end - mono_start)
             collected.append(parse_sntp_response(data, t1_ns, t4_ns, server_ip))
@@ -240,7 +247,7 @@ def query_ntp_offset(
         samples_succeeded=len(collected),
         median_offset_ms=statistics.median(offsets),
         min_rtt_ms=min_rtt,
-        half_rtt_uncertainty_ms=min_rtt * 0.5,
+        half_rtt_uncertainty_ms=max(rtts) * 0.5,
         offset_spread_ms=max(offsets) - min(offsets),
     )
 
@@ -392,7 +399,7 @@ def analyze_recording(
 
     # Budget evaluation against 33 ms at 30 fps.
     ntp_bound_ms: float | None = None
-    if ntp_result is not None and ntp_result.available:
+    if ntp_result is not None and ntp_result.available and not _is_fake_ip(ntp_result.server_ip):
         assert ntp_result.median_offset_ms is not None
         assert ntp_result.half_rtt_uncertainty_ms is not None
         ntp_bound_ms = abs(ntp_result.median_offset_ms) + ntp_result.half_rtt_uncertainty_ms
@@ -447,15 +454,13 @@ def analyze_recording(
 
     if hard_failures:
         timing_status = "no_go"
-    elif not source_timestamps_available or ntp_result is None or not ntp_result.available:
-        timing_status = "provisional"
     else:
-        timing_status = "go"
+        timing_status = "provisional"
 
-    if timing_status == "provisional" and not source_timestamps_available:
+    if timing_status == "provisional":
         warnings.append(
-            "Because timing status is provisional, verify cross-camera alignment on site using "
-            "a high-contrast moving marker visible to both cameras in daylight."
+            "This single-camera audit cannot establish cross-camera timing. Compare both "
+            "recordings using a shared physical event before applying the 33 ms limit."
         )
 
     return {
@@ -475,8 +480,8 @@ def analyze_recording(
             "frame_count_matches_video": video_frame_count == row_count,
             "timestamp_sources": sources,
             "source_timestamps_available": source_timestamps_available,
-            "timestamp_resolution_ms": 0.001,  # nanosecond CLOCK_REALTIME / monotonic_ns
-            "unresolved_capture_latency": not source_timestamps_available,
+            "realtime_clock_resolution_ms": time.clock_getres(time.CLOCK_REALTIME) * 1000.0,
+            "unresolved_capture_latency": True,
             "wall_clock_span_s": ((real_ns[-1] - real_ns[0]) / 1e9) if len(real_ns) > 1 else 0.0,
         },
         "cadence": {
@@ -555,7 +560,9 @@ def record_session(
 ) -> tuple[Path, Path, Path, Path]:
     """Capture raw frames from `capture`, pair per-frame timestamps, finalize, and verify."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    utc_stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    if re.fullmatch(r"[A-Za-z0-9_-]+", station_id) is None:
+        raise RecordingError("Station ID must use letters, digits, underscores or hyphens.")
+    utc_stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     session_stem = f"{station_id}_{utc_stamp}"
     video_path = output_dir / f"{session_stem}.mp4"
     timestamps_path = output_dir / f"{session_stem}_timestamps.csv"
@@ -594,12 +601,12 @@ def record_session(
     prev_written_mono_ns: int | None = None
     expected_dt_ms = 1000.0 / requested_fps if requested_fps > 0 else 33.333
     gap_threshold_ms = 1.5 * expected_dt_ms
-    start_mono_ns: int | None = None
+    start_mono_ns = time.monotonic_ns()
     prev_pos_msec: float | None = None
     seen_advancing_pos = False
 
     try:
-        with timestamps_path.open("w", encoding="utf-8", newline="") as csv_file:
+        with timestamps_path.open("x", encoding="utf-8", newline="") as csv_file:
             csv_writer = csv.writer(csv_file)
             csv_writer.writerow(TIMESTAMPS_COLUMNS)
 
@@ -608,7 +615,6 @@ def record_session(
                     break
                 if (
                     duration_s is not None
-                    and start_mono_ns is not None
                     and (time.monotonic_ns() - start_mono_ns) / 1_000_000_000.0 >= duration_s
                 ):
                     break
@@ -629,7 +635,6 @@ def record_session(
 
                 frame_h, frame_w = int(frame.shape[0]), int(frame.shape[1])
                 if writer is None:
-                    start_mono_ns = monotonic_ns
                     actual_w, actual_h = frame_w, frame_h
                     writer_fps = negotiated_fps if 1.0 <= negotiated_fps <= 240.0 else requested_fps
                     writer, actual_codec = _open_video_writer(
@@ -931,7 +936,7 @@ def main(argv: list[str] | None = None) -> int:
             fps=args.fps,
             backend=args.backend,
         )
-        record_session(
+        _, _, _, report_path = record_session(
             capture=cap,
             station_id=args.station_id,
             output_dir=args.output_dir,
@@ -944,7 +949,8 @@ def main(argv: list[str] | None = None) -> int:
             preview=args.preview,
             ntp_server=None if args.skip_ntp else args.ntp_server,
         )
-        return 0
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        return 0 if report["timing_status"] != "no_go" else 2
 
     return 1
 
