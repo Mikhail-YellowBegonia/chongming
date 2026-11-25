@@ -2157,68 +2157,70 @@ async fn replay_preflight_rejects_empty_missing_station_missing_video_and_bad_in
     .unwrap_err();
     assert!(err.to_string().contains("missing package file"), "{err}");
 
-    // 4. Mismatched frame_index count fails boundedly.
-    let bad_idx_scene = dir.path().join("bad_idx_scene");
-    {
-        let mut sw = TestSceneWriter::create(
-            &bad_idx_scene,
-            TestSceneConfig {
-                scenario_id: "bad-idx".into(),
-                world_frame_id: "enu".into(),
-                clock_domain_id: "clk".into(),
-                start_time_ns: 0,
-                end_time_ns: 100_000_000,
-                stations: vec![make_station("s1", 0.0)],
+    // 4. Reject bad counts and duplicate indices even when the frame count matches.
+    for (case, indices, expected_error) in [
+        ("bad_count", &[0u64, 1, 2][..], "H.264 frame count mismatch"),
+        ("duplicate_index", &[0u64, 0][..], "duplicate frame_index"),
+    ] {
+        let bad_idx_scene = dir.path().join(case);
+        {
+            let mut sw = TestSceneWriter::create(
+                &bad_idx_scene,
+                TestSceneConfig {
+                    scenario_id: "bad-idx".into(),
+                    world_frame_id: "enu".into(),
+                    clock_domain_id: "clk".into(),
+                    start_time_ns: 0,
+                    end_time_ns: 100_000_000,
+                    stations: vec![make_station("s1", 0.0)],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            sw.add_video_file(
+                &mp4_tmp,
+                "video/s1-main.mp4",
+                serde_json::to_value(&vmeta).unwrap(),
+            )
+            .unwrap();
+            for (sequence, i) in indices.iter().copied().enumerate() {
+                sw.add_frame_index(&vswitch::proto::FrameIndexEntry {
+                    station_id: "s1".into(),
+                    station_session_id: "sess-s1".into(),
+                    camera_role: CameraRole::Main as i32,
+                    frame_index: i,
+                    frame_id: format!("s1-f-{sequence}"),
+                    capture_time: Some(CaptureTime {
+                        clock_domain_id: "clk".into(),
+                        exposure_start_ns: sequence as i64 * 50_000_000,
+                        exposure_end_ns: sequence as i64 * 50_000_000,
+                        ..Default::default()
+                    }),
+                    station_config_digest: "digest-s1".into(),
+                    video_relpath: "video/s1-main.mp4".into(),
+                    width_px: 64,
+                    height_px: 48,
+                })
+                .unwrap();
+            }
+            sw.finalize().unwrap();
+        }
+        let err = run_replay(
+            ReplayConfig {
+                mode: ReplayMode::Edge,
+                scene_dir: bad_idx_scene,
+                run_output_dir: dir.path().join(format!("{case}_run")),
+                run_id: "bad-idx-1".into(),
+                truth_bind: None,
+                viewer_bind: None,
                 ..Default::default()
             },
+            None,
         )
-        .unwrap();
-        sw.add_video_file(
-            &mp4_tmp,
-            "video/s1-main.mp4",
-            serde_json::to_value(&vmeta).unwrap(),
-        )
-        .unwrap();
-        for (i, t_ns) in [(0u64, 0i64), (1, 50_000_000), (2, 100_000_000)] {
-            sw.add_frame_index(&vswitch::proto::FrameIndexEntry {
-                station_id: "s1".into(),
-                station_session_id: "sess-s1".into(),
-                camera_role: CameraRole::Main as i32,
-                frame_index: i,
-                frame_id: format!("s1-f-{i}"),
-                capture_time: Some(CaptureTime {
-                    clock_domain_id: "clk".into(),
-                    exposure_start_ns: t_ns,
-                    exposure_end_ns: t_ns,
-                    ..Default::default()
-                }),
-                station_config_digest: "digest-s1".into(),
-                video_relpath: "video/s1-main.mp4".into(),
-                width_px: 64,
-                height_px: 48,
-            })
-            .unwrap();
-        }
-        sw.finalize().unwrap();
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains(expected_error), "{err}");
     }
-    let err = run_replay(
-        ReplayConfig {
-            mode: ReplayMode::Edge,
-            scene_dir: bad_idx_scene,
-            run_output_dir: dir.path().join("bad_idx_run"),
-            run_id: "bad-idx-1".into(),
-            truth_bind: None,
-            viewer_bind: None,
-            ..Default::default()
-        },
-        None,
-    )
-    .await
-    .unwrap_err();
-    assert!(
-        err.to_string().contains("H.264 frame count mismatch"),
-        "{err}"
-    );
 }
 
 #[tokio::test]

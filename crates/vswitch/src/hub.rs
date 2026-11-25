@@ -693,7 +693,14 @@ pub async fn run_replay(
             }
         }
         let tracks = demux_scene_tracks(&scene, &entries)?;
+        let mut indices = HashSet::new();
         for entry in &entries {
+            if !indices.insert((&entry.video_relpath, entry.frame_index)) {
+                return Err(HubError::InvalidState(format!(
+                    "duplicate frame_index {} for {}",
+                    entry.frame_index, entry.video_relpath
+                )));
+            }
             let track = tracks.get(&entry.video_relpath).ok_or_else(|| {
                 HubError::InvalidState(format!("missing demuxed track {}", entry.video_relpath))
             })?;
@@ -726,12 +733,6 @@ pub async fn run_replay(
         )
     } else {
         let rays = scene.iter_virtual_rays()?.collect_all()?;
-        if rays.is_empty() {
-            return Err(HubError::InvalidState(
-                "Test Scene has no virtual rays in virtual_rays.pb.zst for center replay"
-                    .to_string(),
-            ));
-        }
         next_virtual_cal_seq = rays
             .iter()
             .filter_map(|r| r.envelope.as_ref().map(|e| e.sequence_no))

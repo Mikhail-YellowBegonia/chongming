@@ -288,6 +288,23 @@ class ScorerPipelineTests(unittest.TestCase):
                                 height_px=64,
                             )
                         )
+                        if truth_mode == "frame_link" and idx == 0:
+                            sw.add_truth_frame(
+                                truth_pb2.TruthFrame(
+                                    world_frame_id="enu",
+                                    experiment_time_ns=ns,
+                                    projections=[
+                                        truth_pb2.StationTargetProjection(
+                                            station_id="s1",
+                                            target_id="t1",
+                                            frame_id="s1-1",
+                                            occlusion_status=truth_pb2.OCCLUSION_STATUS_VISIBLE,
+                                            projected_centroid_px=common_pb2.Vec2(x=12.0, y=14.0),
+                                            projected_diagonal_px=4.0,
+                                        )
+                                    ],
+                                )
+                            )
                         if truth_mode == "explicit_empty" or (truth_mode == "partial" and idx == 0):
                             sw.add_truth_frame(
                                 truth_pb2.TruthFrame(
@@ -394,6 +411,12 @@ class ScorerPipelineTests(unittest.TestCase):
             self.assertEqual(rep_partial["aggregate"]["frames"], 1)
             self.assertEqual(rep_partial["aggregate"]["fp"], 0)
             self.assertEqual(rep_partial["stations"]["s1"]["unlabelled_frames"], 1)
+
+            linked_scene = write_scene("linked_scene", truth_mode="frame_link")
+            linked_run = write_edge_run("linked_run", linked_scene, with_obs=True)
+            rep_linked = score_run(linked_scene, linked_run, warmup_s=0.0)
+            self.assertEqual(rep_linked["aggregate"]["tp"], 1)
+            self.assertEqual(rep_linked["aggregate"]["fn"], 0)
 
             # 4. Mode mismatch (edge run scored as integrated or center): explicit unavailable diagnostic.
             rep_mismatch = score_run(

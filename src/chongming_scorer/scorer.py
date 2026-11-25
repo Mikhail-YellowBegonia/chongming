@@ -183,7 +183,8 @@ class SceneTruthIndex:
         for proj in truth_frame.projections:
             if proj.HasField("frame_id") and proj.frame_id:
                 self.projections_by_frame[proj.frame_id].append(proj)
-            self.projections_by_time[(proj.station_id, ns)].append(proj)
+            else:
+                self.projections_by_time[(proj.station_id, ns)].append(proj)
 
 
 class EdgeIncrementalScorer:
@@ -279,7 +280,8 @@ class EdgeIncrementalScorer:
         self._batches.append(batch)
         self._processed[station] += 1
         excluded = ns - self._origins[station] < self.warmup_ns
-        has_truth_frame = ns in self.scene_index.truth_by_time
+        frame_projections = self.scene_index.projections_by_frame.get(frame_id)
+        has_truth_frame = bool(frame_projections) or ns in self.scene_index.truth_by_time
         record: dict[str, Any] = {
             "station_id": station,
             "frame_id": frame_id,
@@ -299,9 +301,7 @@ class EdgeIncrementalScorer:
             self._unlabelled_frames[station] += 1
         else:
             self._labelled_frames += 1
-            projs = self.scene_index.projections_by_frame.get(
-                frame_id
-            ) or self.scene_index.projections_by_time.get((station, ns), [])
+            projs = frame_projections or self.scene_index.projections_by_time.get((station, ns), [])
             targets: dict[str, tuple[float, ...]] = {}
             for proj in projs:
                 if proj.occlusion_status == truth_pb2.OCCLUSION_STATUS_OUT_OF_FOV:
