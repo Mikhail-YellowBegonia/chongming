@@ -1,0 +1,43 @@
+{
+  "station-a": {
+    "detection": {
+      "algorithm_id": "mog2-components-v1",
+      "score_definition": {
+        "definition_id": "foreground-component-fill-ratio-v1",
+        "kind": "ranking",
+        "minimum": 0.0,
+        "maximum": 1.0
+      },
+      "minimum_component_area_px2": 1.0,
+      "maximum_component_area_px2": null,
+      "background_warmup_frame_count": 15,
+      "background_history_frame_count": 120,
+      "background_variance_threshold": 16.0,
+      "background_learning_rate": 0.008,
+      "background_detect_shadows": false
+    },
+    "tracking": {
+      "algorithm_id": "constant-velocity-nearest-neighbor-v1",
+      "association_gate_px": 24.0,
+      "confirmation_frame_count": 2,
+      "maximum_missing_duration_ns": 500000000,
+      "quality_definition": {
+        "definition_id": "consecutive-detection-fraction-v1",
+        "kind": "ranking",
+        "minimum": 0.0,
+        "maximum": 1.0
+      }
+    },
+    "calibration": {
+      "update_period_ns": 0,
+      "stale_after_ns": 2000000000,
+      "recovery_success_count": 1,
+      "minimum_reference_count": 4,
+      "maximum_reprojection_rmse_px": 2.0,
+      "estimator_id": "opencv-checkerboard-v1"
+    },
+    "rays": {
+      "uncertainty_model_id": "tangent_gaussian_v1"
+    }
+  }
+}

@@ -464,7 +464,33 @@ class RustEdgeFieldReplayTests(unittest.TestCase):
             spot[18:26, 20:26] = 255
             mp4_det = root / "s1-det.mp4"
             mp4_zero = root / "s1-zero.mp4"
-            _encode_h264_mp4(ffmpeg, mp4_det, [blank, spot.tobytes(), spot.tobytes()], w, h)
+            frame_count = 18
+            subprocess.run(
+                [
+                    ffmpeg,
+                    "-v",
+                    "error",
+                    "-f",
+                    "rawvideo",
+                    "-pixel_format",
+                    "rgb24",
+                    "-video_size",
+                    f"{w}x{h}",
+                    "-framerate",
+                    "25",
+                    "-i",
+                    "pipe:0",
+                    "-c:v",
+                    "mpeg4",
+                    "-bf",
+                    "2",
+                    str(mp4_det),
+                ],
+                input=blank * 15 + spot.tobytes() * 3,
+                capture_output=True,
+                check=True,
+                timeout=15,
+            )
             _encode_h264_mp4(ffmpeg, mp4_zero, [blank, blank, blank], w, h)
 
             pol_path = root / "pol1.json"
@@ -511,7 +537,63 @@ class RustEdgeFieldReplayTests(unittest.TestCase):
                 return scene_dir
 
             # 1. Single-main-camera unlabelled scene through Rust Edge (no viewer, no scorer).
-            sc_1cam = write_scene("sc_1cam", mp4_det)
+            sc_1cam = root / "sc_1cam"
+            stamps = root / "timestamps.csv"
+            offsets = [i * 40_000_000 + (i % 2) * 3_000_000 for i in range(frame_count)]
+            lines = ["station_id,output_frame_index,monotonic_ns,actual_width_px,actual_height_px"]
+            lines.extend(
+                f"station-a,{i},{1_000_000_000 + offset},{w},{h}"
+                for i, offset in enumerate(offsets)
+            )
+            intrinsics = root / "intrinsics.json"
+            intrinsics.write_text(
+                json.dumps(
+                    {
+                        "image_width_px": w,
+                        "image_height_px": h,
+                        "fx": 80,
+                        "fy": 80,
+                        "cx": w / 2,
+                        "cy": h / 2,
+                        "distortion_model": "none",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            import_cmd = [
+                sys.executable,
+                str(ROOT / "scripts/import_mac_recording.py"),
+                "--video",
+                str(mp4_det),
+                "--timestamps",
+                str(stamps),
+                "--intrinsics",
+                str(intrinsics),
+                "--output",
+                str(sc_1cam),
+            ]
+            stamps.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+            invalid = subprocess.run(
+                import_cmd, check=False, capture_output=True, text=True, timeout=20
+            )
+            self.assertNotEqual(invalid.returncode, 0)
+            self.assertIn("video has 18 frames but timestamp CSV has 17 rows", invalid.stderr)
+            self.assertFalse(sc_1cam.exists())
+            stamps.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            imported = subprocess.run(
+                import_cmd, check=False, capture_output=True, text=True, timeout=20
+            )
+            self.assertEqual(imported.returncode, 0, imported.stderr)
+            scene = TestScenePackage.open(sc_1cam, verify_videos=True)
+            (station,) = scene.station_configs()
+            self.assertFalse(station.HasField("auxiliary_camera"))
+            self.assertFalse(station.HasField("main_camera_position_enu_m"))
+            self.assertEqual(list(scene.iter_truth_frames()), [])
+            self.assertEqual(list(scene.iter_virtual_rays()), [])
+            self.assertEqual(
+                [frame.capture_time.exposure_start_ns for frame in scene.iter_frame_index()],
+                offsets,
+            )
             run_1cam = root / "run_1cam"
             vs = subprocess.Popen(
                 [
@@ -545,7 +627,7 @@ class RustEdgeFieldReplayTests(unittest.TestCase):
                         "--port",
                         port,
                         "--policy",
-                        str(pol_path),
+                        str(ROOT / "scenarios/policies/field/mac_edge.json"),
                         "--warmup-hold-s",
                         "0",
                     ],
@@ -570,7 +652,8 @@ class RustEdgeFieldReplayTests(unittest.TestCase):
                 for m_msg in msgs_1cam
                 if m_msg.WhichOneof("payload") == "detection_batch"
             ]
-            self.assertEqual(len(batches_1cam), 3)
+            self.assertEqual(len(batches_1cam), frame_count)
+            self.assertEqual([b.capture_time.exposure_start_ns for b in batches_1cam], offsets)
             self.assertTrue(
                 any(
                     m_msg.WhichOneof("payload") == "progress_report"
@@ -581,7 +664,9 @@ class RustEdgeFieldReplayTests(unittest.TestCase):
             rep_1cam = score_run(sc_1cam, run_1cam, output_dir=root / "score_1cam", warmup_s=0.0)
             self.assertEqual(rep_1cam["status"], "unavailable")
             self.assertIn("truth_unavailable", rep_1cam["reason_codes"])
-            self.assertEqual(rep_1cam["available_outputs"]["edge"]["detection_batches"], 3)
+            self.assertEqual(
+                rep_1cam["available_outputs"]["edge"]["detection_batches"], frame_count
+            )
             self.assertGreater(rep_1cam["available_outputs"]["edge"]["observations"], 0)
 
             # 2. Valid zero-detection clip through Rust Edge.
