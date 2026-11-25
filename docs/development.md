@@ -135,6 +135,49 @@ Note that `EventWindowPolicy.timeout_basis` supports `processing_time` (wall-clo
      --device-dir <legacy-device-dir> --center-dir <legacy-center-dir>
    ```
 
+### Manual RTK control-point calibration
+
+[scripts/rtk_calibrate.py](../scripts/rtk_calibrate.py) is a standalone tool for clicking surveyed local-ENU control points on a recorded camera frame, saving/reloading correspondences, and fitting camera pose (`optical_center_enu_m` and `rotation_enu_from_cam`) with held-out checkpoint residuals:
+
+```sh
+# Interactive GUI (with MacBook 1080p DFOV 122 deg pinhole preset or --intrinsics <json>)
+uv run --frozen python scripts/rtk_calibrate.py \
+  --image results/frame.png --csv results/points.csv --preset macbook-1080p-dfov122
+
+# Reopen saved correspondences or solve headless from saved correspondences
+uv run --frozen python scripts/rtk_calibrate.py --correspondences results/correspondences.json
+uv run --frozen python scripts/rtk_calibrate.py --solve \
+  --correspondences results/correspondences.json --preset macbook-1080p-dfov122 \
+  --output results/calibration.json
+```
+
+- **Control-point CSV**: UTF-8 CSV with columns `point_id,east_m,north_m,up_m` and optional `role` (`fit` or `check`, default `fit`) and `note`. Convert RTK measurements into the shared local ENU frame before loading.
+- **Intrinsics JSON**: Either standalone (`image_width_px`, `image_height_px`, `fx`/`fy`/`cx`/`cy` or `matrix_px`, `distortion_model`, `distortion_coefficients`) or repository `CameraModel` / `StationConfig` JSON. The loaded image dimensions must match `image_width_px x image_height_px`.
+- **GUI limitation**: The locked Python environment installs `opencv-python-headless` (which omits cross-platform HighGUI widgets and interactive point-list controls), so the GUI uses standard-library `tkinter` and `Pillow` for display/picking while keeping OpenCV for PnP and reprojection.
+- Keep camera frames, survey CSVs, correspondences, and exported JSONs in ignored directories such as `results/` or outside the repository.
+
+### macOS camera recording and timestamp audit
+
+[scripts/record_camera.py](../scripts/record_camera.py) records raw camera video without overlays (`--width 1920 --height 1080 --fps 30` by default) paired 1-to-1 with per-frame timestamps, session metadata, and a post-capture timing report:
+
+```sh
+# Setup once from repo root: nix develop --no-update-lock-file --command uv sync --frozen
+# Record raw footage + per-frame timestamps + read-only NTP check + reopen verification
+uv run --frozen python scripts/record_camera.py record \
+  --station-id station-a --camera 0 --duration 10 --output-dir results/recordings
+
+# Probe camera indices, run read-only NTP check, or re-verify an existing recording
+uv run --frozen python scripts/record_camera.py list-cameras
+uv run --frozen python scripts/record_camera.py ntp-check --server time.apple.com
+uv run --frozen python scripts/record_camera.py verify \
+  --video results/recordings/<clip>.mp4 --timestamps results/recordings/<clip>_timestamps.csv
+```
+
+- On macOS, grant Camera permission (`System Settings -> Privacy & Security -> Camera`) to the terminal or IDE running the recorder.
+- **Timestamps and clock audit**: When the capture backend does not expose advancing hardware timestamps (`CAP_PROP_POS_MSEC`), rows are explicitly labeled `host_receipt_time` with both `CLOCK_REALTIME` and `monotonic_ns` recorded so clock jumps stay visible. Read-only UDP SNTP queries (`ntp-check`) measure offset and half-RTT uncertainty without modifying the system clock.
+- **33 ms threshold**: A single-camera audit can identify a timing failure or report `provisional`. An advancing backend timestamp and an SNTP result do not establish cross-camera alignment. Compare both clips against a shared physical event before applying the threshold.
+- Keep all recorded clips, timestamp CSVs, and reports under ignored directories such as `results/` or outside the repository.
+
 ## Device policy
 
 A policy file maps each station ID to a complete [DevicePolicy](../src/chongming/contracts/device.py), or uses `FrameDifferencePolicy` / `KalmanTrackingPolicy` workbench settings (see [scenarios/policies/](../scenarios/policies/)). Station IDs must match the active `StationConfig`s exactly. The loader rejects duplicate keys, unknown fields, invalid values, and unsupported algorithms.
