@@ -627,7 +627,7 @@ class RustEdgeFieldReplayTests(unittest.TestCase):
                         "--port",
                         port,
                         "--policy",
-                        str(ROOT / "scenarios/policies/mac_field_edge.json"),
+                        str(ROOT / "scenarios/policies/field/mac_edge.json"),
                         "--warmup-hold-s",
                         "0",
                     ],

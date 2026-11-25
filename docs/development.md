@@ -200,7 +200,7 @@ Once `vswitch` reports its listening address, run this in a second Nix shell:
 
 ```sh
 ./target/debug/edge --host 127.0.0.1 --port 7000 \
-  --policy scenarios/policies/mac_field_edge.json
+  --policy scenarios/policies/field/mac_edge.json
 ```
 
 The example MOG2 policy uses station ID `station-a` and a 15-frame background warmup. Record with `--station-id station-a` or copy the policy to your results directory and change its top-level key to match the CSV. Include some background before the first target enters the frame.
