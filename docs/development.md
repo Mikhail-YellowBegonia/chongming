@@ -178,6 +178,35 @@ uv run --frozen python scripts/record_camera.py verify \
 - **33 ms threshold**: A single-camera audit can identify a timing failure or report `provisional`. An advancing backend timestamp and an SNTP result do not establish cross-camera alignment. Compare both clips against a shared physical event before applying the threshold.
 - Keep all recorded clips, timestamp CSVs, and reports under ignored directories such as `results/` or outside the repository.
 
+### Replay a single Mac recording
+
+Use the original video, the matching `record_camera.py` timestamps CSV, and an intrinsics JSON for the recorded resolution. The importer uses the monotonic host receipt times relative to the first frame. Those times are a single-station replay timeline. Exposure duration and camera-to-camera synchronization are unknown.
+
+From the repository Nix shell:
+
+```sh
+cargo build --locked -p vswitch -p edge
+uv run --frozen python scripts/import_mac_recording.py \
+  --video results/recordings/clip.mp4 \
+  --timestamps results/recordings/clip_timestamps.csv \
+  --intrinsics results/intrinsics.json \
+  --output results/mac-field-scene
+./target/debug/vswitch verify-scene results/mac-field-scene --verify-videos
+./target/debug/vswitch replay --scene results/mac-field-scene \
+  --run-output results/mac-field-run --run-id mac-field-run --mode edge
+```
+
+Once `vswitch` reports its listening address, run this in a second Nix shell:
+
+```sh
+./target/debug/edge --host 127.0.0.1 --port 7000 \
+  --policy scenarios/policies/mac_field_edge.json
+```
+
+The example MOG2 policy uses station ID `station-a` and a 15-frame background warmup. Record with `--station-id station-a` or copy the policy to your results directory and change its top-level key to match the CSV. Include some background before the first target enters the frame.
+
+The importer creates an H.264 MP4 without B-frames and checks that its frame count matches the CSV. Use a fresh output directory for each import and run. The scene has main-camera intrinsics and frame timing. The two required test streams for truth and virtual rays contain zero records. Rust Edge writes its `DetectionBatch` messages to `results/mac-field-run/edge_events.pb.zst`. `chongming-scorer inspect-run results/mac-field-run` lists the saved streams. Scoring the run reports `unavailable` because it has no labels.
+
 ## Device policy
 
 A policy file maps each station ID to a complete [DevicePolicy](../src/chongming/contracts/device.py), or uses `FrameDifferencePolicy` / `KalmanTrackingPolicy` workbench settings (see [scenarios/policies/](../scenarios/policies/)). Station IDs must match the active `StationConfig`s exactly. The loader rejects duplicate keys, unknown fields, invalid values, and unsupported algorithms.
