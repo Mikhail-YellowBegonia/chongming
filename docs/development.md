@@ -174,6 +174,8 @@ uv run --frozen python scripts/record_camera.py verify \
 ```
 
 - On macOS, grant Camera permission (`System Settings -> Privacy & Security -> Camera`) to the terminal or IDE running the recorder.
+- Use `--preview` on a short take to confirm the selected camera. The audit counts nearly black frames at capture and after decoding. A playable video with all frames nearly black fails the audit.
+- `--fps` sets the nominal MP4 playback rate. The camera-reported rate and the measured capture cadence are reported separately. Keep the per-frame CSV for exact replay intervals, including capture gaps.
 - **Timestamps and clock audit**: When the capture backend does not expose advancing hardware timestamps (`CAP_PROP_POS_MSEC`), rows are explicitly labeled `host_receipt_time` with both `CLOCK_REALTIME` and `monotonic_ns` recorded so clock jumps stay visible. Read-only UDP SNTP queries (`ntp-check`) measure offset and half-RTT uncertainty without modifying the system clock.
 - **33 ms threshold**: A single-camera audit can identify a timing failure or report `provisional`. An advancing backend timestamp and an SNTP result do not establish cross-camera alignment. Compare both clips against a shared physical event before applying the threshold.
 - Keep all recorded clips, timestamp CSVs, and reports under ignored directories such as `results/` or outside the repository.

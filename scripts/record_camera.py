@@ -46,6 +46,7 @@ TIMESTAMPS_COLUMNS = (
 _NTP_EPOCH_DELTA_S = 2208988800  # Seconds between 1900-01-01 and 1970-01-01.
 _DEFAULT_NTP_SERVER = "time.apple.com"
 _GO_THRESHOLD_MS = 33.0
+_NEAR_BLACK_MAX = 16
 _FAKE_IP_NET = ipaddress.ip_network("198.18.0.0/15")
 
 
@@ -310,12 +311,18 @@ def _has_advancing_backend_timestamps(values_ms: list[float | None]) -> bool:
     return advancing >= max(1, int(0.85 * (len(finite) - 1)))
 
 
-def _probe_video_frame_count(video_path: Path) -> tuple[bool, int, tuple[int, int] | None]:
+def _is_near_black(frame: Any) -> bool:
+    return cv2.norm(frame, cv2.NORM_INF) <= _NEAR_BLACK_MAX
+
+
+def _probe_video(video_path: Path) -> tuple[bool, int, tuple[int, int] | None, int, float | None]:
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         cap.release()
-        return False, 0, None
+        return False, 0, None, 0, None
+    fps = float(cap.get(cv2.CAP_PROP_FPS))
     count = 0
+    near_black = 0
     size: tuple[int, int] | None = None
     while True:
         ok, frame = cap.read()
@@ -323,9 +330,10 @@ def _probe_video_frame_count(video_path: Path) -> tuple[bool, int, tuple[int, in
             break
         if size is None:
             size = (int(frame.shape[1]), int(frame.shape[0]))
+        near_black += int(_is_near_black(frame))
         count += 1
     cap.release()
-    return True, count, size
+    return True, count, size, near_black, fps if math.isfinite(fps) and fps > 0 else None
 
 
 def analyze_recording(
@@ -350,7 +358,9 @@ def analyze_recording(
             raise RecordingError(f"Timestamps CSV missing expected columns: {timestamps_path}")
         rows = list(reader)
 
-    playable, video_frame_count, video_size = _probe_video_frame_count(video_path)
+    playable, video_frame_count, video_size, decoded_near_black, playback_fps = _probe_video(
+        video_path
+    )
     row_count = len(rows)
     indices = [int(r["output_frame_index"]) for r in rows]
     contiguous_indices = indices == list(range(row_count))
@@ -406,10 +416,15 @@ def analyze_recording(
 
     read_failures = int(meta.get("read_failures", 0)) if meta else 0
     write_failures = int(meta.get("write_failures", 0)) if meta else 0
+    input_near_black = meta.get("input_near_black_frames") if meta else None
 
     hard_failures: list[str] = []
     if not playable or video_frame_count == 0:
         hard_failures.append("Recorded video is not playable or contains 0 frames.")
+    elif decoded_near_black == video_frame_count:
+        hard_failures.append(
+            "All decoded frames are nearly black. Check the selected camera and lens before recording again."
+        )
     if video_frame_count != row_count:
         hard_failures.append(
             f"Video frame count ({video_frame_count}) != timestamp row count ({row_count})."
@@ -426,6 +441,17 @@ def analyze_recording(
         )
 
     warnings: list[str] = []
+    if (
+        playback_fps is not None
+        and duration_s > 0
+        and abs(playback_fps - measured_fps) > (0.05 * measured_fps)
+    ):
+        warnings.append(
+            f"MP4 playback rate ({playback_fps:.2f} fps) differs from measured capture cadence "
+            f"({measured_fps:.2f} fps). Use the original timestamp CSV for replay timing."
+        )
+    if 0 < decoded_near_black < video_frame_count:
+        warnings.append(f"Reopened video contains {decoded_near_black} nearly black frames.")
     if not source_timestamps_available:
         warnings.append(
             "Capture backend did not expose advancing hardware/source frame timestamps; "
@@ -472,6 +498,9 @@ def analyze_recording(
             "playable": playable,
             "decoded_frame_count": video_frame_count,
             "decoded_size_px": list(video_size) if video_size else None,
+            "input_near_black_frames": input_near_black,
+            "decoded_near_black_frames": decoded_near_black,
+            "playback_fps": playback_fps,
         },
         "timestamps": {
             "path": str(timestamps_path),
@@ -519,6 +548,8 @@ def format_report_summary(report: dict[str, Any]) -> str:
     lines = [
         f"Timing Verdict: {report['timing_status'].upper()} (threshold {report['go_threshold_ms']:.0f} ms @ 30 fps)",
         f"Video: {vid['path']} (playable={vid['playable']}, frames={vid['decoded_frame_count']}, size={vid['decoded_size_px']})",
+        f"MP4 playback rate: {vid['playback_fps']} fps",
+        f"Nearly black frames: input={vid['input_near_black_frames']}, decoded={vid['decoded_near_black_frames']}",
         (
             f"Timestamps: rows={ts['row_count']}, match_video={ts['frame_count_matches_video']}, "
             f"sources={ts['timestamp_sources']}, source_ts_available={ts['source_timestamps_available']}"
@@ -598,6 +629,7 @@ def record_session(
     attempt_idx = 0
     read_failures = 0
     write_failures = 0
+    input_near_black = 0
     prev_written_mono_ns: int | None = None
     expected_dt_ms = 1000.0 / requested_fps if requested_fps > 0 else 33.333
     gap_threshold_ms = 1.5 * expected_dt_ms
@@ -636,22 +668,30 @@ def record_session(
                 frame_h, frame_w = int(frame.shape[0]), int(frame.shape[1])
                 if writer is None:
                     actual_w, actual_h = frame_w, frame_h
-                    writer_fps = negotiated_fps if 1.0 <= negotiated_fps <= 240.0 else requested_fps
                     writer, actual_codec = _open_video_writer(
                         video_path,
                         preferred_codec=codec,
-                        fps=writer_fps,
+                        fps=requested_fps,
                         width=actual_w,
                         height=actual_h,
                     )
                     print(
-                        f"Recording actual frame size {actual_w}x{actual_h} -> {video_path} (codec={actual_codec})"
+                        f"Recording actual frame size {actual_w}x{actual_h} -> {video_path} "
+                        f"(codec={actual_codec}, playback_fps={requested_fps:g})"
                     )
                 elif (frame_w, frame_h) != (actual_w, actual_h):
                     write_failures += 1
                     continue
 
                 # Write raw frame unmodified (no overlays).
+                if _is_near_black(frame):
+                    input_near_black += 1
+                    if written_frames == 14 and input_near_black == 15:
+                        print(
+                            "NOTE: First 15 camera frames are nearly black. Check the camera preview.",
+                            file=sys.stderr,
+                            flush=True,
+                        )
                 writer.write(frame)
 
                 if math.isfinite(pos_msec) and pos_msec > 0.0:
@@ -737,11 +777,13 @@ def record_session(
         "actual_written_format": {
             "width_px": actual_w,
             "height_px": actual_h,
+            "fps": requested_fps,
             "codec": actual_codec,
             "written_frames": written_frames,
         },
         "read_failures": read_failures,
         "write_failures": write_failures,
+        "input_near_black_frames": input_near_black,
     }
     meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 

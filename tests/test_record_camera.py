@@ -119,6 +119,48 @@ class _LoopbackNtpServer:
 
 
 class RecordCameraTests(unittest.TestCase):
+    def test_mp4_rate_follows_the_request_when_the_camera_reports_15_fps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            frame = np.full((48, 64, 3), 80, dtype=np.uint8)
+            capture = _FakeCapture([(True, frame, 0.0)] * 3, width=64, height=48, fps=15.0)
+            _, _, meta_path, report_path = record_session(
+                capture=capture,
+                station_id="test-fps",
+                output_dir=Path(tmp),
+                requested_width=64,
+                requested_height=48,
+                requested_fps=30.0,
+                max_frames=3,
+                ntp_server=None,
+            )
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(meta["capture_reported_format"]["fps"], 15.0)
+            self.assertEqual(report["video"]["playback_fps"], 30.0)
+            self.assertEqual(report["video"]["decoded_frame_count"], 3)
+            self.assertTrue(report["timestamps"]["frame_count_matches_video"])
+
+    def test_playable_black_video_fails_the_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            frame = np.full((48, 64, 3), 8, dtype=np.uint8)
+            capture = _FakeCapture([(True, frame, 0.0)] * 3, width=64, height=48, fps=30.0)
+            _, _, _, report_path = record_session(
+                capture=capture,
+                station_id="test-black",
+                output_dir=Path(tmp),
+                requested_width=64,
+                requested_height=48,
+                requested_fps=30.0,
+                max_frames=3,
+                ntp_server=None,
+            )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertTrue(report["video"]["playable"])
+            self.assertTrue(report["timestamps"]["frame_count_matches_video"])
+            self.assertEqual(report["video"]["input_near_black_frames"], 3)
+            self.assertEqual(report["video"]["decoded_near_black_frames"], 3)
+            self.assertEqual(report["timing_status"], "no_go")
+
     def test_record_host_receipt_with_read_failure_pairs_frames_and_marks_provisional(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = Path(tmp)
